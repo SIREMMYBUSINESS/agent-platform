@@ -1,0 +1,18 @@
+agent-platform/
+├── app/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── main.py
+│   ├── models.py
+│   ├── events.py
+│   ├── policies.py
+│   ├── workflows.py
+│   ├── agents.py
+│   ├── tasks.py
+│   └── schemas.py
+├── tests/
+│   └── test_inbound.py
+├── .env.example
+├── pyproject.toml
+├── README.md
+└── .gitignore
