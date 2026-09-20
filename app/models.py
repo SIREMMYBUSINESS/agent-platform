@@ -1,7 +1,10 @@
-from enum import Enum
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from __future__ import annotations
+
 from datetime import datetime
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
 
 class Channel(str, Enum):
     PHONE = "phone"
@@ -21,6 +24,23 @@ class WorkflowState(str, Enum):
     ESCALATED = "escalated"
     RESOLVED = "resolved"
     CLOSED = "closed"
+    BLOCKED = "blocked"
+
+class Tenant(BaseModel):
+    id: str
+    name: str
+    region: str = "US"
+    default_timezone: str = "UTC"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class Business(BaseModel):
+    id: str
+    tenant_id: str
+    name: str
+    vertical: str
+    region: str = "US"
+    default_language: str = "en"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Contact(BaseModel):
     id: str
@@ -31,6 +51,7 @@ class Contact(BaseModel):
     email: Optional[str] = None
     whatsapp: Optional[str] = None
     consent_status: str = "unknown"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 class Conversation(BaseModel):
     id: str
@@ -60,3 +81,4 @@ class Appointment(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     status: str = "proposed"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
