@@ -26,24 +26,7 @@ class WorkflowState(str, Enum):
     CLOSED = "closed"
     BLOCKED = "blocked"
 
-class Tenant(BaseModel):
-    id: str
-    name: str
-    region: str = "US"
-    default_timezone: str = "UTC"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class Business(BaseModel):
-    id: str
-    tenant_id: str
-    name: str
-    vertical: str
-    region: str = "US"
-    default_language: str = "en"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class Contact(BaseModel):
-    id: str
+class ContactCreate(BaseModel):
     tenant_id: str
     business_id: str
     full_name: Optional[str] = None
@@ -51,34 +34,27 @@ class Contact(BaseModel):
     email: Optional[str] = None
     whatsapp: Optional[str] = None
     consent_status: str = "unknown"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
 
-class Conversation(BaseModel):
-    id: str
+class ConversationCreate(BaseModel):
     tenant_id: str
     business_id: str
     contact_id: str
     channel: Channel
-    workflow_state: WorkflowState = WorkflowState.NEW
     correlation_id: Optional[str] = None
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-class Message(BaseModel):
-    id: str
+class MessageCreate(BaseModel):
     conversation_id: str
-    sender: str  # "user" or "agent"
+    sender: str
     channel: Channel
     content: str
-    direction: str  # "inbound" or "outbound"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    direction: str
 
-class Appointment(BaseModel):
-    id: str
-    conversation_id: str
-    lead_id: Optional[str] = None
-    staff_id: Optional[str] = None
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-    status: str = "proposed"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+class InboundRequest(BaseModel):
+    tenant_id: str
+    business_id: str
+    contact_id: str
+    channel: str
+    text: Optional[str] = None
+    contact_name: Optional[str] = None
+    consent_status: str = "granted"
+    metadata: dict = Field(default_factory=dict)
