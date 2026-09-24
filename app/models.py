@@ -16,15 +16,21 @@ class Channel(str, Enum):
 
 class WorkflowState(str, Enum):
     NEW = "new"
+    INTAKE_RECEIVED = "intake_received"
     INTENT_CLASSIFIED = "intent_classified"
+    BUSINESS_HOURS_CHECKED = "business_hours_checked"
+    APPOINTMENT_PROPOSED = "appointment_proposed"
+    APPOINTMENT_CONFIRMED = "appointment_confirmed"
+    REMINDER_PREPARED = "reminder_prepared"
     QUALIFYING = "qualifying"
     SCHEDULE_REQUESTED = "schedule_requested"
-    APPOINTMENT_CONFIRMED = "appointment_confirmed"
     FOLLOW_UP_SENT = "follow_up_sent"
     ESCALATED = "escalated"
     RESOLVED = "resolved"
     CLOSED = "closed"
     BLOCKED = "blocked"
+    AFTER_HOURS_VOICEMAIL = "after_hours_voicemail"
+    CALLBACK_REQUESTED = "callback_requested"
 
 class ContactCreate(BaseModel):
     tenant_id: str
