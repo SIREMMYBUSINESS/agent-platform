@@ -32,6 +32,27 @@ class WorkflowState(str, Enum):
     AFTER_HOURS_VOICEMAIL = "after_hours_voicemail"
     CALLBACK_REQUESTED = "callback_requested"
 
+
+class LeadLifecycle(str, Enum):
+    IMPORTED = "imported"
+    ENRICHED = "enriched"
+    SCORED = "scored"
+    QUALIFIED = "qualified"
+    CONTACTED = "contacted"
+    RESPONDED = "responded"
+    BOOKED = "booked"
+    CONVERTED = "converted"
+    OPTED_OUT = "opted_out"
+    CLOSED = "closed"
+
+
+class CampaignStatus(str, Enum):
+    DRAFT = "draft"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELED = "canceled"
+
 class ContactCreate(BaseModel):
     tenant_id: str
     business_id: str

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     default_region: str = Field(default="US", min_length=1)
     # Trusted single-tenant routing context for the current inbound endpoint.
     inbound_tenant_id: str = Field(default="tenant-1", min_length=1)
+    # Optional trusted business scope for the lead-management API.
+    lead_business_id: str | None = None
 
     # Local service addresses only; credentials belong in the environment or .env.
     database_url: str = "postgresql://localhost:5432/agent_platform"
@@ -32,6 +34,14 @@ class Settings(BaseSettings):
         if not value:
             raise ValueError("must not be blank")
         return value
+
+    @field_validator("lead_business_id")
+    @classmethod
+    def validate_optional_lead_business_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
     @field_validator("log_level")
     @classmethod

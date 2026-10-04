@@ -18,6 +18,7 @@ from app.persistence.models import (
     EscalationTicket,
     EventLog,
     Message,
+    PolicyDecisionLog,
     RoutingRule,
     Service,
     Staff,
@@ -347,11 +348,15 @@ def test_policy_rejection_persists_inbound_and_blocked_workflow_without_reply(cl
         messages = session.exec(select(Message)).all()
         events = session.exec(select(EventLog)).all()
         states = session.exec(select(WorkflowStateRecord)).all()
+        policy_decisions = session.exec(select(PolicyDecisionLog)).all()
 
     assert conversation.workflow_state == "blocked"
     assert len(messages) == 1 and messages[0].direction == "inbound"
     assert "intake.received" in {item.event_type for item in events}
     assert [item.state for item in states] == ["intake_received", "blocked"]
+    assert len(policy_decisions) == 1
+    assert policy_decisions[0].decision == "block"
+    assert policy_decisions[0].country_code == "US"
 
 
 def test_agent_failure_rolls_back_all_inbound_persistence(client, monkeypatch):

@@ -23,6 +23,12 @@ EXPECTED_TABLES = {
     "tenants",
     "businesses",
     "contacts",
+    "contact_channel_consents",
+    "consent_records",
+    "policy_profiles",
+    "country_policies",
+    "suppression_rules",
+    "policy_decision_logs",
     "conversations",
     "messages",
     "workflow_state_records",
@@ -31,6 +37,19 @@ EXPECTED_TABLES = {
     "routing_rules",
     "services",
     "staff",
+    "leads",
+    "lead_sources",
+    "lead_enrichments",
+    "lead_scores",
+    "lead_state_transitions",
+    "lead_event_logs",
+    "campaigns",
+    "campaign_sequences",
+    "campaign_steps",
+    "campaign_enrollments",
+    "campaign_step_runs",
+    "campaign_event_logs",
+    "campaign_replies",
 }
 
 
@@ -41,7 +60,7 @@ def test_all_persistence_models_share_one_metadata_registry():
 
 
 def test_every_tenant_owned_table_carries_tenant_id():
-    for table_name in EXPECTED_TABLES - {"tenants"}:
+    for table_name in EXPECTED_TABLES - {"tenants", "country_policies"}:
         assert "tenant_id" in SQLModel.metadata.tables[table_name].columns
 
 
@@ -101,6 +120,12 @@ def test_persistence_timestamps_are_timezone_aware():
         "tenants": ("created_at", "updated_at"),
         "businesses": ("created_at", "updated_at"),
         "contacts": ("created_at", "updated_at"),
+        "contact_channel_consents": ("created_at", "updated_at"),
+        "consent_records": ("expires_at", "created_at"),
+        "policy_profiles": ("created_at", "updated_at"),
+        "country_policies": ("updated_at",),
+        "suppression_rules": ("created_at",),
+        "policy_decision_logs": ("created_at",),
         "conversations": ("started_at", "updated_at"),
         "messages": ("created_at",),
         "workflow_state_records": ("created_at",),
@@ -109,6 +134,19 @@ def test_persistence_timestamps_are_timezone_aware():
         "routing_rules": ("created_at",),
         "services": ("created_at",),
         "staff": ("created_at",),
+        "lead_sources": ("created_at",),
+        "leads": ("created_at", "updated_at"),
+        "lead_enrichments": ("created_at",),
+        "lead_scores": ("created_at",),
+        "lead_state_transitions": ("created_at",),
+        "lead_event_logs": ("created_at",),
+        "campaigns": ("created_at", "updated_at"),
+        "campaign_sequences": ("created_at",),
+        "campaign_steps": ("created_at",),
+        "campaign_enrollments": ("next_step_at", "enrolled_at", "updated_at"),
+        "campaign_step_runs": ("generated_at", "sent_at"),
+        "campaign_event_logs": ("created_at",),
+        "campaign_replies": ("created_at",),
     }
 
     for table_name, column_names in timestamp_columns.items():

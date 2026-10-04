@@ -10,6 +10,7 @@ from app.persistence.models import Business, Contact, Tenant
 from app.persistence.repositories import EntityNotFoundError
 from app.persistence.unit_of_work import UnitOfWork
 from app.policies import PolicyChecker
+from app.services.policy_service import PolicyService
 from app.schemas import InboundRequest
 from app.services.escalation_service import EscalationService
 from app.services.routing_service import RoutingService
@@ -41,6 +42,7 @@ class IntakeService:
         trusted_tenant_id: str,
         uow_factory: Callable[[], UnitOfWork],
         policy_checker: PolicyChecker | None = None,
+        policy_service: PolicyService | None = None,
         routing_service: RoutingService | None = None,
         scheduling_service: SchedulingService | None = None,
         escalation_service: EscalationService | None = None,
@@ -51,6 +53,7 @@ class IntakeService:
         self._trusted_tenant_id = trusted_tenant_id
         self._uow_factory = uow_factory
         self._policy = policy_checker or PolicyChecker()
+        self._policy_service = policy_service or PolicyService()
         self._routing = routing_service or RoutingService()
         self._scheduling = scheduling_service or SchedulingService(self._routing)
         self._escalation = escalation_service or EscalationService()
@@ -189,17 +192,26 @@ class IntakeService:
 
             # Consent is provisioned on Contact. The request field and metadata
             # are retained for contract compatibility but are not authoritative.
-            allowed, reason = self._policy.validate(
-                business.region, request.channel, contact.consent_status
+            decision = self._policy_service.evaluate(
+                uow, tenant=tenant, business=business, contact=contact,
+                channel=request.channel, direction="inbound",
             )
-            if not allowed:
+            if not decision.allowed:
+                reason = decision.reason_code
+                # Preserve the established human-readable response for the
+                # legacy consent gate while using trusted stored region data.
+                if decision.reason_code.startswith("consent_"):
+                    _, legacy_reason = self._policy.validate(
+                        business.region, request.channel, "unknown"
+                    )
+                    reason = legacy_reason
                 self._transition(
                     uow,
                     tenant_id=tenant_id,
                     business_id=business.id,
                     conversation_id=conversation.id,
                     state="blocked",
-                    context={"reason": reason},
+                    context={"reason": decision.reason_code},
                 )
                 return {
                     "success": False,

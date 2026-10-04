@@ -128,3 +128,107 @@ workflow state and event. This phase does not deliver SMS, voicemail, reminder,
 or staff alerts through external providers; outbound messages and alert intent
 are recorded for a later channel adapter. All conversation, message, workflow,
 appointment, escalation, and event writes share the Unit of Work transaction.
+
+## Phase 2A lead import
+
+Set `LEAD_BUSINESS_ID` to the provisioned business assigned to this deployment;
+the lead API uses it together with `INBOUND_TENANT_ID` as trusted ownership
+scope. If it is unset, lead endpoints return `503` while the rest of the API
+continues to start normally. Import requests contain a provisioned `contact_id`
+and a tenant assertion; the assertion must match configuration. The request
+does not accept a business ID, and the contact must belong to the configured
+business. Lead ownership is always derived from these trusted settings and
+database records.
+
+`POST /leads/import` creates a lead source when needed and persists lead,
+optional enrichment, score, lifecycle transitions, and events in one Unit of
+Work transaction. Enrichment runs through an adapter; the default adapter is a
+no-op. Provider failures are captured as an audit event and do not abort the
+import. Scores are deterministic (fit 40%, urgency 30%, intent 30%); priority
+scores of 65 or higher enter `qualified`. `GET /leads` and `GET /leads/{id}`
+are restricted to the same configured tenant/business. No outbound contact is
+sent in this phase.
+
+Lead schema changes are in Alembic revision `0004_lead_import`; apply with the
+same migration command above before using lead endpoints.
+
+## Phase 2B campaign orchestration
+
+Campaign endpoints use the same configured trusted tenant and
+`LEAD_BUSINESS_ID`; campaign requests cannot choose a business. `POST
+/campaigns` creates a draft campaign with an audience filter and an ordered,
+data-driven sequence. Templates accept `subject` and `body` strings and the
+supported placeholders `{{contact_name}}`, `{{business_name}}`, and
+`{{company_name}}`. Step delays are seconds from enrollment for the first step
+and from the prior step run for later steps.
+
+`POST /campaigns/{id}/enroll` accepts leads only when they belong to the
+configured tenant/business, are qualified, meet the minimum priority score,
+and have granted consent for the campaign channel. Duplicate enrollment is
+idempotent. `POST /campaigns/{id}/trigger` activates a draft campaign and
+processes currently due steps. It does not contact an external provider. For
+this orchestration-only phase, a `sent` step means the rendered message was
+accepted and persisted by the local campaign engine; `delivery_mode` is marked
+`simulated`. Eligibility failures create a skipped step record. Campaign,
+enrollment, step, state, and completion events are persisted transactionally.
+
+Campaign schema changes are in Alembic revision
+`0005_campaign_orchestration`; migrate to `head` before using campaign routes.
+
+## Phase 2C replies, opt-outs, and campaign analytics
+
+`POST /campaigns/{id}/replies` accepts a tenant assertion, enrollment ID, reply
+text, and an optional external message ID for idempotency. The campaign channel,
+lead, contact, tenant, and business are resolved from persisted campaign records
+and trusted configuration. Reply classification is deterministic and stores
+only the classification and processing metadata; the reply text is not retained.
+Classifications are `positive`, `negative`, `opt_out`, `book_appointment`,
+`callback`, and `unknown`.
+
+An opt-out creates or updates a channel-specific consent record to `revoked`,
+cancels that enrollment, moves the lead to `opted_out`, and records campaign and
+lead events in the same transaction. Future campaign eligibility checks honor
+the revocation. The existing contact-level consent remains a prerequisite, and
+region/channel policy checks still run before simulated campaign delivery.
+No email, SMS, or messaging provider is called by this phase.
+
+`GET /campaigns/{id}/analytics` aggregates sent step records, `step.opened`
+events, persisted classified replies, and `campaign.appointment.booked` events.
+Positive reply rate is a fraction from 0 to 1 and treats positive, appointment,
+and callback classifications as positive intent. Booking request classification
+does not itself book an appointment. Open and booked counts depend on those
+events being written by a trusted integration/application flow.
+
+The schema is in Alembic revision `0006_reply_optout_analytics`; apply migrations
+through `head` before using the new routes.
+
+## Phase 3 geo-aware compliance policy
+
+Compliance decisions use the provisioned business country/region, tenant
+configuration, policy profile, country policy, consent records, and suppression
+rules. Request `region`, metadata, and `consent_status` fields are never used as
+authority. Inbound policy is evaluated before intent classification and
+routing. Campaign enrollment and each simulated campaign step recheck policy,
+so a later revocation or suppression blocks subsequent work.
+
+Country rules are stored in `country_policies` and seeded by migration
+`0007_geo_policy_engine` for US, CA, EU, and an Africa safe-mode profile.
+Country-specific African policy must be provisioned by a trusted operator using
+the country's code before normal processing is allowed. When a specific
+`Business.country_code` is set, that exact country policy must exist; the engine
+does not silently apply a broader region's rules to an unknown country.
+Unrecognized regions fail closed. `policy_profiles.custom_rules` can add restrictions; an explicit
+override is allowed only for a configured business-level custom restriction,
+with a configured override policy, actor, and reason. Consent revocations,
+expired consent, and suppression rules cannot be overridden.
+
+`consent_records` preserves channel-specific grant, revocation, expiration, and
+unknown lifecycle entries. The legacy contact-wide `consent_status=granted`
+does not satisfy a channel-specific consent gate; only a trusted channel
+consent record does. Legacy denied/revoked contact state remains blocking.
+`suppression_rules` target provisioned lead or
+contact IDs and can apply to one channel or all channels. `policy_decision_logs`
+records each allow/block decision and any override attempt without storing raw
+reply text or contact details. There is no public endpoint for policy,
+consent, suppression, or override administration; those records must be
+provisioned through a trusted administrative path.

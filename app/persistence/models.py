@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
-from app.models import Channel, WorkflowState
+from app.models import Channel, LeadLifecycle, WorkflowState
 
 
 def utc_now() -> datetime:
@@ -63,6 +63,7 @@ class Business(SQLModel, table=True):
     name: str
     vertical: str
     region: str = "US"
+    country_code: Optional[str] = None
     timezone: str = "UTC"
     default_language: str = "en"
     created_at: datetime = Field(
@@ -109,6 +110,137 @@ class Contact(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+
+
+class ContactChannelConsent(SQLModel, table=True):
+    """Explicit channel-specific consent state, including durable revocation."""
+    __tablename__ = "contact_channel_consents"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_contact_channel_consents"),
+        UniqueConstraint("tenant_id", "business_id", "contact_id", "channel", name="uq_contact_channel_consent_scope"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_contact_channel_consents_tenant"),
+        ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"], ["contacts.tenant_id", "contacts.id", "contacts.business_id"], name="fk_contact_channel_consents_contact"),
+        CheckConstraint("channel IN ('email', 'sms', 'whatsapp')", name="ck_contact_channel_consents_channel"),
+        CheckConstraint("status IN ('granted', 'revoked')", name="ck_contact_channel_consents_status"),
+        Index("ix_contact_channel_consents_lookup", "tenant_id", "business_id", "contact_id", "channel"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    contact_id: str
+    channel: str
+    status: str = "granted"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class ConsentRecord(SQLModel, table=True):
+    """Append-only channel consent lifecycle record from a trusted source."""
+    __tablename__ = "consent_records"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_consent_records"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_consent_records_tenant"),
+        ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"], ["contacts.tenant_id", "contacts.id", "contacts.business_id"], name="fk_consent_records_contact"),
+        CheckConstraint("channel IN ('email', 'sms', 'whatsapp', 'call', 'chat', 'voicemail', 'phone')", name="ck_consent_records_channel"),
+        CheckConstraint("status IN ('granted', 'revoked', 'expired', 'unknown')", name="ck_consent_records_status"),
+        Index("ix_consent_records_current", "tenant_id", "business_id", "contact_id", "channel", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    contact_id: str
+    channel: str
+    status: str = "unknown"
+    source: str = "trusted_admin"
+    source_reference: Optional[str] = None
+    expires_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class PolicyProfile(SQLModel, table=True):
+    """Tenant/business policy controls; custom rules may only tighten defaults."""
+    __tablename__ = "policy_profiles"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_policy_profiles"),
+        UniqueConstraint("tenant_id", "business_id", name="uq_policy_profiles_business"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_policy_profiles_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_policy_profiles_business"),
+        CheckConstraint("mode IN ('enforce', 'safe_mode')", name="ck_policy_profiles_mode"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    mode: str = "enforce"
+    allow_manual_override: bool = False
+    custom_rules: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class CountryPolicy(SQLModel, table=True):
+    """Data-driven jurisdiction rules, provisioned by deployment/admin path."""
+    __tablename__ = "country_policies"
+    __table_args__ = (
+        PrimaryKeyConstraint("country_code", name="pk_country_policies"),
+        CheckConstraint("region_group IN ('US', 'CA', 'EU', 'AFRICA', 'UNKNOWN')", name="ck_country_policies_region_group"),
+    )
+    country_code: str = Field(primary_key=True)
+    region_group: str
+    rules: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    active: bool = True
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class SuppressionRule(SQLModel, table=True):
+    """Tenant-scoped suppression for one provisioned lead or contact."""
+    __tablename__ = "suppression_rules"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_suppression_rules"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_suppression_rules_tenant"),
+        ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"], ["contacts.tenant_id", "contacts.id", "contacts.business_id"], name="fk_suppression_rules_contact"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "lead_id"], ["leads.tenant_id", "leads.business_id", "leads.id"], name="fk_suppression_rules_lead"),
+        CheckConstraint("(contact_id IS NOT NULL AND lead_id IS NULL) OR (contact_id IS NULL AND lead_id IS NOT NULL)", name="ck_suppression_rules_single_subject"),
+        CheckConstraint("channel IS NULL OR channel IN ('email', 'sms', 'whatsapp', 'call', 'chat', 'voicemail', 'phone')", name="ck_suppression_rules_channel"),
+        Index("ix_suppression_rules_scope", "tenant_id", "business_id", "active", "channel"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    contact_id: str | None = None
+    lead_id: UUID | None = None
+    channel: str | None = None
+    reason_code: str
+    active: bool = True
+    created_by: str = "trusted_admin"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class PolicyDecisionLog(SQLModel, table=True):
+    """Audit record for each allow/block decision and any explicit override."""
+    __tablename__ = "policy_decision_logs"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_policy_decision_logs"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_policy_decision_logs_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_policy_decision_logs_business"),
+        CheckConstraint("direction IN ('inbound', 'outbound')", name="ck_policy_decision_logs_direction"),
+        Index("ix_policy_decision_logs_scope_created", "tenant_id", "business_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    direction: str
+    channel: str
+    country_code: str
+    resource_type: str
+    resource_id: str
+    decision: str
+    reason_code: str
+    consent_status: str = "unknown"
+    policy_source: str
+    overridden: bool = False
+    override_actor: str | None = None
+    override_reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
 
 
 class Conversation(SQLModel, table=True):
@@ -482,19 +614,323 @@ class RoutingRule(SQLModel, table=True):
     )
 
 
+class LeadSource(SQLModel, table=True):
+    __tablename__ = "lead_sources"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_lead_sources"),
+        UniqueConstraint("tenant_id", "business_id", "id", name="uq_lead_sources_tenant_business_id"),
+        UniqueConstraint("tenant_id", "business_id", "name", name="uq_lead_sources_tenant_business_name"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_lead_sources_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_lead_sources_tenant_business"),
+        Index("ix_lead_sources_tenant_business", "tenant_id", "business_id"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    name: str
+    source_type: str = "manual"
+    external_reference: Optional[str] = None
+    source_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class Lead(SQLModel, table=True):
+    __tablename__ = "leads"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_leads"),
+        CheckConstraint(
+            "status IN ('imported', 'enriched', 'scored', 'qualified', 'contacted', 'responded', 'booked', 'converted', 'opted_out', 'closed')",
+            name="ck_leads_status",
+        ),
+        UniqueConstraint("tenant_id", "business_id", "id", name="uq_leads_tenant_business_id"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_leads_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_leads_tenant_business"),
+        ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"], ["contacts.tenant_id", "contacts.id", "contacts.business_id"], name="fk_leads_tenant_contact_business"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "source_id"], ["lead_sources.tenant_id", "lead_sources.business_id", "lead_sources.id"], name="fk_leads_tenant_business_source"),
+        Index("ix_leads_tenant_business_created", "tenant_id", "business_id", "created_at"),
+        Index("ix_leads_tenant_business_status", "tenant_id", "business_id", "status"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    contact_id: str
+    source_id: UUID
+    status: str = LeadLifecycle.IMPORTED.value
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class LeadEnrichment(SQLModel, table=True):
+    __tablename__ = "lead_enrichments"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_lead_enrichments"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_lead_enrichments_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "lead_id"], ["leads.tenant_id", "leads.business_id", "leads.id"], name="fk_lead_enrichments_tenant_business_lead"),
+        Index("ix_lead_enrichments_tenant_lead_created", "tenant_id", "lead_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    lead_id: UUID
+    company_info: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    public_profile_data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    website_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    custom_business_context: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    lead_fit_signal: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    provider_name: str = "manual"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class LeadScore(SQLModel, table=True):
+    __tablename__ = "lead_scores"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_lead_scores"),
+        CheckConstraint("fit_score BETWEEN 0 AND 100", name="ck_lead_scores_fit_range"),
+        CheckConstraint("urgency_score BETWEEN 0 AND 100", name="ck_lead_scores_urgency_range"),
+        CheckConstraint("intent_score BETWEEN 0 AND 100", name="ck_lead_scores_intent_range"),
+        CheckConstraint("priority_score BETWEEN 0 AND 100", name="ck_lead_scores_priority_range"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_lead_scores_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "lead_id"], ["leads.tenant_id", "leads.business_id", "leads.id"], name="fk_lead_scores_tenant_business_lead"),
+        Index("ix_lead_scores_tenant_lead_created", "tenant_id", "lead_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    lead_id: UUID
+    fit_score: int
+    urgency_score: int
+    intent_score: int
+    priority_score: int
+    rationale: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class LeadStateTransition(SQLModel, table=True):
+    __tablename__ = "lead_state_transitions"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_lead_state_transitions"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_lead_state_transitions_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "lead_id"], ["leads.tenant_id", "leads.business_id", "leads.id"], name="fk_lead_state_transitions_tenant_business_lead"),
+        Index("ix_lead_state_transitions_tenant_lead_created", "tenant_id", "lead_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    lead_id: UUID
+    from_state: Optional[str] = None
+    to_state: str
+    context: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class LeadEventLog(SQLModel, table=True):
+    __tablename__ = "lead_event_logs"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_lead_event_logs"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_lead_event_logs_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "lead_id"], ["leads.tenant_id", "leads.business_id", "leads.id"], name="fk_lead_event_logs_tenant_business_lead"),
+        Index("ix_lead_event_logs_tenant_lead_created", "tenant_id", "lead_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    lead_id: UUID
+    event_type: str
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    source: str = "lead_import_service"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class Campaign(SQLModel, table=True):
+    __tablename__ = "campaigns"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_campaigns"),
+        CheckConstraint("status IN ('draft', 'active', 'paused', 'completed', 'canceled')", name="ck_campaigns_status"),
+        CheckConstraint("channel IN ('email', 'sms', 'whatsapp')", name="ck_campaigns_channel"),
+        UniqueConstraint("tenant_id", "business_id", "id", name="uq_campaigns_tenant_business_id"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaigns_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_campaigns_tenant_business"),
+        Index("ix_campaigns_tenant_business_status", "tenant_id", "business_id", "status"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    name: str
+    channel: str
+    audience_filters: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    status: str = "draft"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class CampaignSequence(SQLModel, table=True):
+    __tablename__ = "campaign_sequences"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_campaign_sequences"),
+        UniqueConstraint("tenant_id", "business_id", "id", name="uq_campaign_sequences_tenant_business_id"),
+        UniqueConstraint("tenant_id", "business_id", "campaign_id", "sequence_order", name="uq_campaign_sequences_order"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaign_sequences_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "campaign_id"], ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"], name="fk_campaign_sequences_tenant_campaign"),
+        Index("ix_campaign_sequences_tenant_campaign_order", "tenant_id", "campaign_id", "sequence_order"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    campaign_id: UUID
+    name: str = "default"
+    sequence_order: int = 0
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class CampaignStep(SQLModel, table=True):
+    __tablename__ = "campaign_steps"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_campaign_steps"),
+        CheckConstraint("step_order >= 0", name="ck_campaign_steps_order_nonnegative"),
+        CheckConstraint("delay_seconds >= 0", name="ck_campaign_steps_delay_nonnegative"),
+        UniqueConstraint("tenant_id", "business_id", "sequence_id", "step_order", name="uq_campaign_steps_order"),
+        UniqueConstraint("tenant_id", "business_id", "id", name="uq_campaign_steps_tenant_business_id"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaign_steps_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "sequence_id"], ["campaign_sequences.tenant_id", "campaign_sequences.business_id", "campaign_sequences.id"], name="fk_campaign_steps_tenant_sequence"),
+        Index("ix_campaign_steps_tenant_sequence_order", "tenant_id", "sequence_id", "step_order"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    sequence_id: UUID
+    step_order: int
+    delay_seconds: int = 0
+    template_data: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class CampaignEnrollment(SQLModel, table=True):
+    __tablename__ = "campaign_enrollments"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_campaign_enrollments"),
+        CheckConstraint("status IN ('active', 'completed', 'skipped', 'canceled')", name="ck_campaign_enrollments_status"),
+        UniqueConstraint("tenant_id", "business_id", "campaign_id", "lead_id", name="uq_campaign_enrollments_lead"),
+        UniqueConstraint("tenant_id", "business_id", "id", name="uq_campaign_enrollments_tenant_business_id"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaign_enrollments_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "campaign_id"], ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"], name="fk_campaign_enrollments_tenant_campaign"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "lead_id"], ["leads.tenant_id", "leads.business_id", "leads.id"], name="fk_campaign_enrollments_tenant_lead"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "sequence_id"], ["campaign_sequences.tenant_id", "campaign_sequences.business_id", "campaign_sequences.id"], name="fk_campaign_enrollments_tenant_sequence"),
+        Index("ix_campaign_enrollments_tenant_campaign_status_due", "tenant_id", "campaign_id", "status", "next_step_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    campaign_id: UUID
+    sequence_id: UUID
+    lead_id: UUID
+    status: str = "active"
+    current_step_order: int = -1
+    next_step_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    enrolled_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class CampaignStepRun(SQLModel, table=True):
+    __tablename__ = "campaign_step_runs"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_campaign_step_runs"),
+        CheckConstraint("status IN ('sent', 'skipped')", name="ck_campaign_step_runs_status"),
+        UniqueConstraint("tenant_id", "business_id", "enrollment_id", "step_id", name="uq_campaign_step_runs_enrollment_step"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaign_step_runs_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "enrollment_id"], ["campaign_enrollments.tenant_id", "campaign_enrollments.business_id", "campaign_enrollments.id"], name="fk_campaign_step_runs_tenant_enrollment"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "step_id"], ["campaign_steps.tenant_id", "campaign_steps.business_id", "campaign_steps.id"], name="fk_campaign_step_runs_tenant_step"),
+        Index("ix_campaign_step_runs_tenant_enrollment", "tenant_id", "enrollment_id"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    enrollment_id: UUID
+    step_id: UUID
+    step_order: int
+    status: str
+    rendered_content: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    skip_reason: Optional[str] = None
+    generated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    sent_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+
+
+class CampaignEventLog(SQLModel, table=True):
+    __tablename__ = "campaign_event_logs"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_campaign_event_logs"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaign_event_logs_tenant_id_tenants"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "campaign_id"], ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"], name="fk_campaign_event_logs_tenant_campaign"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "enrollment_id"], ["campaign_enrollments.tenant_id", "campaign_enrollments.business_id", "campaign_enrollments.id"], name="fk_campaign_event_logs_tenant_enrollment"),
+        Index("ix_campaign_event_logs_tenant_campaign_created", "tenant_id", "campaign_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    campaign_id: UUID
+    enrollment_id: UUID | None = None
+    event_type: str
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class CampaignReply(SQLModel, table=True):
+    """Reply classification and processing metadata; raw reply text is not retained."""
+    __tablename__ = "campaign_replies"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_campaign_replies"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaign_replies_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "campaign_id"], ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"], name="fk_campaign_replies_campaign"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "enrollment_id"], ["campaign_enrollments.tenant_id", "campaign_enrollments.business_id", "campaign_enrollments.id"], name="fk_campaign_replies_enrollment"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "lead_id"], ["leads.tenant_id", "leads.business_id", "leads.id"], name="fk_campaign_replies_lead"),
+        UniqueConstraint("tenant_id", "business_id", "campaign_id", "external_message_id", name="uq_campaign_replies_external_message"),
+        CheckConstraint("classification IN ('positive', 'negative', 'opt_out', 'book_appointment', 'callback', 'unknown')", name="ck_campaign_replies_classification"),
+        Index("ix_campaign_replies_tenant_campaign_created", "tenant_id", "business_id", "campaign_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    campaign_id: UUID
+    enrollment_id: UUID
+    lead_id: UUID
+    channel: str
+    classification: str
+    external_message_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
 __all__ = [
     "Appointment",
     "AppointmentSlot",
     "Business",
+    "Campaign",
+    "CampaignEnrollment",
+    "CampaignEventLog",
+    "CampaignReply",
+    "CampaignSequence",
+    "CampaignStep",
+    "CampaignStepRun",
     "Channel",
     "Contact",
+    "ContactChannelConsent",
+    "ConsentRecord",
+    "CountryPolicy",
     "Conversation",
     "EventLog",
     "EscalationTicket",
+    "Lead",
+    "LeadEnrichment",
+    "LeadEventLog",
+    "LeadLifecycle",
+    "LeadScore",
+    "LeadSource",
+    "LeadStateTransition",
     "Message",
+    "PolicyDecisionLog",
+    "PolicyProfile",
     "RoutingRule",
     "Service",
     "Staff",
+    "SuppressionRule",
     "Tenant",
     "WorkflowState",
     "WorkflowStateRecord",

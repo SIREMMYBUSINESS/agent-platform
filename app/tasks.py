@@ -7,6 +7,7 @@ from app.agents import ReceptionistAgent
 from app.events import EventEnvelope, InMemoryEventBus
 from app.policies import PolicyChecker
 from app.workflows import WorkflowEngine
+from app.config import settings
 
 class TaskDispatcher:
     def __init__(self):
@@ -20,8 +21,11 @@ class TaskDispatcher:
         tenant_id = payload["tenant_id"]
         business_id = payload["business_id"]
         channel = payload["channel"]
-        consent_status = payload.get("consent_status", "granted")
-        region = payload.get("metadata", {}).get("region", "US")
+        # This legacy in-memory dispatcher has no provisioned consent record.
+        # Treat its policy input as unknown and use deployment configuration;
+        # never trust caller consent or region metadata.
+        consent_status = "unknown"
+        region = settings.default_region
 
         workflow = self.workflow_engine.create_workflow(conversation_id, tenant_id, business_id)
 

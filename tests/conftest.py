@@ -10,6 +10,7 @@ os.environ.update(
         "LOG_LEVEL": "INFO",
         "DEFAULT_REGION": "US",
         "INBOUND_TENANT_ID": "tenant-1",
+        "LEAD_BUSINESS_ID": "business-1",
         "DATABASE_URL": "postgresql://localhost:5432/agent_platform",
         "REDIS_URL": "redis://localhost:6379/0",
     }

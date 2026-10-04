@@ -21,6 +21,31 @@ from app.persistence.repositories import (
     SQLTenantRepository,
     SQLWorkflowRepository,
 )
+from app.persistence.lead_repositories import (
+    SQLLeadEnrichmentRepository,
+    SQLLeadEventRepository,
+    SQLLeadRepository,
+    SQLLeadScoreRepository,
+    SQLLeadSourceRepository,
+    SQLLeadTransitionRepository,
+)
+from app.persistence.campaign_repositories import (
+    SQLCampaignEnrollmentRepository,
+    SQLCampaignEventRepository,
+    SQLCampaignRepository,
+    SQLCampaignSequenceRepository,
+    SQLCampaignStepRepository,
+    SQLCampaignStepRunRepository,
+)
+from app.persistence.reply_repositories import (
+    SQLCampaignAnalyticsRepository, SQLCampaignReplyEnrollmentRepository,
+    SQLCampaignReplyRepository, SQLContactChannelConsentRepository,
+)
+from app.persistence.policy_repositories import (
+    SQLConsentRecordRepository, SQLCountryPolicyRepository,
+    SQLPolicyDecisionRepository, SQLPolicyProfileRepository,
+    SQLSuppressionRepository,
+)
 
 
 class UnitOfWork:
@@ -50,6 +75,27 @@ class UnitOfWork:
         self.routing_rules: SQLRoutingRuleRepository | None = None
         self.services: SQLServiceRepository | None = None
         self.staff: SQLStaffRepository | None = None
+        self.lead_sources: SQLLeadSourceRepository | None = None
+        self.leads: SQLLeadRepository | None = None
+        self.lead_enrichments: SQLLeadEnrichmentRepository | None = None
+        self.lead_scores: SQLLeadScoreRepository | None = None
+        self.lead_transitions: SQLLeadTransitionRepository | None = None
+        self.lead_events: SQLLeadEventRepository | None = None
+        self.campaigns: SQLCampaignRepository | None = None
+        self.campaign_sequences: SQLCampaignSequenceRepository | None = None
+        self.campaign_steps: SQLCampaignStepRepository | None = None
+        self.campaign_enrollments: SQLCampaignEnrollmentRepository | None = None
+        self.campaign_step_runs: SQLCampaignStepRunRepository | None = None
+        self.campaign_events: SQLCampaignEventRepository | None = None
+        self.contact_channel_consents: SQLContactChannelConsentRepository | None = None
+        self.campaign_replies: SQLCampaignReplyRepository | None = None
+        self.campaign_reply_enrollments: SQLCampaignReplyEnrollmentRepository | None = None
+        self.campaign_analytics: SQLCampaignAnalyticsRepository | None = None
+        self.consent_records: SQLConsentRecordRepository | None = None
+        self.country_policies: SQLCountryPolicyRepository | None = None
+        self.policy_profiles: SQLPolicyProfileRepository | None = None
+        self.suppressions: SQLSuppressionRepository | None = None
+        self.policy_decisions: SQLPolicyDecisionRepository | None = None
 
     @property
     def session(self) -> Session:
@@ -77,6 +123,27 @@ class UnitOfWork:
             self.routing_rules = SQLRoutingRuleRepository(self._session)
             self.services = SQLServiceRepository(self._session)
             self.staff = SQLStaffRepository(self._session)
+            self.lead_sources = SQLLeadSourceRepository(self._session)
+            self.leads = SQLLeadRepository(self._session)
+            self.lead_enrichments = SQLLeadEnrichmentRepository(self._session)
+            self.lead_scores = SQLLeadScoreRepository(self._session)
+            self.lead_transitions = SQLLeadTransitionRepository(self._session)
+            self.lead_events = SQLLeadEventRepository(self._session)
+            self.campaigns = SQLCampaignRepository(self._session)
+            self.campaign_sequences = SQLCampaignSequenceRepository(self._session)
+            self.campaign_steps = SQLCampaignStepRepository(self._session)
+            self.campaign_enrollments = SQLCampaignEnrollmentRepository(self._session)
+            self.campaign_step_runs = SQLCampaignStepRunRepository(self._session)
+            self.campaign_events = SQLCampaignEventRepository(self._session)
+            self.contact_channel_consents = SQLContactChannelConsentRepository(self._session)
+            self.campaign_replies = SQLCampaignReplyRepository(self._session)
+            self.campaign_reply_enrollments = SQLCampaignReplyEnrollmentRepository(self._session)
+            self.campaign_analytics = SQLCampaignAnalyticsRepository(self._session)
+            self.consent_records = SQLConsentRecordRepository(self._session)
+            self.country_policies = SQLCountryPolicyRepository(self._session)
+            self.policy_profiles = SQLPolicyProfileRepository(self._session)
+            self.suppressions = SQLSuppressionRepository(self._session)
+            self.policy_decisions = SQLPolicyDecisionRepository(self._session)
         except BaseException:
             self.close()
             raise

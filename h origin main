@@ -1,0 +1,35 @@
+warning: in the working copy of '.env.example', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/app_db_models_Version2.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/config.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/main.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/models.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/persistence/models.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/persistence/unit_of_work.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/schemas.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/services/intake_service.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'app/tasks.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/conftest.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_inbound.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_inbound_service.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_migrations.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_persistence_schema.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_postgres_integration.py', LF will be replaced by CRLF the next time Git touches it
+ .env.example                       |   1 [32m+[m
+ README.md                          | 104 [32m+++++++++[m
+ app/app_db_models_Version2.py      |  24 [32m++[m
+ app/config.py                      |  10 [32m+[m
+ app/main.py                        |  73 [32m+++++++[m
+ app/models.py                      |  21 [32m++[m
+ app/persistence/models.py          | 438 [32m++++++++++++++++++++++++++++++++++++[m[31m-[m
+ app/persistence/unit_of_work.py    |  67 [32m++++++[m
+ app/schemas.py                     | 224 [32m++++++++++++++++++[m[31m-[m
+ app/services/intake_service.py     |  20 [32m+[m[31m-[m
+ app/tasks.py                       |   8 [32m+[m[31m-[m
+ tests/conftest.py                  |   1 [32m+[m
+ tests/test_inbound.py              |   5 [32m+[m
+ tests/test_inbound_service.py      |   6 [32m+[m
+ tests/test_migrations.py           |  19 [32m++[m
+ tests/test_persistence_schema.py   |  40 [32m+++[m[31m-[m
+ tests/test_postgres_integration.py |   5 [32m+[m
+ 17 files changed, 1057 insertions(+), 9 deletions(-)

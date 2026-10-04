@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 from app.persistence.models import (
     Appointment,
     Business,
+    ConsentRecord,
     Contact,
     Conversation,
     EventLog,
@@ -105,6 +106,10 @@ def test_postgres_migrations_and_inbound_persistence(migrated_postgres_schema):
         session.add(Contact(
             id=contact_id, tenant_id=tenant_id, business_id=business_id,
             full_name="Integration contact",
+        ))
+        session.add(ConsentRecord(
+            tenant_id=tenant_id, business_id=business_id, contact_id=contact_id,
+            channel="email", status="granted", source="trusted_integration_fixture",
         ))
         session.commit()
 

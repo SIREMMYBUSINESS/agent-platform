@@ -24,6 +24,12 @@ class FakeRepositories:
         self.tenants = self.businesses = self.contacts = self
         self.conversations = self.messages = self.workflows = self.events = self
         self.routing_rules = self
+        self.consent_records = SimpleNamespace(current=lambda **kwargs: None)
+        self.contact_channel_consents = SimpleNamespace(get=lambda **kwargs: None)
+        self.policy_profiles = SimpleNamespace(get=lambda **kwargs: None)
+        self.country_policies = SimpleNamespace(get=lambda **kwargs: None)
+        self.suppressions = SimpleNamespace(find_active=lambda **kwargs: None)
+        self.policy_decisions = SimpleNamespace(add=lambda **kwargs: self.calls.append(("policy_decision", kwargs)))
 
     def get(self, **kwargs):
         self.calls.append(("get", kwargs))
