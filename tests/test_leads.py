@@ -1,3 +1,6 @@
+from app.auth.dependencies import get_authenticated_principal
+from app.security import AuthenticatedPrincipal
+from datetime import datetime as AuthDatetime, UTC as AUTH_UTC
 from uuid import UUID
 
 import pytest
@@ -75,6 +78,11 @@ def lead_client():
         enrichment_adapter=FixedEnrichment(),
     )
     app.dependency_overrides[get_lead_import_service] = lambda: service
+    app.dependency_overrides[get_authenticated_principal] = lambda: AuthenticatedPrincipal(
+        "test-identity", "trusted-tenant",
+        ("inbound_writer", "lead_reader", "lead_writer", "campaign_reader", "campaign_writer"),
+        "test", AuthDatetime.now(AUTH_UTC),
+    )
     try:
         with TestClient(app) as client:
             yield client, engine, service

@@ -1,3 +1,6 @@
+from app.auth.dependencies import get_authenticated_principal
+from app.security import AuthenticatedPrincipal
+from datetime import datetime as AuthDatetime, UTC as AUTH_UTC
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -85,6 +88,11 @@ def campaign_client():
     app.dependency_overrides[get_enrollment_service] = lambda: enrollment_service
     app.dependency_overrides[get_reply_service] = lambda: reply_service
     app.dependency_overrides[get_campaign_analytics_service] = lambda: analytics_service
+    app.dependency_overrides[get_authenticated_principal] = lambda: AuthenticatedPrincipal(
+        "test-identity", "tenant-a",
+        ("inbound_writer", "lead_reader", "lead_writer", "campaign_reader", "campaign_writer"),
+        "test", AuthDatetime.now(AUTH_UTC),
+    )
     try:
         with TestClient(app) as client:
             yield client, engine, lead_id

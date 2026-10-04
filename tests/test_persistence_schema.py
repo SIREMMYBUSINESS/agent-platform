@@ -18,6 +18,8 @@ from app.persistence.models import (
 
 
 EXPECTED_TABLES = {
+    "api_keys",
+    "api_key_grants",
     "appointments",
     "appointment_slots",
     "tenants",

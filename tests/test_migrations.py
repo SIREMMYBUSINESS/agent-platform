@@ -12,6 +12,8 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
 
     sql = capsys.readouterr().out.lower()
     for table_name in (
+        "api_keys",
+        "api_key_grants",
         "appointments",
         "appointment_slots",
         "tenants",
@@ -51,3 +53,13 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
     assert "timestamp with time zone" in sql
     assert "fk_conversations_tenant_contact_business" in sql
     assert "uq_conversations_tenant_id" in sql
+    assert "fk_api_key_grants_key" in sql
+    assert "uq_api_keys_hash" in sql
+
+
+def test_api_key_migration_downgrade_renders_in_dependency_order(capsys):
+    repository_root = Path(__file__).resolve().parents[1]
+    config = Config(str(repository_root / "alembic.ini"))
+    command.downgrade(config, "0008_api_key_auth:0007_geo_policy_engine", sql=True)
+    sql = capsys.readouterr().out.lower()
+    assert sql.index("drop table api_key_grants") < sql.index("drop table api_keys")

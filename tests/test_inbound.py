@@ -1,3 +1,6 @@
+from app.auth.dependencies import get_authenticated_principal
+from app.security import AuthenticatedPrincipal
+from datetime import datetime as AuthDatetime, UTC as AUTH_UTC
 from copy import deepcopy
 from datetime import UTC, datetime, time, timedelta
 from uuid import uuid4
@@ -86,6 +89,11 @@ def client():
     app.dependency_overrides[get_inbound_service] = lambda: service
     app.state.inbound_test_engine = engine
     app.state.inbound_test_service = service
+    app.dependency_overrides[get_authenticated_principal] = lambda: AuthenticatedPrincipal(
+        "test-identity", "tenant-1",
+        ("inbound_writer", "lead_reader", "lead_writer", "campaign_reader", "campaign_writer"),
+        "test", AuthDatetime.now(AUTH_UTC),
+    )
     try:
         with TestClient(app) as test_client:
             yield test_client
