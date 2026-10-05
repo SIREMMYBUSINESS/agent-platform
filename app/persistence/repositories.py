@@ -68,11 +68,16 @@ class ContactRepository(Protocol):
 
 class ConversationRepository(Protocol):
     def get(self, *, tenant_id: str, conversation_id: UUID | str) -> Conversation | None: ...
+    def get_for_update(self, *, tenant_id: str, conversation_id: UUID | str) -> Conversation | None: ...
     def create(
         self, *, tenant_id: str, business_id: str, contact_id: str, channel: str,
         correlation_id: str | None = None,
     ) -> Conversation: ...
     def list_for_contact(self, *, tenant_id: str, contact_id: str) -> list[Conversation]: ...
+    def list(self, *, tenant_id: str, offset: int, limit: int) -> list[Conversation]: ...
+    def list_for_business(self, *, tenant_id: str, business_id: str, limit: int = 500) -> list[Conversation]: ...
+    def change(self, *, tenant_id: str, conversation_id: UUID, expected_version: int,
+               status: str) -> Conversation | None: ...
 
 
 class MessageRepository(Protocol):
@@ -220,6 +225,16 @@ class SQLContactRepository:
         statement = select(Contact).where(Contact.tenant_id == tenant_id, Contact.id == contact_id)
         return _database_call(lambda: self._session.exec(statement).first())
 
+    def list_for_business(self, *, tenant_id: str, business_id: str,
+                          limit: int = 500) -> list[Contact]:
+        _require_tenant(tenant_id)
+        if not 1 <= limit <= 2000:
+            raise ValueError("limit must be between 1 and 2000")
+        statement = (select(Contact).where(
+            Contact.tenant_id == tenant_id, Contact.business_id == business_id,
+        ).order_by(Contact.id).limit(limit))
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
 
 class SQLConversationRepository:
     def __init__(self, session: Session) -> None:
@@ -232,6 +247,50 @@ class SQLConversationRepository:
             Conversation.tenant_id == tenant_id, Conversation.id == conversation_uuid
         )
         return _database_call(lambda: self._session.exec(statement).first())
+
+    def get_for_update(self, *, tenant_id: str,
+                       conversation_id: UUID | str) -> Conversation | None:
+        _require_tenant(tenant_id)
+        statement = select(Conversation).where(
+            Conversation.tenant_id == tenant_id, Conversation.id == _uuid(conversation_id)
+        ).with_for_update()
+        return _database_call(lambda: self._session.exec(statement).first())
+
+    def list(self, *, tenant_id: str, offset: int = 0, limit: int = 50) -> list[Conversation]:
+        _require_tenant(tenant_id)
+        if offset < 0 or not 1 <= limit <= 100:
+            raise ValueError("Invalid pagination")
+        statement = (select(Conversation).where(Conversation.tenant_id == tenant_id)
+                     .order_by(Conversation.started_at, Conversation.id).offset(offset).limit(limit))
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def list_for_business(self, *, tenant_id: str, business_id: str,
+                          limit: int = 500) -> list[Conversation]:
+        _require_tenant(tenant_id)
+        if not 1 <= limit <= 2000:
+            raise ValueError("limit must be between 1 and 2000")
+        statement = select(Conversation).where(
+            Conversation.tenant_id == tenant_id, Conversation.business_id == business_id,
+            Conversation.status != "closed",
+        ).order_by(Conversation.updated_at, Conversation.id).limit(limit)
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def change(self, *, tenant_id: str, conversation_id: UUID, expected_version: int,
+               status: str) -> Conversation | None:
+        """Atomically claim a management update; None means absent or stale scope."""
+        _require_tenant(tenant_id)
+        def persist():
+            result = self._session.execute(update(Conversation).where(
+                Conversation.tenant_id == tenant_id, Conversation.id == _uuid(conversation_id),
+                Conversation.version == expected_version,
+            ).values(status=status, version=expected_version + 1, updated_at=datetime.now(UTC)))
+            if result.rowcount != 1:
+                return None
+            self._session.flush()
+            row = self.get(tenant_id=tenant_id, conversation_id=conversation_id)
+            self._session.refresh(row)
+            return row
+        return _database_call(persist)
 
     def create(
         self, *, tenant_id: str, business_id: str, contact_id: str, channel: str,

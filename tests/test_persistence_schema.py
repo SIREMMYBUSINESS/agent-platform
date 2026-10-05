@@ -18,6 +18,9 @@ from app.persistence.models import (
 
 
 EXPECTED_TABLES = {
+    "workflow_executions",
+    "follow_up_tasks",
+    "conversation_assignments",
     "api_keys",
     "api_key_grants",
     "appointments",
@@ -52,6 +55,8 @@ EXPECTED_TABLES = {
     "campaign_step_runs",
     "campaign_event_logs",
     "campaign_replies",
+    "outreach_messages",
+    "crm_sync_records",
 }
 
 
@@ -117,6 +122,7 @@ def test_tenant_consistency_is_encoded_as_composite_foreign_keys():
 
 def test_persistence_timestamps_are_timezone_aware():
     timestamp_columns = {
+        "conversation_assignments": ("updated_at",),
         "appointments": ("starts_at", "ends_at", "created_at", "updated_at"),
         "appointment_slots": ("starts_at", "ends_at", "created_at"),
         "tenants": ("created_at", "updated_at"),
@@ -131,6 +137,8 @@ def test_persistence_timestamps_are_timezone_aware():
         "conversations": ("started_at", "updated_at"),
         "messages": ("created_at",),
         "workflow_state_records": ("created_at",),
+        "workflow_executions": ("created_at", "updated_at", "completed_at"),
+        "follow_up_tasks": ("scheduled_at", "created_at"),
         "event_logs": ("created_at",),
         "escalation_tickets": ("created_at",),
         "routing_rules": ("created_at",),
@@ -149,6 +157,7 @@ def test_persistence_timestamps_are_timezone_aware():
         "campaign_step_runs": ("generated_at", "sent_at"),
         "campaign_event_logs": ("created_at",),
         "campaign_replies": ("created_at",),
+        "outreach_messages": ("scheduled_at", "sent_at", "delivered_at", "failed_at", "created_at", "updated_at"),
     }
 
     for table_name, column_names in timestamp_columns.items():

@@ -10,6 +10,8 @@ from uuid import UUID
 from app.persistence.unit_of_work import UnitOfWork
 from app.schemas import CampaignCreateRequest
 from app.services.campaign_sequence_service import CampaignSequenceService
+from datetime import UTC, datetime
+from app.security import AuthenticatedPrincipal
 
 
 class CampaignTenantMismatchError(Exception):
@@ -42,11 +44,12 @@ class CampaignDetails:
 
 
 CAMPAIGN_TRANSITIONS = {
-    "draft": {"active", "canceled"},
-    "active": {"paused", "completed", "canceled"},
-    "paused": {"active", "canceled"},
+    "draft": {"active", "canceled", "archived"},
+    "active": {"paused", "completed", "canceled", "archived"},
+    "paused": {"active", "canceled", "archived"},
     "completed": set(),
-    "canceled": set(),
+    "canceled": {"archived"},
+    "archived": set(),
 }
 
 
@@ -61,13 +64,20 @@ class CampaignService:
         self._uow_factory = uow_factory
         self.sequences = sequence_service or CampaignSequenceService()
 
-    def _scope(self) -> tuple[str, str]:
+    def _principal_scope(self, principal: AuthenticatedPrincipal, *, role: str) -> tuple[str, str]:
+        now = datetime.now(UTC)
+        if (not isinstance(principal, AuthenticatedPrincipal)
+                or principal.issued_at > now
+                or principal.expires_at is not None and principal.expires_at <= now
+                or role not in principal.roles):
+            raise CampaignTenantMismatchError(f"campaign {role.removeprefix('campaign_')} principal required")
         if not self.business_id:
             raise CampaignConfigurationError("LEAD_BUSINESS_ID must be configured for campaign APIs")
-        return self.tenant_id, self.business_id
+        return principal.tenant_id, self.business_id
 
-    def create(self, request: CampaignCreateRequest) -> CampaignDetails:
-        tenant_id, business_id = self._scope()
+    def create(self, request: CampaignCreateRequest,
+               principal: AuthenticatedPrincipal) -> CampaignDetails:
+        tenant_id, business_id = self._principal_scope(principal, role="campaign_writer")
         if request.tenant_id != tenant_id:
             raise CampaignTenantMismatchError("request tenant does not match trusted tenant")
         with self._uow_factory() as uow:
@@ -87,19 +97,28 @@ class CampaignService:
             created_event = uow.campaign_events.add(
                 tenant_id=tenant_id, business_id=business_id,
                 campaign_id=campaign.id, event_type="campaign.created",
-                payload={"channel": campaign.channel, "sequence_id": str(sequence.id)},
+                payload={"channel": campaign.channel, "sequence_id": str(sequence.id),
+                         "actor_id": principal.principal_id, "domain_event": "CampaignCreated"},
+            )
+            created_domain_event = uow.campaign_events.add(
+                tenant_id=tenant_id, business_id=business_id,
+                campaign_id=campaign.id, event_type="CampaignCreated",
+                payload={"actor_id": principal.principal_id,
+                         "channel": campaign.channel},
             )
             return CampaignDetails(
                 campaign=self._snapshot(campaign),
                 sequences=[(self._snapshot(sequence), [self._snapshot(row) for row in self.sequences.steps_for(
                     uow, tenant_id=tenant_id, business_id=business_id, sequence_id=sequence.id
                 )])],
-                enrollments=[], events=[self._snapshot(created_event)],
+                enrollments=[], events=[self._snapshot(created_event)] + (
+                    [self._snapshot(created_domain_event)] if created_domain_event else []
+                ),
                 step_runs=[],
             )
 
-    def get(self, *, campaign_id: UUID) -> CampaignDetails:
-        tenant_id, business_id = self._scope()
+    def get(self, principal: AuthenticatedPrincipal, *, campaign_id: UUID) -> CampaignDetails:
+        tenant_id, business_id = self._principal_scope(principal, role="campaign_reader")
         with self._uow_factory() as uow:
             campaign = uow.campaigns.get(tenant_id=tenant_id, business_id=business_id, campaign_id=campaign_id)
             if campaign is None:
@@ -149,6 +168,39 @@ class CampaignService:
                 campaign_id=campaign.id, event_type="campaign.completed", payload={},
             )
         return updated
+
+    def activate(self, principal: AuthenticatedPrincipal, campaign_id: UUID) -> Any:
+        return self._change_status(principal, campaign_id, "active")
+
+    def pause(self, principal: AuthenticatedPrincipal, campaign_id: UUID) -> Any:
+        return self._change_status(principal, campaign_id, "paused")
+
+    def archive(self, principal: AuthenticatedPrincipal, campaign_id: UUID) -> Any:
+        return self._change_status(principal, campaign_id, "archived")
+
+    def _change_status(self, principal: AuthenticatedPrincipal, campaign_id: UUID,
+                       new_status: str) -> Any:
+        tenant_id, business_id = self._principal_scope(principal, role="campaign_writer")
+        with self._uow_factory() as uow:
+            campaign = uow.campaigns.get(tenant_id=tenant_id, business_id=business_id,
+                                         campaign_id=campaign_id)
+            if campaign is None:
+                raise CampaignNotFoundError("campaign not found")
+            if campaign.status == new_status:
+                return self._snapshot(campaign)
+            previous = campaign.status
+            updated = self.transition(uow=uow, tenant_id=tenant_id,
+                                      business_id=business_id, campaign=campaign,
+                                      new_status=new_status)
+            event_name = {"active": "CampaignActivated"}.get(new_status)
+            if event_name:
+                uow.campaign_events.add(
+                    tenant_id=tenant_id, business_id=business_id,
+                    campaign_id=campaign.id, event_type=event_name,
+                    payload={"actor_id": principal.principal_id,
+                             "from": previous, "to": new_status},
+                )
+            return self._snapshot(updated)
 
 
 __all__ = [

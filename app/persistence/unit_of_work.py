@@ -5,6 +5,10 @@ from types import TracebackType
 from typing import Self
 
 from sqlmodel import Session
+from app.persistence.auth_repositories import SQLApiKeyRepository, SQLApiKeyGrantRepository
+from app.persistence.conversation_repositories import SQLConversationAssignmentRepository
+from app.persistence.workflow_repositories import SQLWorkflowExecutionRepository, SQLFollowUpRepository
+from app.persistence.crm_repositories import SQLCRMContactRepository, SQLCRMSyncRepository
 
 from app.persistence.repositories import (
     SQLAppointmentRepository,
@@ -36,6 +40,7 @@ from app.persistence.campaign_repositories import (
     SQLCampaignSequenceRepository,
     SQLCampaignStepRepository,
     SQLCampaignStepRunRepository,
+    SQLOutreachMessageRepository,
 )
 from app.persistence.reply_repositories import (
     SQLCampaignAnalyticsRepository, SQLCampaignReplyEnrollmentRepository,
@@ -62,6 +67,13 @@ class UnitOfWork:
         self._entered = False
         self._finished = False
         self._closed = False
+        self.api_keys: SQLApiKeyRepository | None = None
+        self.api_key_grants: SQLApiKeyGrantRepository | None = None
+        self.conversation_assignments: SQLConversationAssignmentRepository | None = None
+        self.workflow_executions: SQLWorkflowExecutionRepository | None = None
+        self.follow_ups: SQLFollowUpRepository | None = None
+        self.crm_sync: SQLCRMSyncRepository | None = None
+        self.crm_contacts: SQLCRMContactRepository | None = None
         self.tenants: SQLTenantRepository | None = None
         self.businesses: SQLBusinessRepository | None = None
         self.contacts: SQLContactRepository | None = None
@@ -87,6 +99,7 @@ class UnitOfWork:
         self.campaign_enrollments: SQLCampaignEnrollmentRepository | None = None
         self.campaign_step_runs: SQLCampaignStepRunRepository | None = None
         self.campaign_events: SQLCampaignEventRepository | None = None
+        self.outreach_messages: SQLOutreachMessageRepository | None = None
         self.contact_channel_consents: SQLContactChannelConsentRepository | None = None
         self.campaign_replies: SQLCampaignReplyRepository | None = None
         self.campaign_reply_enrollments: SQLCampaignReplyEnrollmentRepository | None = None
@@ -110,6 +123,13 @@ class UnitOfWork:
         self._session = self._session_factory()
         try:
             self._session.begin()
+            self.api_keys = SQLApiKeyRepository(self._session)
+            self.api_key_grants = SQLApiKeyGrantRepository(self._session)
+            self.conversation_assignments = SQLConversationAssignmentRepository(self._session)
+            self.workflow_executions = SQLWorkflowExecutionRepository(self._session)
+            self.follow_ups = SQLFollowUpRepository(self._session)
+            self.crm_sync = SQLCRMSyncRepository(self._session)
+            self.crm_contacts = SQLCRMContactRepository(self._session)
             self.tenants = SQLTenantRepository(self._session)
             self.businesses = SQLBusinessRepository(self._session)
             self.contacts = SQLContactRepository(self._session)
@@ -135,6 +155,7 @@ class UnitOfWork:
             self.campaign_enrollments = SQLCampaignEnrollmentRepository(self._session)
             self.campaign_step_runs = SQLCampaignStepRunRepository(self._session)
             self.campaign_events = SQLCampaignEventRepository(self._session)
+            self.outreach_messages = SQLOutreachMessageRepository(self._session)
             self.contact_channel_consents = SQLContactChannelConsentRepository(self._session)
             self.campaign_replies = SQLCampaignReplyRepository(self._session)
             self.campaign_reply_enrollments = SQLCampaignReplyEnrollmentRepository(self._session)

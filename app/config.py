@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", min_length=1)
     log_level: str = "INFO"
     default_region: str = Field(default="US", min_length=1)
-    # Trusted single-tenant routing context for the current inbound endpoint.
+    # Legacy dispatcher configuration; protected HTTP routes use the authenticated principal.
     inbound_tenant_id: str = Field(default="tenant-1", min_length=1)
     # Optional trusted business scope for the lead-management API.
     lead_business_id: str | None = None

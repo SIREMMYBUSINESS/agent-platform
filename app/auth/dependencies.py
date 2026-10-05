@@ -36,7 +36,7 @@ def get_authenticated_principal(
 
 
 def require_role(role: str):
-    """Roles authorize tenant-wide operations; resource lookups still enforce tenancy."""
+    """Require an explicit role; resource lookups still enforce tenant scope."""
     def dependency(
         principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
     ) -> AuthenticatedPrincipal:

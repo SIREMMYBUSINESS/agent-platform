@@ -1,0 +1,128 @@
+"""Shared tenant-scoped configuration, HTTP, and audit contracts for adapters."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+class ProviderConfigurationError(RuntimeError):
+    pass
+
+
+class ProviderHTTPError(RuntimeError):
+    def __init__(self, status_code: int, *, retryable: bool) -> None:
+        super().__init__(f"provider_http_error:{status_code}")
+        self.status_code = status_code
+        self.retryable = retryable
+
+
+@dataclass(frozen=True)
+class ProviderAuditEvent:
+    tenant_id: str
+    business_id: str
+    provider: str
+    operation: str
+    idempotency_key: str
+    outcome: str
+    error_code: str | None = None
+    occurred_at: datetime = datetime.min.replace(tzinfo=UTC)
+
+
+class ProviderAuditSink(Protocol):
+    def emit(self, event: ProviderAuditEvent) -> None: ...
+
+
+class TenantConfigResolver(Protocol):
+    def resolve(self, *, tenant_id: str, business_id: str) -> Mapping[str, str]: ...
+
+
+class MappingTenantConfig:
+    """Explicit per-tenant/business configuration; missing scopes fail closed."""
+
+    def __init__(self, values: Mapping[tuple[str, str], Mapping[str, str]]) -> None:
+        self._values = {key: dict(value) for key, value in values.items()}
+
+    def resolve(self, *, tenant_id: str, business_id: str) -> Mapping[str, str]:
+        if not tenant_id.strip() or not business_id.strip():
+            raise ProviderConfigurationError("provider scope is required")
+        value = self._values.get((tenant_id, business_id))
+        if value is None:
+            raise ProviderConfigurationError("provider configuration is unavailable for tenant scope")
+        return dict(value)
+
+
+class JSONHTTPTransport(Protocol):
+    def request(self, method: str, url: str, *, headers: Mapping[str, str],
+                body: bytes | None = None, timeout: float = 10.0) -> tuple[int, Mapping[str, Any]]: ...
+
+
+class UrllibJSONTransport:
+    """Small synchronous JSON transport with sanitized errors."""
+
+    def request(self, method: str, url: str, *, headers: Mapping[str, str],
+                body: bytes | None = None, timeout: float = 10.0) -> tuple[int, Mapping[str, Any]]:
+        request = Request(url, data=body, headers=dict(headers), method=method)
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                raw = response.read()
+                return response.status, self._decode(raw)
+        except HTTPError as exc:
+            retryable = exc.code == 429 or 500 <= exc.code <= 599
+            raise ProviderHTTPError(exc.code, retryable=retryable) from None
+        except (TimeoutError, URLError) as exc:
+            raise ProviderHTTPError(503, retryable=True) from None
+
+    @staticmethod
+    def _decode(raw: bytes) -> Mapping[str, Any]:
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, Mapping) else {}
+
+
+class CallableAuditSink:
+    def __init__(self, callback: Callable[[ProviderAuditEvent], None]) -> None:
+        self._callback = callback
+
+    def emit(self, event: ProviderAuditEvent) -> None:
+        self._callback(event)
+
+
+def emit_audit(sink: ProviderAuditSink, *, tenant_id: str, business_id: str,
+               provider: str, operation: str, idempotency_key: str,
+               outcome: str, error_code: str | None = None) -> None:
+    sink.emit(ProviderAuditEvent(
+        tenant_id=tenant_id, business_id=business_id, provider=provider,
+        operation=operation, idempotency_key=idempotency_key,
+        outcome=outcome, error_code=error_code, occurred_at=datetime.now(UTC),
+    ))
+
+
+def json_request(transport: JSONHTTPTransport, method: str, url: str, *,
+                headers: Mapping[str, str], payload: Mapping[str, Any] | None = None,
+                timeout: float = 10.0) -> Mapping[str, Any]:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    status, response = transport.request(
+        method, url, headers={"Content-Type": "application/json", **headers},
+        body=body, timeout=timeout,
+    )
+    if not 200 <= status < 300:
+        raise ProviderHTTPError(status, retryable=status == 429 or status >= 500)
+    return response
+
+
+__all__ = [
+    "CallableAuditSink", "JSONHTTPTransport", "MappingTenantConfig",
+    "ProviderAuditEvent", "ProviderAuditSink", "ProviderConfigurationError",
+    "ProviderHTTPError", "TenantConfigResolver", "UrllibJSONTransport", "emit_audit",
+    "json_request",
+]

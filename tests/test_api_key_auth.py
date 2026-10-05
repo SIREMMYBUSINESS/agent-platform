@@ -191,7 +191,7 @@ def test_key_secret_is_not_stored(secured_client):
 def test_openapi_declares_bearer_auth_for_protected_routes():
     schema = app.openapi()
     for path, operations in schema["paths"].items():
-        if path.startswith(("/inbound", "/leads", "/campaigns")):
+        if path.startswith(("/inbound", "/leads", "/campaigns", "/conversations")):
             for operation in operations.values():
                 assert {"ApiKey": []} in operation["security"]
     assert "security" not in schema["paths"]["/health"]["get"]

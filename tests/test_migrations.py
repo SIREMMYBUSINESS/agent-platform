@@ -12,6 +12,9 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
 
     sql = capsys.readouterr().out.lower()
     for table_name in (
+        "conversation_assignments",
+        "workflow_executions",
+        "follow_up_tasks",
         "api_keys",
         "api_key_grants",
         "appointments",
@@ -41,6 +44,8 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
         "campaign_event_logs",
         "contact_channel_consents",
         "campaign_replies",
+        "outreach_messages",
+        "crm_sync_records",
         "policy_profiles",
         "country_policies",
         "consent_records",
@@ -55,6 +60,9 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
     assert "uq_conversations_tenant_id" in sql
     assert "fk_api_key_grants_key" in sql
     assert "uq_api_keys_hash" in sql
+    assert "ck_conversations_status" in sql
+    assert "fk_conversation_assignments_staff" in sql
+    assert "alter table conversations add column status" in sql
 
 
 def test_api_key_migration_downgrade_renders_in_dependency_order(capsys):
@@ -63,3 +71,12 @@ def test_api_key_migration_downgrade_renders_in_dependency_order(capsys):
     command.downgrade(config, "0008_api_key_auth:0007_geo_policy_engine", sql=True)
     sql = capsys.readouterr().out.lower()
     assert sql.index("drop table api_key_grants") < sql.index("drop table api_keys")
+
+
+def test_conversation_migration_downgrade_preserves_existing_conversations(capsys):
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    command.downgrade(config, "0009_conversation_management:0008_api_key_auth", sql=True)
+    sql = capsys.readouterr().out.lower()
+    assert "drop table conversation_assignments" in sql
+    assert "alter table conversations drop column status" in sql
+    assert "drop table conversations" not in sql

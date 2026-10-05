@@ -6,11 +6,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app.persistence.models import (
-    Campaign, CampaignEnrollment, CampaignEventLog, CampaignSequence,
+    Campaign, CampaignEnrollment, CampaignEventLog, OutreachMessage, CampaignSequence,
     CampaignStep, CampaignStepRun,
 )
 from app.persistence.repositories import _database_call, _require_tenant
@@ -36,6 +36,14 @@ class SQLCampaignRepository:
         stmt = select(Campaign).where(Campaign.tenant_id == tenant_id,
                                       Campaign.business_id == business_id,
                                       Campaign.id == campaign_id)
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def get_for_tenant(self, *, tenant_id: str, campaign_id: UUID) -> Campaign | None:
+        """Resolve a campaign's business from the trusted tenant-scoped row."""
+        _require_tenant(tenant_id)
+        stmt = select(Campaign).where(
+            Campaign.tenant_id == tenant_id, Campaign.id == campaign_id,
+        )
         return _database_call(lambda: self._session.exec(stmt).first())
 
     def set_status(self, *, tenant_id: str, business_id: str, campaign_id: UUID,
@@ -270,3 +278,133 @@ class SQLCampaignEventRepository:
             CampaignEventLog.campaign_id == campaign_id,
         ).order_by(CampaignEventLog.created_at, CampaignEventLog.id)
         return _database_call(lambda: list(self._session.exec(stmt).all()))
+
+
+class SQLOutreachMessageRepository:
+    """Tenant-scoped scheduled-send persistence; transaction ownership stays in UoW."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, *, tenant_id: str, business_id: str, message_id: UUID) -> OutreachMessage | None:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.business_id == business_id,
+            OutreachMessage.id == message_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def get_for_tenant(self, *, tenant_id: str, message_id: UUID) -> OutreachMessage | None:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage).where(
+            OutreachMessage.tenant_id == tenant_id, OutreachMessage.id == message_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def get_by_key(self, *, tenant_id: str, idempotency_key: str) -> OutreachMessage | None:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.idempotency_key == idempotency_key,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def get_for_contact(self, *, tenant_id: str, business_id: str,
+                        campaign_id: UUID, contact_id: str) -> OutreachMessage | None:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.business_id == business_id,
+            OutreachMessage.campaign_id == campaign_id,
+            OutreachMessage.contact_id == contact_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def list_for_campaign(self, *, tenant_id: str, business_id: str,
+                          campaign_id: UUID) -> list[OutreachMessage]:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.business_id == business_id,
+            OutreachMessage.campaign_id == campaign_id,
+        ).order_by(OutreachMessage.scheduled_at, OutreachMessage.id)
+        return _database_call(lambda: list(self._session.exec(stmt).all()))
+
+    def list_contact_ids(self, *, tenant_id: str, business_id: str,
+                         campaign_id: UUID) -> set[str]:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage.contact_id).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.business_id == business_id,
+            OutreachMessage.campaign_id == campaign_id,
+        )
+        return _database_call(lambda: set(self._session.exec(stmt).all()))
+
+    def count_since(self, *, tenant_id: str, since: datetime,
+                    campaign_id: UUID | None = None) -> int:
+        _require_tenant(tenant_id)
+        stmt = select(func.count(OutreachMessage.id)).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.created_at >= since,
+        )
+        if campaign_id is not None:
+            stmt = stmt.where(OutreachMessage.campaign_id == campaign_id)
+        return _database_call(lambda: int(self._session.exec(stmt).one()))
+
+    def attempts_since(self, *, tenant_id: str, since: datetime,
+                       campaign_id: UUID | None = None) -> int:
+        _require_tenant(tenant_id)
+        stmt = select(func.coalesce(func.sum(OutreachMessage.attempts), 0)).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.updated_at >= since,
+        )
+        if campaign_id is not None:
+            stmt = stmt.where(OutreachMessage.campaign_id == campaign_id)
+        return _database_call(lambda: int(self._session.exec(stmt).one()))
+
+    def create(self, *, tenant_id: str, business_id: str, campaign_id: UUID,
+               contact_id: str, conversation_id: UUID | None, channel: str,
+               idempotency_key: str, content: dict[str, Any], content_hash: str,
+               scheduled_at: datetime, created_at: datetime) -> OutreachMessage:
+        _require_tenant(tenant_id)
+        row = OutreachMessage(
+            tenant_id=tenant_id, business_id=business_id, campaign_id=campaign_id,
+            contact_id=contact_id, conversation_id=conversation_id, channel=channel,
+            idempotency_key=idempotency_key, content=content, content_hash=content_hash,
+            scheduled_at=scheduled_at, created_at=created_at, updated_at=created_at,
+        )
+        def persist():
+            self._session.add(row)
+            self._session.flush()
+            return row
+        return _database_call(persist)
+
+    def set_state(self, *, tenant_id: str, business_id: str, message_id: UUID,
+                  expected_status: str, status: str, at: datetime,
+                  failure_reason: str | None = None, increment_attempts: bool = False,
+                  scheduled_at: datetime | None = None) -> OutreachMessage:
+        _require_tenant(tenant_id)
+        values: dict[str, Any] = {"status": status, "updated_at": at}
+        if scheduled_at is not None:
+            values["scheduled_at"] = scheduled_at
+        if status == "sent":
+            values["sent_at"] = at
+        elif status == "delivered":
+            values["delivered_at"] = at
+        elif status == "failed":
+            values["failed_at"] = at
+            values["failure_reason"] = failure_reason
+        if increment_attempts:
+            values["attempts"] = OutreachMessage.attempts + 1
+        def persist():
+            result = self._session.exec(update(OutreachMessage).where(
+                OutreachMessage.tenant_id == tenant_id,
+                OutreachMessage.business_id == business_id,
+                OutreachMessage.id == message_id,
+                OutreachMessage.status == expected_status,
+            ).values(**values))
+            if result.rowcount != 1:
+                raise ValueError("outreach message state changed or not found")
+            return self.get(tenant_id=tenant_id, business_id=business_id, message_id=message_id)
+        return _database_call(persist)

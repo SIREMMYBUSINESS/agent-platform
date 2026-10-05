@@ -193,7 +193,7 @@ def test_sequence_generation_and_step_progression_completes_campaign(campaign_cl
         assert runs[0].rendered_content["body"] == "Example business would like to speak with Jordan."
         events = {row.event_type for row in session.exec(select(CampaignEventLog)).all()}
         assert {
-            "campaign.created", "campaign.enrolled", "campaign.state.changed",
+            "campaign.created", "CampaignCreated", "campaign.enrolled", "campaign.state.changed",
             "step.generated", "step.sent", "campaign.completed",
         } <= events
 
@@ -320,5 +320,5 @@ def test_failed_step_progress_update_rolls_back_generation_and_campaign_activati
         assert enrollment.current_step_order == -1
         assert session.exec(select(CampaignStepRun)).all() == []
         assert {event.event_type for event in session.exec(select(CampaignEventLog)).all()} == {
-            "campaign.created", "campaign.enrolled"
+            "campaign.created", "CampaignCreated", "campaign.enrolled"
         }

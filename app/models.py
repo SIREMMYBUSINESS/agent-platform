@@ -6,6 +6,12 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+class ConversationStatus(str, Enum):
+    OPEN = "open"
+    PENDING = "pending"
+    CLOSED = "closed"
+
+
 class Channel(str, Enum):
     PHONE = "phone"
     CHAT = "chat"

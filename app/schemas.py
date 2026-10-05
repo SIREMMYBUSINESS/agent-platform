@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator
 
 class InboundRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
@@ -130,6 +130,71 @@ class CampaignCreateRequest(BaseModel):
     channel: Literal["email", "sms", "whatsapp"]
     audience_filters: CampaignAudienceFilters = Field(default_factory=CampaignAudienceFilters)
     steps: list[CampaignStepInput] = Field(min_length=1, max_length=50)
+
+
+class CampaignStatusResponse(BaseModel):
+    id: UUID
+    status: Literal["draft", "active", "paused", "completed", "canceled", "archived"]
+
+
+class RecipientSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    contact_ids: list[str] | None = Field(default=None, min_length=1, max_length=500)
+    limit: int = Field(default=500, ge=1, le=500)
+
+
+class RecipientSelectionResponse(BaseModel):
+    campaign_id: UUID
+    contact_ids: list[str]
+    excluded_counts: dict[str, int]
+
+
+class OutreachContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    subject: str | None = Field(default=None, min_length=1, max_length=1000)
+    body: str | None = Field(default=None, min_length=1, max_length=20000)
+
+    @model_validator(mode="after")
+    def require_content(self):
+        if self.subject is None and self.body is None:
+            raise ValueError("subject or body is required")
+        return self
+
+
+class OutreachScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    contact_id: str = Field(min_length=1, max_length=200)
+    conversation_id: UUID | None = None
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    content: OutreachContent
+    scheduled_at: datetime
+
+    @field_validator("scheduled_at")
+    @classmethod
+    def timezone_required(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("scheduled_at must include a timezone")
+        return value
+
+
+class OutreachMessageResponse(BaseModel):
+    id: UUID
+    campaign_id: UUID
+    contact_id: str
+    conversation_id: UUID | None
+    channel: Literal["email", "sms", "whatsapp"]
+    status: Literal["scheduled", "sending", "sent", "delivered", "failed"]
+    attempts: int
+    scheduled_at: datetime
+    sent_at: datetime | None
+    delivered_at: datetime | None
+    failed_at: datetime | None
+    failure_reason: str | None
+
+
+class OutreachFailureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    failure_reason: str = Field(pattern=r"^[A-Za-z0-9_.:-]{1,80}$")
 
 
 class CampaignEnrollRequest(BaseModel):

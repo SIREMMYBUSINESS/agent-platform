@@ -10,7 +10,9 @@ from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
     Index,
+    Integer,
     JSON,
+    String,
     PrimaryKeyConstraint,
     UniqueConstraint,
     func,
@@ -27,6 +29,36 @@ def utc_now() -> datetime:
 
 def json_storage_type() -> JSON:
     return JSON().with_variant(JSONB(), "postgresql")
+
+
+class ApiKey(SQLModel, table=True):
+    __tablename__ = "api_keys"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_api_keys_tenant"),
+        UniqueConstraint("tenant_id", "id", name="uq_api_keys_tenant_id"),
+        UniqueConstraint("key_hash", name="uq_api_keys_hash"),
+    )
+
+    id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+    tenant_id: str
+    key_hash: str = Field(repr=False)
+    revoked: bool = False
+    issued_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
+    expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+
+
+class ApiKeyGrant(SQLModel, table=True):
+    __tablename__ = "api_key_grants"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_api_key_grants_tenant"),
+        ForeignKeyConstraint(["tenant_id", "principal_id"], ["api_keys.tenant_id", "api_keys.id"], name="fk_api_key_grants_key"),
+    )
+
+    principal_id: str = Field(primary_key=True)
+    tenant_id: str = Field(primary_key=True)
+    roles: list[str] = Field(default_factory=list, sa_column=Column(json_storage_type(), nullable=False))
+    enabled: bool = True
+    expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
 
 class Tenant(SQLModel, table=True):
@@ -267,6 +299,8 @@ class Conversation(SQLModel, table=True):
         Index("ix_conversations_tenant_business", "tenant_id", "business_id"),
         Index("ix_conversations_tenant_contact", "tenant_id", "contact_id"),
         Index("ix_conversations_correlation_id", "correlation_id"),
+        CheckConstraint("status IN ('open', 'pending', 'closed')", name="ck_conversations_status"),
+        CheckConstraint("version >= 0", name="ck_conversations_version"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -275,6 +309,8 @@ class Conversation(SQLModel, table=True):
     contact_id: str
     channel: str
     workflow_state: str = WorkflowState.NEW.value
+    status: str = Field(default="open", sa_column=Column(String(), nullable=False, server_default="open"))
+    version: int = Field(default=0, sa_column=Column(Integer(), nullable=False, server_default="0"))
     correlation_id: Optional[str] = None
     started_at: datetime = Field(
         default_factory=utc_now,
@@ -284,6 +320,30 @@ class Conversation(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+
+
+class ConversationAssignment(SQLModel, table=True):
+    __tablename__ = "conversation_assignments"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_conversation_assignments_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "conversation_id", "business_id"],
+            ["conversations.tenant_id", "conversations.id", "conversations.business_id"],
+            name="fk_conversation_assignments_conversation",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "business_id", "staff_id"],
+            ["staff.tenant_id", "staff.business_id", "staff.id"],
+            name="fk_conversation_assignments_staff",
+        ),
+    )
+
+    conversation_id: UUID = Field(primary_key=True)
+    tenant_id: str
+    business_id: str
+    staff_id: UUID | None = None
+    assigned_by: str
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
 
 
 class Message(SQLModel, table=True):
@@ -344,6 +404,62 @@ class WorkflowStateRecord(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+
+
+class WorkflowExecution(SQLModel, table=True):
+    __tablename__ = "workflow_executions"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_workflow_executions"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_workflow_executions_idempotency"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_workflow_executions_tenant"),
+        ForeignKeyConstraint(["tenant_id", "conversation_id", "business_id"],
+            ["conversations.tenant_id", "conversations.id", "conversations.business_id"],
+            name="fk_workflow_executions_conversation"),
+        CheckConstraint("status IN ('running', 'succeeded', 'failed')", name="ck_workflow_executions_status"),
+        CheckConstraint("attempts > 0", name="ck_workflow_executions_attempts"),
+        Index("ix_workflow_executions_tenant_conversation_created", "tenant_id", "conversation_id", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    conversation_id: UUID
+    workflow_name: str
+    idempotency_key: str
+    input_hash: str
+    status: str = "running"
+    attempts: int = 1
+    result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    error_code: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    completed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+
+
+class FollowUpTask(SQLModel, table=True):
+    __tablename__ = "follow_up_tasks"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_follow_up_tasks"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_follow_up_tasks_idempotency"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_follow_up_tasks_tenant"),
+        ForeignKeyConstraint(["tenant_id", "conversation_id", "business_id"],
+            ["conversations.tenant_id", "conversations.id", "conversations.business_id"],
+            name="fk_follow_up_tasks_conversation"),
+        CheckConstraint("reason IN ('callback_requested', 'missed_response', 'nurture')", name="ck_follow_up_tasks_reason"),
+        CheckConstraint("status IN ('scheduled', 'cancelled', 'completed')", name="ck_follow_up_tasks_status"),
+        Index("ix_follow_up_tasks_tenant_business_due", "tenant_id", "business_id", "scheduled_at", "status"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    conversation_id: UUID
+    idempotency_key: str
+    scheduled_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    reason: str
+    workflow_state: str
+    status: str = "scheduled"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
 
 
 class EventLog(SQLModel, table=True):
@@ -745,7 +861,7 @@ class Campaign(SQLModel, table=True):
     __tablename__ = "campaigns"
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_campaigns"),
-        CheckConstraint("status IN ('draft', 'active', 'paused', 'completed', 'canceled')", name="ck_campaigns_status"),
+        CheckConstraint("status IN ('draft', 'active', 'paused', 'completed', 'canceled', 'archived')", name="ck_campaigns_status"),
         CheckConstraint("channel IN ('email', 'sms', 'whatsapp')", name="ck_campaigns_channel"),
         UniqueConstraint("tenant_id", "business_id", "id", name="uq_campaigns_tenant_business_id"),
         ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaigns_tenant_id_tenants"),
@@ -873,6 +989,74 @@ class CampaignEventLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
 
 
+class OutreachMessage(SQLModel, table=True):
+    """An idempotent, auditable outbound delivery to a provisioned contact."""
+    __tablename__ = "outreach_messages"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_outreach_messages"),
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_outreach_messages_idempotency"),
+        UniqueConstraint("tenant_id", "business_id", "campaign_id", "contact_id", name="uq_outreach_messages_campaign_contact"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_outreach_messages_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id", "campaign_id"], ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"], name="fk_outreach_messages_campaign"),
+        ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"], ["contacts.tenant_id", "contacts.id", "contacts.business_id"], name="fk_outreach_messages_contact"),
+        ForeignKeyConstraint(["tenant_id", "conversation_id", "business_id"], ["conversations.tenant_id", "conversations.id", "conversations.business_id"], name="fk_outreach_messages_conversation"),
+        CheckConstraint("status IN ('scheduled', 'sending', 'sent', 'delivered', 'failed')", name="ck_outreach_messages_status"),
+        CheckConstraint("attempts >= 0", name="ck_outreach_messages_attempts"),
+        Index("ix_outreach_messages_tenant_due", "tenant_id", "status", "scheduled_at"),
+        Index("ix_outreach_messages_campaign_due", "tenant_id", "business_id", "campaign_id", "status", "scheduled_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    campaign_id: UUID
+    contact_id: str
+    conversation_id: UUID | None = None
+    channel: str
+    idempotency_key: str
+    content: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    content_hash: str
+    status: str = "scheduled"
+    attempts: int = 0
+    scheduled_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    sent_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    delivered_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    failed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    failure_reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class CRMSyncRecord(SQLModel, table=True):
+    """Durable, tenant-scoped CRM sync idempotency and retry state."""
+    __tablename__ = "crm_sync_records"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_crm_sync_records"),
+        UniqueConstraint("tenant_id", "provider_key", "idempotency_key", name="uq_crm_sync_idempotency"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_crm_sync_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_crm_sync_business"),
+        CheckConstraint("direction IN ('inbound', 'outbound')", name="ck_crm_sync_direction"),
+        CheckConstraint("status IN ('pending', 'synced', 'failed', 'conflict')", name="ck_crm_sync_status"),
+        CheckConstraint("attempts >= 0", name="ck_crm_sync_attempts"),
+        Index("ix_crm_sync_entity", "tenant_id", "provider_key", "entity_type", "entity_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    provider_key: str
+    direction: str
+    entity_type: str
+    entity_id: str
+    event_type: str
+    idempotency_key: str
+    status: str = "pending"
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    external_id: str | None = None
+    attempts: int = 0
+    last_error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
 class CampaignReply(SQLModel, table=True):
     """Reply classification and processing metadata; raw reply text is not retained."""
     __tablename__ = "campaign_replies"
@@ -905,6 +1089,8 @@ __all__ = [
     "Campaign",
     "CampaignEnrollment",
     "CampaignEventLog",
+    "OutreachMessage",
+    "CRMSyncRecord",
     "CampaignReply",
     "CampaignSequence",
     "CampaignStep",
