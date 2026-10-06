@@ -32,7 +32,7 @@ NOW = datetime(2026, 10, 5, 13, 0, tzinfo=UTC)  # Monday 09:00 in New York.
 
 
 def principal(tenant="tenant-a", roles=("workflow_executor", "conversation_reader", "conversation_writer")):
-    return AuthenticatedPrincipal("actor-a", tenant, roles, "test", datetime.now(UTC) - timedelta(minutes=1))
+    return AuthenticatedPrincipal("actor-a", tenant, roles, "test", NOW - timedelta(minutes=1))
 
 
 @pytest.fixture
@@ -295,6 +295,10 @@ def test_escalation_rules_are_deterministic(age, assigned, failed, expected, pla
 def test_escalation_sweep_creates_once_and_uses_business_tenant_scope(platform):
     db, uow_factory, engine, actions, service, _, _, _ = platform
     conversation = create_conversation(service)
+    with Session(db) as session:
+        persisted = session.get(Conversation, conversation.id)
+        persisted.updated_at = NOW
+        session.commit()
     escalation = EscalationService(uow_factory=uow_factory, actions=actions,
         rules=EscalationRules(timeout_after=timedelta(minutes=1), unassigned_after=timedelta(minutes=1)),
         now_provider=lambda: NOW + timedelta(minutes=10))
