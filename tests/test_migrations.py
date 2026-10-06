@@ -51,6 +51,7 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
         "consent_records",
         "suppression_rules",
         "policy_decision_logs",
+        "queue_task_records",
     ):
         assert f"create table {table_name}" in sql
 
@@ -60,6 +61,8 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
     assert "uq_conversations_tenant_id" in sql
     assert "fk_api_key_grants_key" in sql
     assert "uq_api_keys_hash" in sql
+    assert "uq_queue_tasks_idempotency" in sql
+    assert "ix_queue_tasks_due" in sql
     assert "ck_conversations_status" in sql
     assert "fk_conversation_assignments_staff" in sql
     assert "alter table conversations add column status" in sql

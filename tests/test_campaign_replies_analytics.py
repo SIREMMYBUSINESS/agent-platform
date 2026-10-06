@@ -133,6 +133,10 @@ def test_analytics_aggregates_persisted_sends_opens_replies_and_booking_events(c
         "campaign_id": campaign_id, "sent_count": 1, "opened_count": 1,
         "reply_count": 3, "positive_reply_rate": 1 / 3, "opt_out_count": 1,
         "booked_appointments": 1,
+        "variant_metrics": [{
+            "variant_id": "default", "enrolled_count": 1,
+            "sent_count": 1, "conversions": 1, "conversion_rate": 1.0,
+        }],
     }
 
 

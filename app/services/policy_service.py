@@ -20,6 +20,13 @@ class PolicyDecision:
     overridden: bool = False
 
 
+@dataclass(frozen=True)
+class NextBestActionDecision:
+    action: str
+    reason_code: str
+    allowed: bool
+
+
 def _channel_rule(consent_required: bool = True) -> dict[str, bool]:
     return {"allowed": True, "consent_required": consent_required}
 
@@ -200,5 +207,27 @@ class PolicyService:
         return PolicyDecision(allowed, reason, country_code, consent_status,
                               source, overridden)
 
+    @staticmethod
+    def next_best_action(*, priority_score: int, urgency_score: int,
+                         outreach_allowed: bool, contactable: bool,
+                         business_open: bool, appointment_available: bool,
+                         campaign_capacity: bool, allowed_channels: tuple[str, ...]) -> NextBestActionDecision:
+        """Select from trusted policy and persisted business constraints."""
+        if urgency_score >= 85:
+            return NextBestActionDecision("human_escalation", "urgent_lead", True)
+        if not contactable:
+            return NextBestActionDecision("manual_review", "contact_not_verified", False)
+        if not outreach_allowed:
+            return NextBestActionDecision("policy_blocked", "outbound_policy_block", False)
+        if not business_open:
+            return NextBestActionDecision("schedule_follow_up", "business_closed", True)
+        if appointment_available and business_open and priority_score >= 75:
+            return NextBestActionDecision("offer_appointment", "high_priority_slot_available", True)
+        if campaign_capacity and allowed_channels and priority_score >= 65:
+            return NextBestActionDecision("outreach_now", "qualified_and_within_capacity", True)
+        if campaign_capacity and allowed_channels:
+            return NextBestActionDecision("nurture", "below_qualification_threshold", True)
+        return NextBestActionDecision("schedule_follow_up", "business_capacity_unavailable", True)
 
-__all__ = ["DEFAULT_COUNTRY_POLICIES", "PolicyDecision", "PolicyService"]
+
+__all__ = ["DEFAULT_COUNTRY_POLICIES", "NextBestActionDecision", "PolicyDecision", "PolicyService"]

@@ -133,7 +133,11 @@ class UrllibJSONTransport:
         try:
             with urlopen(request, timeout=timeout) as response:
                 raw = response.read()
-                return response.status, self._decode(raw)
+                decoded = dict(self._decode(raw))
+                provider_id = response.headers.get("X-Message-Id")
+                if provider_id:
+                    decoded["provider_response_headers"] = {"x-message-id": provider_id}
+                return response.status, decoded
         except HTTPError as exc:
             retryable = exc.code == 429 or 500 <= exc.code <= 599
             raise ProviderHTTPError(exc.code, retryable=retryable) from None

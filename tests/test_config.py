@@ -14,6 +14,7 @@ SETTING_ENV_VARS = (
     "DATABASE_URL_FILE",
     "REDIS_URL_FILE",
     "PROVIDER_SECRETS_DIR",
+    "WORKER_BOOTSTRAP_MODULE",
     "REDIS_URL",
 )
 
@@ -35,6 +36,14 @@ def test_settings_have_safe_local_defaults(monkeypatch):
     assert settings.inbound_tenant_id == "tenant-1"
     assert settings.database_url == "postgresql://localhost:5432/agent_platform"
     assert settings.redis_url == "redis://localhost:6379/0"
+
+
+def test_worker_bootstrap_must_be_an_importable_module_path(monkeypatch):
+    clear_settings_environment(monkeypatch)
+    settings = Settings(_env_file=None, worker_bootstrap_module="deployment.worker_handlers")
+    assert settings.worker_bootstrap_module == "deployment.worker_handlers"
+    with pytest.raises(ValidationError, match="Python module path"):
+        Settings(_env_file=None, worker_bootstrap_module="../outside")
 
 
 def test_api_uses_validated_app_name_setting():

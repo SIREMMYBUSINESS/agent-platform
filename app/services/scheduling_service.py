@@ -8,6 +8,7 @@ from typing import Any
 
 from app.persistence.models import Appointment
 from app.services.routing_service import RoutingService
+from app.services.scheduling_optimization import SchedulingOptimizationService
 
 
 @dataclass(frozen=True)
@@ -19,8 +20,10 @@ class SchedulingResult:
 class SchedulingService:
     """Schedules only from provisioned active services, staff, and slots."""
 
-    def __init__(self, routing_service: RoutingService | None = None) -> None:
+    def __init__(self, routing_service: RoutingService | None = None,
+                 optimizer: SchedulingOptimizationService | None = None) -> None:
         self._routing = routing_service or RoutingService()
+        self._optimizer = optimizer or SchedulingOptimizationService()
 
     @staticmethod
     def is_confirmation(text: str) -> bool:
@@ -56,7 +59,10 @@ class SchedulingService:
         available = uow.appointment_slots.list_available(
             tenant_id=tenant_id, business_id=business_id, after=now
         )
-        choices = [slot for slot in available if slot.service_id == service.id]
+        choices = self._optimizer.rank_slots(
+            [slot for slot in available if slot.service_id == service.id],
+            now=now, timezone_name=contact_timezone,
+        )
         if not choices:
             return None
 

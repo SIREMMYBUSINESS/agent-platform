@@ -388,3 +388,76 @@ message. Inject a channel provider adapter into `OutreachExecutionService`;
 without one, execution records a retryable `sender_not_configured` failure.
 The provider adapter must honor the idempotency key to protect retries from
 duplicate delivery.
+
+## Phase 4 queue and autonomy runtime
+
+Apply `0014_durable_task_queue` before using queued intake. Queue records are the durable outbox and source of retry/dead-letter status; Redis carries task IDs only. PostgreSQL remains authoritative for task scope, idempotency, workflow state, and events. Configure Redis through `REDIS_URL`, then run:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+```
+
+Queued intake is additive; the existing synchronous `POST /inbound` contract is unchanged. Authenticate with an `inbound_writer` key and provide an idempotency key:
+
+```http
+POST /inbound/queue
+Authorization: Bearer <provisioned-app-key>
+Idempotency-Key: inbound-event-2026-10-06-001
+Content-Type: application/json
+
+{
+  "tenant_id": "tenant-from-provisioning",
+  "business_id": "business-from-provisioning",
+  "contact_id": "contact-from-provisioning",
+  "channel": "sms",
+  "text": "I need to schedule an appointment"
+}
+```
+
+The authenticated principal supplies tenant authority. The endpoint verifies that the business and contact belong to that tenant and business, then persists the task before returning `202 Accepted`. Repeating the same key and payload returns the same queue task. Reusing a key for different work returns `409`. The payload excludes client region, consent, and routing metadata; inbound workers reload trusted records and call `IntakeService`.
+
+Celery routes tasks to five bounded domain queues: `agent.inbound`, `agent.outreach`, `agent.scheduling`, `agent.escalation`, and `agent.analytics`. Run one worker pool per queue and one Beat process to dispatch due outbox rows and time-based tasks. Example production starting points are:
+
+```sh
+celery -A app.queue.celery:celery_app worker -Q agent.inbound --concurrency=4
+celery -A app.queue.celery:celery_app worker -Q agent.outreach --concurrency=8
+celery -A app.queue.celery:celery_app worker -Q agent.scheduling --concurrency=2
+celery -A app.queue.celery:celery_app worker -Q agent.escalation --concurrency=2
+celery -A app.queue.celery:celery_app worker -Q agent.analytics --concurrency=2
+celery -A app.queue.celery:celery_app beat
+```
+
+These concurrency values are initial capacity assumptions, not measured throughput guarantees. Benchmark with the deployment database, broker, providers, and workload before increasing them. Windows development should use Celery's `--pool=solo`; separate concurrent pools are intended for a Linux worker deployment.
+
+Internal producers use `app.tasks.submission.enqueue_task` with a validated `QueueTaskSubmission`; domain task names include `outreach.execute_send`, `scheduling.confirm_appointment`, `escalation.sweep`, and `analytics.refresh_campaign`. The Celery task contains only the durable task ID. Workers claim it in PostgreSQL, enforce a lease, call a registered service handler, and persist success or a sanitized failure code. Retry delay starts at five seconds, doubles per attempt, and caps at five minutes; five attempts are the default. Exhausted tasks enter `dead_letter`. A trusted `workflow_executor` can redrive a dead-letter row in its tenant/business scope. Duplicate broker deliveries are safe because workers claim durable state and each command retains its idempotency key.
+
+Event replay reads the persisted event by tenant, business, and event ID, then queues only that reference. Subscribers register explicitly with `app.workers.event_replay.register_event_subscriber`; subscribers receive the durable event and replay task idempotency key. Worker business rules remain in application services and policy checks; queue code handles delivery and task lifecycle only. Existing conversation workflow history and event tables remain the audit record.
+
+The worker bootstrap hook is optional. Set `WORKER_BOOTSTRAP_MODULE` to an importable module defining `configure_worker_handlers(registry)` to replace a built-in handler with provider-backed deployment wiring. Never place provider credentials in task payloads. The built-in outreach worker has no sender until deployment configures one; existing outreach policy and rate limits still run inside `OutreachExecutionService`.
+
+`NextBestActionService` combines scored lead signals with a persisted policy decision, contactability, business hours, appointment availability, and campaign capacity. `SequenceExperimentService` assigns stable weighted A/B variants per lead and reports delivered-to-conversion rates. Scheduling slots can be ranked by local time, allowed weekdays, and an optional planning horizon. These decision helpers do not replace consent, regional policy, or suppression checks.
+
+Queue, retry, redrive, API acceptance, dynamic routing, experiment assignment, and scheduling ranking have SQLite tests. The queue does not claim live Redis, live provider delivery, or production worker throughput; those require deployment readiness checks.
+
+Campaign creation can include up to four named `sequence_variants` alongside the existing `steps` control sequence. Enrollment deterministically assigns each tenant/business/campaign/lead to one sequence and records the arm in the campaign event. The analytics response includes per-arm enrollment count, sent count, conversion count, and conversion rate; the existing campaign-level metrics remain available.
+
+## Provider integrations (Phase 5)
+
+Provider credentials belong in a protected, read-only secret volume, never in application settings, `.env`, task payloads, or source control. Set `PROVIDER_SECRETS_DIR` to the mount and `WORKER_BOOTSTRAP_MODULE` to `app.integrations.bootstrap_example`. The bootstrap builds tenant-scoped SMS, email, voice, calendar, and CRM adapters. Secret files use the SHA-256 filename of `tenant_id + NUL + business_id` and contain provider selectors (`sms_provider`, `email_provider`, `voice_provider`, `calendar_provider`, `crm_provider`) plus that scope's credentials and configuration.
+
+Supported adapters include Twilio SMS and voice, SMTP email, Google Calendar, and HubSpot or Salesforce CRM. Configure Twilio inbound SMS to `POST /webhooks/sms?tenant_id=...&business_id=...` and set the exact public URL in `sms_inbound_webhook_url`. Configure the Twilio call callback at `/webhooks/call` and set `call_webhook_url`. Email and CRM callbacks use `/webhooks/email` and `/webhooks/crm`, scoped with those query parameters and signed with the configured callback secret. Verified webhook events are idempotently stored in `provider_webhook_events`; provider attempt metadata is stored in `provider_interaction_logs` without credentials or message content. Inbound SMS must match a contact provisioned under that tenant and business and is sent through the existing intake queue and policy checks.
+
+Before production, configure sandbox credentials and callback URLs in the secret manager, apply migrations through `0015_provider_webhook_events`, run provider tests, then exercise a controlled sandbox message and callback. SMTP uses a stable Message-ID and idempotency header, but SMTP servers do not universally guarantee deduplication after ambiguous connection failures; delivery is at-least-once. Twilio sends reuse the durable outreach message idempotency key.
+
+Provider secret file examples use these keys (values are supplied by the secret manager):
+
+- Twilio SMS/voice: `sms_provider=twilio`, `voice_provider=twilio`, `account_sid`, `auth_token`, `from_sms` or `from_call`, `status_callback_base_url`, `sms_inbound_webhook_url`, `call_webhook_url`, `voicemail_action_url`, and `recording_enabled=false` unless recording is approved by policy.
+- SendGrid: `email_provider=sendgrid`, `api_key`, `from_address`, and `email_webhook_public_key` copied from Signed Event Webhook configuration. Its open, click, bounce, and complaint events are signature checked and durably recorded.
+- SMTP alternative: `email_provider=smtp`, `host`, `port`, `from_address`, optional `username` and `password`, plus `starttls` or `implicit_tls`.
+- Google Calendar: `calendar_provider=google`, `access_token`, and `calendar_id`. The adapter lists events in a time range and supports event creation and cancellation; pass attendee addresses in event data to deliver invites.
+- HubSpot/Salesforce: `crm_provider=hubspot` with `access_token`, or `crm_provider=salesforce` with `instance_url`, `access_token`, `api_version`, and configured external ID field names. CRM sync operations use the existing durable sync service; CRM event callbacks are authenticated and stored for reconciliation.
+
+The application has no provider credentials in configuration. Deployments must provision per-business secret files, migrate the database, configure the worker bootstrap, register provider callback URLs, and run sandbox exercises. No live provider credentials or sandbox tenant were available for this verification run.
+
+Signature specifics: Twilio callbacks use `X-Twilio-Signature` and the tenant-scoped auth token. SendGrid uses its signed Event Webhook ECDSA public key in `email_webhook_public_key` and the timestamp/signature headers. The CRM webhook endpoint currently expects an `X-Provider-Signature` HMAC-SHA256 using `crm_webhook_secret`; configure a trusted gateway to validate native HubSpot/Salesforce signatures and forward only verified requests when those native formats differ.

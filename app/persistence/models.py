@@ -1086,6 +1086,102 @@ class CampaignReply(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
 
 
+class QueueTaskRecord(SQLModel, table=True):
+    """Durable outbox, retry ledger, and dead-letter record for queued work."""
+    __tablename__ = "queue_task_records"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_queue_task_records"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_queue_tasks_tenant"),
+        ForeignKeyConstraint(
+            ["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"],
+            name="fk_queue_tasks_business",
+        ),
+        UniqueConstraint("tenant_id", "business_id", "idempotency_key", name="uq_queue_tasks_idempotency"),
+        CheckConstraint(
+            "domain IN ('inbound', 'outreach', 'scheduling', 'escalation', 'analytics')",
+            name="ck_queue_tasks_domain",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'queued', 'running', 'retrying', 'succeeded', 'dead_letter')",
+            name="ck_queue_tasks_status",
+        ),
+        CheckConstraint("attempts >= 0 AND max_attempts >= 1", name="ck_queue_tasks_attempts"),
+        Index("ix_queue_tasks_due", "status", "available_at", "domain"),
+        Index("ix_queue_tasks_scope", "tenant_id", "business_id", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    domain: str
+    task_name: str
+    idempotency_key: str
+    aggregate_type: str
+    aggregate_id: str
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False))
+    correlation_id: str
+    traceparent: str | None = None
+    status: str = Field(default="pending", max_length=24)
+    attempts: int = 0
+    max_attempts: int = 5
+    available_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    dispatched_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    started_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    completed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    redriven_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    error_code: str | None = Field(default=None, max_length=80)
+    result: dict[str, Any] | None = Field(default=None, sa_column=Column(json_storage_type()))
+
+
+class ProviderWebhookEvent(SQLModel, table=True):
+    """Idempotent, tenant-scoped record of a verified provider callback."""
+    __tablename__ = "provider_webhook_events"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_provider_webhook_events"),
+        UniqueConstraint("tenant_id", "business_id", "provider", "event_key",
+                         name="uq_provider_webhook_event_key"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_provider_webhooks_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"],
+                             ["businesses.tenant_id", "businesses.id"],
+                             name="fk_provider_webhooks_business"),
+        CheckConstraint("status IN ('received', 'processed', 'ignored', 'failed')",
+                        name="ck_provider_webhook_event_status"),
+        Index("ix_provider_webhooks_scope_created", "tenant_id", "business_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    provider: str
+    event_key: str
+    event_type: str
+    payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    status: str = "received"
+    result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    processed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+
+
+class ProviderInteractionLog(SQLModel, table=True):
+    """Secret and PII free provider attempt audit record."""
+    __tablename__ = "provider_interaction_logs"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_provider_interaction_logs"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_provider_interactions_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_provider_interactions_business"),
+        Index("ix_provider_interactions_scope_created", "tenant_id", "business_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    provider: str
+    operation: str
+    idempotency_key: str
+    outcome: str
+    error_code: str | None = None
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
 __all__ = [
     "Appointment",
     "AppointmentSlot",
@@ -1096,6 +1192,9 @@ __all__ = [
     "OutreachMessage",
     "CRMSyncRecord",
     "CampaignReply",
+    "QueueTaskRecord",
+    "ProviderWebhookEvent",
+    "ProviderInteractionLog",
     "CampaignSequence",
     "CampaignStep",
     "CampaignStepRun",

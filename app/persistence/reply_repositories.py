@@ -8,7 +8,7 @@ from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app.persistence.models import (
-    Campaign, CampaignEnrollment, CampaignEventLog, CampaignReply,
+    Campaign, CampaignEnrollment, CampaignEventLog, CampaignReply, CampaignSequence,
     CampaignStepRun, ContactChannelConsent,
 )
 from app.persistence.repositories import _database_call, _require_tenant
@@ -113,6 +113,52 @@ class SQLCampaignAnalyticsRepository:
                 CampaignReply.business_id == business_id,
                 CampaignReply.campaign_id == campaign_id,
             )).all()
+            sequence_rows = self._session.exec(select(
+                CampaignSequence.id, CampaignSequence.name,
+            ).where(
+                CampaignSequence.tenant_id == tenant_id,
+                CampaignSequence.business_id == business_id,
+                CampaignSequence.campaign_id == campaign_id,
+            )).all()
+            enrollment_rows = self._session.exec(select(
+                CampaignEnrollment.id, CampaignEnrollment.sequence_id,
+            ).where(
+                CampaignEnrollment.tenant_id == tenant_id,
+                CampaignEnrollment.business_id == business_id,
+                CampaignEnrollment.campaign_id == campaign_id,
+            )).all()
+            sent_enrollments = set(self._session.exec(select(
+                CampaignStepRun.enrollment_id,
+            ).join(CampaignEnrollment,
+                (CampaignEnrollment.tenant_id == CampaignStepRun.tenant_id)
+                & (CampaignEnrollment.business_id == CampaignStepRun.business_id)
+                & (CampaignEnrollment.id == CampaignStepRun.enrollment_id),
+            ).where(
+                CampaignStepRun.tenant_id == tenant_id,
+                CampaignStepRun.business_id == business_id,
+                CampaignEnrollment.campaign_id == campaign_id,
+                CampaignStepRun.status == "sent",
+            )).all())
+            converted_enrollments = {
+                reply.enrollment_id for reply in replies
+                if reply.classification in {"positive", "book_appointment", "callback"}
+            }
+            variant_metrics = []
+            for sequence_id, variant_name in sorted(sequence_rows, key=lambda row: row[1]):
+                variant_enrollments = {
+                    enrollment_id for enrollment_id, enrolled_sequence_id in enrollment_rows
+                    if enrolled_sequence_id == sequence_id
+                }
+                variant_sent = variant_enrollments & sent_enrollments
+                variant_conversions = variant_enrollments & converted_enrollments
+                variant_metrics.append({
+                    "variant_id": variant_name,
+                    "enrolled_count": len(variant_enrollments),
+                    "sent_count": len(variant_sent),
+                    "conversions": len(variant_conversions),
+                    "conversion_rate": (len(variant_conversions) / len(variant_sent)
+                                        if variant_sent else 0.0),
+                })
             event_counts = self._session.exec(select(
                 CampaignEventLog.event_type, func.count(CampaignEventLog.id)
             ).where(CampaignEventLog.tenant_id == tenant_id,
@@ -132,6 +178,7 @@ class SQLCampaignAnalyticsRepository:
                 "positive_reply_rate": (positive / total) if total else 0.0,
                 "opt_out_count": sum(reply.classification == "opt_out" for reply in replies),
                 "booked_appointments": int(counts.get("campaign.appointment.booked", 0)),
+                "variant_metrics": variant_metrics,
             }
         return _database_call(read)
 

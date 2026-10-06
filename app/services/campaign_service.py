@@ -94,10 +94,19 @@ class CampaignService:
                 uow=uow, tenant_id=tenant_id, business_id=business_id,
                 campaign_id=campaign.id, steps=request.steps,
             )
+            sequences = [sequence]
+            for order, variant in enumerate(request.sequence_variants, start=1):
+                sequences.append(self.sequences.create_variant(
+                    uow=uow, tenant_id=tenant_id, business_id=business_id,
+                    campaign_id=campaign.id, name=variant.name,
+                    sequence_order=order, steps=variant.steps,
+                ))
             created_event = uow.campaign_events.add(
                 tenant_id=tenant_id, business_id=business_id,
                 campaign_id=campaign.id, event_type="campaign.created",
                 payload={"channel": campaign.channel, "sequence_id": str(sequence.id),
+                         "sequence_ids": [str(item.id) for item in sequences],
+                         "experiment_enabled": len(sequences) > 1,
                          "actor_id": principal.principal_id, "domain_event": "CampaignCreated"},
             )
             created_domain_event = uow.campaign_events.add(
@@ -108,9 +117,9 @@ class CampaignService:
             )
             return CampaignDetails(
                 campaign=self._snapshot(campaign),
-                sequences=[(self._snapshot(sequence), [self._snapshot(row) for row in self.sequences.steps_for(
-                    uow, tenant_id=tenant_id, business_id=business_id, sequence_id=sequence.id
-                )])],
+                sequences=[(self._snapshot(item), [self._snapshot(row) for row in self.sequences.steps_for(
+                    uow, tenant_id=tenant_id, business_id=business_id, sequence_id=item.id
+                )]) for item in sequences],
                 enrollments=[], events=[self._snapshot(created_event)] + (
                     [self._snapshot(created_domain_event)] if created_domain_event else []
                 ),

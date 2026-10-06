@@ -20,6 +20,7 @@ from app.services.campaign_service import (
     CampaignTenantMismatchError,
 )
 from app.services.campaign_sequence_service import CampaignSequenceService
+from app.services.sequence_experiments import SequenceExperimentService
 
 
 class CampaignEligibilityError(Exception):
@@ -36,6 +37,7 @@ class EnrollmentService:
         self.business_id = trusted_business_id.strip() if trusted_business_id else None
         self._uow_factory = uow_factory
         self._sequences = sequence_service or CampaignSequenceService()
+        self._experiments = SequenceExperimentService()
         self._policy_service = policy_service or PolicyService()
         self._now = now_provider or (lambda: datetime.now(UTC))
 
@@ -58,16 +60,11 @@ class EnrollmentService:
                 raise CampaignNotFoundError("campaign not found")
             if campaign.status not in {"draft", "active"}:
                 raise CampaignStateError(f"cannot enroll leads while campaign is {campaign.status}")
-            sequence = next(iter(uow.campaign_sequences.list_for_campaign(
+            sequences = sorted(uow.campaign_sequences.list_for_campaign(
                 tenant_id=tenant_id, business_id=business_id, campaign_id=campaign.id
-            )), None)
-            if sequence is None:
+            ), key=lambda item: (item.sequence_order, str(item.id)))
+            if not sequences:
                 raise CampaignProvisioningError("campaign sequence is missing")
-            steps = self._sequences.steps_for(
-                uow, tenant_id=tenant_id, business_id=business_id, sequence_id=sequence.id
-            )
-            if not steps:
-                raise CampaignProvisioningError("campaign has no sequence steps")
 
             leads = []
             for lead_id in dict.fromkeys(request.lead_ids):
@@ -79,6 +76,20 @@ class EnrollmentService:
 
             result = []
             for lead in leads:
+                sequence_by_name = {item.name: item for item in sequences}
+                variant = self._experiments.assign_variant(
+                    tenant_id=tenant_id, business_id=business_id,
+                    campaign_id=str(campaign.id), lead_id=str(lead.id),
+                    experiment_id=f"campaign-sequence:{campaign.id}",
+                    weights={name: 1 for name in sequence_by_name},
+                )
+                sequence = sequence_by_name[variant]
+                steps = self._sequences.steps_for(
+                    uow, tenant_id=tenant_id, business_id=business_id,
+                    sequence_id=sequence.id,
+                )
+                if not steps:
+                    raise CampaignProvisioningError("campaign sequence has no steps")
                 existing = uow.campaign_enrollments.get_for_lead(
                     tenant_id=tenant_id, business_id=business_id,
                     campaign_id=campaign.id, lead_id=lead.id,
@@ -93,7 +104,10 @@ class EnrollmentService:
                         tenant_id=tenant_id, business_id=business_id,
                         campaign_id=campaign.id, enrollment_id=enrollment.id,
                         event_type="campaign.enrolled",
-                        payload={"lead_id": str(lead.id)},
+                        payload={"lead_id": str(lead.id),
+                                 "sequence_id": str(sequence.id),
+                                 "variant_id": sequence.name,
+                                 "experiment_id": f"campaign-sequence:{campaign.id}"},
                     )
                 result.append(self._snapshot(enrollment))
             return result

@@ -10,14 +10,17 @@ from threading import Lock
 
 _NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 _LABEL_VALUE = re.compile(r"^[a-zA-Z0-9_./{}:-]{1,100}$")
-_ALLOWED_LABELS = {"method", "route", "status", "component", "operation", "outcome"}
+_ALLOWED_LABELS = {"method", "route", "status", "component", "operation", "outcome", "queue_domain"}
 _ALLOWED_COMPONENTS = {"http", "outreach", "crm", "workflow", "test"}
+_ALLOWED_QUEUE_DOMAINS = {"inbound", "outreach", "scheduling", "escalation", "analytics"}
 _ALLOWED_OUTCOMES = {
     "success", "failure", "failed", "provider", "succeeded", "attempted", "scheduled",
+    "created", "reused", "queued", "retrying", "dead_letter",
 }
 _ALLOWED_OPERATIONS = {
     "request", "unhandled_exception", "send_attempt", "failure", "retry",
     "sync_attempt", "sync", "sync_request", "execution", "delivery_receipt", "scrape",
+    "enqueue", "dispatch", "redrive", "replay", "dead_letter",
 }
 _BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 
@@ -38,6 +41,8 @@ class MetricsRegistry:
                 raise ValueError("metric labels must use bounded identifier values")
             if key == "component" and value not in _ALLOWED_COMPONENTS:
                 raise ValueError("metric component must be from the bounded set")
+            if key == "queue_domain" and value not in _ALLOWED_QUEUE_DOMAINS:
+                raise ValueError("metric queue domain must be from the bounded set")
             if key == "outcome" and value not in _ALLOWED_OUTCOMES:
                 raise ValueError("metric outcome must be from the bounded set")
             if key == "operation" and value not in _ALLOWED_OPERATIONS:
@@ -73,6 +78,11 @@ class MetricsRegistry:
     def event(self, component: str, operation: str, outcome: str) -> None:
         """Record bounded application outcomes such as sends, retries, and failures."""
         self.increment("platform_operations_total", component=component,
+                       operation=operation, outcome=outcome)
+
+    def queue_event(self, domain: str, operation: str, outcome: str) -> None:
+        """Record queue lifecycle metrics without tenant or aggregate labels."""
+        self.increment("queue_tasks_total", queue_domain=domain,
                        operation=operation, outcome=outcome)
 
     def render(self) -> str:

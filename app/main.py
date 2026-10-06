@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
@@ -8,6 +8,7 @@ from app.security import AuthenticatedPrincipal
 from app.auth.principal_resolver import AuthorizationError
 from app.routes.conversations import router as conversation_router
 from app.routes.provider_webhooks import router as provider_webhook_router
+from app.routes.provider_ingress import router as provider_ingress_router
 from app.services.conversation_service import ConversationConflictError
 from app.services.outreach_execution import (
     OutreachConflict, OutreachNotEligible, OutreachNotFound, RateLimitExceeded,
@@ -15,7 +16,7 @@ from app.services.outreach_execution import (
 from app.services.recipient_selection import RecipientSelectionError
 
 from app.config import settings
-from app.schemas import InboundRequest, InboundResponse
+from app.schemas import InboundRequest, InboundResponse, QueuedInboundRequest
 from app.persistence.session import session_factory
 from app.persistence.unit_of_work import UnitOfWork
 from app.services.inbound import (
@@ -42,6 +43,9 @@ from app.services.reply_service import CampaignReplyNotFoundError, CampaignReply
 from app.observability.logging import configure_structured_logging
 from app.observability.middleware import ObservabilityMiddleware
 from app.observability.metrics import metrics
+from app.queue.contracts import QueueDomain, QueueTaskSubmission, QueueTaskView
+from app.queue.service import QueueAuthorizationError, QueueTaskConflict, QueueTaskService
+from uuid import uuid4
 
 configure_structured_logging(settings.log_level)
 app = FastAPI(title=settings.app_name)
@@ -50,6 +54,7 @@ app.include_router(lead_router)
 app.include_router(campaign_router)
 app.include_router(conversation_router)
 app.include_router(provider_webhook_router)
+app.include_router(provider_ingress_router)
 
 
 @app.exception_handler(AuthorizationError)
@@ -166,6 +171,45 @@ async def campaign_reply_not_found_handler(request: Request, exc: CampaignReplyN
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+def get_queue_task_service() -> QueueTaskService:
+    return QueueTaskService(uow_factory=lambda: UnitOfWork(session_factory))
+
+
+@app.post("/inbound/queue", response_model=QueueTaskView, status_code=202,
+          tags=["queue"])
+def enqueue_inbound(
+    request: QueuedInboundRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1, max_length=200),
+    principal: AuthenticatedPrincipal = Depends(require_role("inbound_writer")),
+    service: QueueTaskService = Depends(get_queue_task_service),
+) -> QueueTaskView:
+    if request.tenant_id != principal.tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant access denied")
+    return service.enqueue(principal, QueueTaskSubmission(
+        domain=QueueDomain.INBOUND,
+        task_name="inbound.process",
+        business_id=request.business_id,
+        idempotency_key=idempotency_key,
+        aggregate_type="contact",
+        aggregate_id=request.contact_id,
+        payload={key: value for key, value in {
+            "contact_id": request.contact_id, "channel": request.channel,
+            "text": request.text, "contact_name": request.contact_name,
+        }.items() if value is not None},
+        correlation_id=uuid4().hex,
+    ))
+
+
+@app.exception_handler(QueueAuthorizationError)
+async def queue_authorization_error_handler(request: Request, exc: QueueAuthorizationError) -> JSONResponse:
+    return JSONResponse(status_code=403, content={"detail": "Queue operation denied"})
+
+
+@app.exception_handler(QueueTaskConflict)
+async def queue_conflict_handler(request: Request, exc: QueueTaskConflict) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.get("/ready", include_in_schema=False)

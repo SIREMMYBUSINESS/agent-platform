@@ -104,6 +104,7 @@ class WorkflowRepository(Protocol):
 
 
 class EventRepository(Protocol):
+    def get_by_id(self, *, tenant_id: str, business_id: str, event_id: UUID) -> EventLog | None: ...
     def add(
         self, *, tenant_id: str, business_id: str, conversation_id: UUID | str,
         event_type: str, payload: dict[str, Any], source: str,
@@ -234,6 +235,18 @@ class SQLContactRepository:
             Contact.tenant_id == tenant_id, Contact.business_id == business_id,
         ).order_by(Contact.id).limit(limit))
         return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def get_by_destination(self, *, tenant_id: str, business_id: str,
+                           channel: str, address: str) -> Contact | None:
+        _require_tenant(tenant_id)
+        if channel not in {"sms", "whatsapp", "email"} or not address.strip():
+            return None
+        column = Contact.email if channel == "email" else Contact.whatsapp if channel == "whatsapp" else Contact.phone
+        statement = select(Contact).where(
+            Contact.tenant_id == tenant_id, Contact.business_id == business_id,
+            column == address.strip(),
+        )
+        return _database_call(lambda: self._session.exec(statement).first())
 
 
 class SQLConversationRepository:
@@ -423,6 +436,15 @@ class SQLEventRepository:
             self._session.flush()
             return event
         return _database_call(persist)
+
+    def get_by_id(self, *, tenant_id: str, business_id: str, event_id: UUID) -> EventLog | None:
+        _require_tenant(tenant_id)
+        statement = select(EventLog).where(
+            EventLog.tenant_id == tenant_id,
+            EventLog.business_id == business_id,
+            EventLog.id == event_id,
+        )
+        return _database_call(lambda: self._session.exec(statement).first())
 
     def list_for_conversation(
         self, *, tenant_id: str, conversation_id: UUID | str,

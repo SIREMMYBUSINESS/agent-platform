@@ -9,9 +9,17 @@ from uuid import UUID
 class CampaignSequenceService:
     def create_default(self, *, uow: Any, tenant_id: str, business_id: str,
                        campaign_id: UUID, steps: list[Any]):
+        return self.create_variant(
+            uow=uow, tenant_id=tenant_id, business_id=business_id,
+            campaign_id=campaign_id, name="default", sequence_order=0, steps=steps,
+        )
+
+    def create_variant(self, *, uow: Any, tenant_id: str, business_id: str,
+                       campaign_id: UUID, name: str, sequence_order: int,
+                       steps: list[Any]):
         sequence = uow.campaign_sequences.create(
             tenant_id=tenant_id, business_id=business_id,
-            campaign_id=campaign_id, name="default", sequence_order=0,
+            campaign_id=campaign_id, name=name, sequence_order=sequence_order,
         )
         for index, step in enumerate(steps):
             template = step.template if hasattr(step, "template") else step["template"]

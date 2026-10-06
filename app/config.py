@@ -1,4 +1,5 @@
 import os
+import re
 import stat
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -29,6 +30,7 @@ class Settings(BaseSettings):
     database_url_file: Path | None = None
     redis_url_file: Path | None = None
     provider_secrets_dir: Path | None = None
+    worker_bootstrap_module: str | None = None
     redis_url: str = "redis://localhost:6379/0"
 
     @field_validator("app_name", "environment", "default_region", "inbound_tenant_id")
@@ -46,6 +48,15 @@ class Settings(BaseSettings):
             return None
         value = value.strip()
         return value or None
+
+    @field_validator("worker_bootstrap_module")
+    @classmethod
+    def validate_worker_bootstrap_module(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        if not re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", value):
+            raise ValueError("must be a Python module path")
+        return value
 
     @field_validator("log_level")
     @classmethod

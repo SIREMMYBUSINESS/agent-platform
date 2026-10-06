@@ -150,6 +150,37 @@ def test_campaign_creation_persists_tenant_scoped_sequence_and_event(campaign_cl
         assert session.exec(select(Campaign)).one().status == "draft"
 
 
+def test_campaign_sequence_variants_assign_one_stable_arm_per_lead(campaign_client):
+    client, engine, lead_id = campaign_client
+    payload = campaign_payload(sequence_variants=[
+        {"name": "subject_a", "steps": [{"delay_seconds": 0, "template": {
+            "subject": "Welcome A", "body": "Hello {{contact_name}}.",
+        }}]},
+        {"name": "subject_b", "steps": [{"delay_seconds": 0, "template": {
+            "subject": "Welcome B", "body": "Hello {{contact_name}}.",
+        }}]},
+    ])
+    response = client.post("/campaigns", json=payload)
+    assert response.status_code == 201, response.text
+    campaign = response.json()
+    assert [sequence["name"] for sequence in campaign["sequences"]] == [
+        "default", "subject_a", "subject_b",
+    ]
+    first = enroll(client, campaign["id"], lead_id)
+    repeated = enroll(client, campaign["id"], lead_id)
+    assert first.status_code == repeated.status_code == 200
+    assert first.json()["enrollments"][0]["id"] == repeated.json()["enrollments"][0]["id"]
+    with Session(engine) as session:
+        enrollment = session.exec(select(CampaignEnrollment)).one()
+        event = session.exec(select(CampaignEventLog).where(
+            CampaignEventLog.event_type == "campaign.enrolled",
+        )).one()
+        selected = next(sequence for sequence in campaign["sequences"]
+                        if sequence["id"] == str(enrollment.sequence_id))
+        assert event.payload["variant_id"] == selected["name"]
+        assert event.payload["sequence_id"] == str(enrollment.sequence_id)
+
+
 def test_campaign_enrolls_qualified_lead_once_and_logs_event(campaign_client):
     client, engine, lead_id = campaign_client
     campaign = create_campaign(client)

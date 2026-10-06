@@ -18,6 +18,18 @@ class InboundRequest(BaseModel):
     consent_status: str = "granted"
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
+
+class QueuedInboundRequest(BaseModel):
+    """Strict async intake contract; tenant/business scope is checked against auth."""
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str = Field(min_length=1, max_length=160)
+    business_id: str = Field(min_length=1, max_length=160)
+    contact_id: str = Field(min_length=1, max_length=160)
+    channel: Literal["chat", "sms", "voicemail", "phone", "whatsapp", "email"]
+    text: str | None = Field(default=None, max_length=20000)
+    contact_name: str | None = Field(default=None, max_length=200)
+
 class InboundResponse(BaseModel):
     success: bool
     status: str
@@ -122,6 +134,13 @@ class CampaignAudienceFilters(BaseModel):
     source_ids: list[UUID] | None = None
 
 
+class CampaignSequenceVariantInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    steps: list[CampaignStepInput] = Field(min_length=1, max_length=50)
+
+
 class CampaignCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -130,6 +149,14 @@ class CampaignCreateRequest(BaseModel):
     channel: Literal["email", "sms", "whatsapp"]
     audience_filters: CampaignAudienceFilters = Field(default_factory=CampaignAudienceFilters)
     steps: list[CampaignStepInput] = Field(min_length=1, max_length=50)
+    sequence_variants: list[CampaignSequenceVariantInput] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def unique_sequence_variant_names(self):
+        names = [variant.name.casefold() for variant in self.sequence_variants]
+        if "default" in names or len(names) != len(set(names)):
+            raise ValueError("sequence variant names must be unique and cannot be 'default'")
+        return self
 
 
 class CampaignStatusResponse(BaseModel):
@@ -301,6 +328,14 @@ class CampaignReplyResponse(BaseModel):
     duplicate: bool = False
 
 
+class CampaignVariantAnalytics(BaseModel):
+    variant_id: str
+    enrolled_count: int
+    sent_count: int
+    conversions: int
+    conversion_rate: float = Field(ge=0, le=1)
+
+
 class CampaignAnalyticsResponse(BaseModel):
     campaign_id: UUID
     sent_count: int
@@ -309,3 +344,4 @@ class CampaignAnalyticsResponse(BaseModel):
     positive_reply_rate: float = Field(ge=0, le=1)
     opt_out_count: int
     booked_appointments: int
+    variant_metrics: list[CampaignVariantAnalytics] = Field(default_factory=list)

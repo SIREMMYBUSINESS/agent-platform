@@ -6,9 +6,13 @@ from typing import Self
 
 from sqlmodel import Session
 from app.persistence.auth_repositories import SQLApiKeyRepository, SQLApiKeyGrantRepository
+from app.persistence.queue_repositories import SQLQueueTaskRepository
 from app.persistence.conversation_repositories import SQLConversationAssignmentRepository
 from app.persistence.workflow_repositories import SQLWorkflowExecutionRepository, SQLFollowUpRepository
 from app.persistence.crm_repositories import SQLCRMContactRepository, SQLCRMSyncRepository
+from app.persistence.provider_repositories import (
+    SQLProviderInteractionRepository, SQLProviderWebhookRepository,
+)
 
 from app.persistence.repositories import (
     SQLAppointmentRepository,
@@ -69,11 +73,14 @@ class UnitOfWork:
         self._closed = False
         self.api_keys: SQLApiKeyRepository | None = None
         self.api_key_grants: SQLApiKeyGrantRepository | None = None
+        self.queue_tasks: SQLQueueTaskRepository | None = None
         self.conversation_assignments: SQLConversationAssignmentRepository | None = None
         self.workflow_executions: SQLWorkflowExecutionRepository | None = None
         self.follow_ups: SQLFollowUpRepository | None = None
         self.crm_sync: SQLCRMSyncRepository | None = None
         self.crm_contacts: SQLCRMContactRepository | None = None
+        self.provider_webhooks: SQLProviderWebhookRepository | None = None
+        self.provider_interactions: SQLProviderInteractionRepository | None = None
         self.tenants: SQLTenantRepository | None = None
         self.businesses: SQLBusinessRepository | None = None
         self.contacts: SQLContactRepository | None = None
@@ -125,11 +132,14 @@ class UnitOfWork:
             self._session.begin()
             self.api_keys = SQLApiKeyRepository(self._session)
             self.api_key_grants = SQLApiKeyGrantRepository(self._session)
+            self.queue_tasks = SQLQueueTaskRepository(self._session)
             self.conversation_assignments = SQLConversationAssignmentRepository(self._session)
             self.workflow_executions = SQLWorkflowExecutionRepository(self._session)
             self.follow_ups = SQLFollowUpRepository(self._session)
             self.crm_sync = SQLCRMSyncRepository(self._session)
             self.crm_contacts = SQLCRMContactRepository(self._session)
+            self.provider_webhooks = SQLProviderWebhookRepository(self._session)
+            self.provider_interactions = SQLProviderInteractionRepository(self._session)
             self.tenants = SQLTenantRepository(self._session)
             self.businesses = SQLBusinessRepository(self._session)
             self.contacts = SQLContactRepository(self._session)

@@ -41,13 +41,22 @@ class LeadScoringService:
         urgency = _bounded_score(fit_signal.get("urgency_score"), 10)
         intent = _bounded_score(fit_signal.get("intent_score"), 20)
         priority = round(fit * 0.4 + urgency * 0.3 + intent * 0.3)
+        engagement = fit_signal.get("engagement_score")
+        recency = fit_signal.get("recency_score")
+        if engagement is not None or recency is not None:
+            engagement_score = _bounded_score(engagement, 0)
+            recency_score = _bounded_score(recency, 0)
+            priority = round(priority * 0.8 + engagement_score * 0.1 + recency_score * 0.1)
+            formula = "base_priority*0.8 + engagement*0.1 + recency*0.1"
+        else:
+            formula = "fit*0.4 + urgency*0.3 + intent*0.3"
         return LeadScoreResult(
             fit_score=fit,
             urgency_score=urgency,
             intent_score=intent,
             priority_score=priority,
             rationale={
-                "formula": "fit*0.4 + urgency*0.3 + intent*0.3",
+                "formula": formula,
                 "qualification_threshold": self.qualification_threshold,
             },
         )

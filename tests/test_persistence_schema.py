@@ -19,6 +19,9 @@ from app.persistence.models import (
 
 EXPECTED_TABLES = {
     "workflow_executions",
+    "queue_task_records",
+    "provider_webhook_events",
+    "provider_interaction_logs",
     "follow_up_tasks",
     "conversation_assignments",
     "api_keys",
