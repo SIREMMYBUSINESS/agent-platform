@@ -11,6 +11,9 @@ SETTING_ENV_VARS = (
     "DEFAULT_REGION",
     "INBOUND_TENANT_ID",
     "DATABASE_URL",
+    "DATABASE_URL_FILE",
+    "REDIS_URL_FILE",
+    "PROVIDER_SECRETS_DIR",
     "REDIS_URL",
 )
 
@@ -70,21 +73,62 @@ def test_environment_specific_dotenv_overrides_base_dotenv(monkeypatch, tmp_path
 
     clear_settings_environment(monkeypatch)
     monkeypatch.chdir(tmp_path)
+    database_url_file = tmp_path / "database_url"
+    database_url_file.write_text(
+        "postgresql://user:password@db.example/production_db?sslmode=verify-full\n",
+        encoding="utf-8",
+    )
+    database_url_file.chmod(0o400)
+    redis_url_file = tmp_path / "redis_url"
+    redis_url_file.write_text("rediss://cache.example/1\n", encoding="utf-8")
+    redis_url_file.chmod(0o400)
     (tmp_path / ".env").write_text(
-        "ENVIRONMENT=production\nDATABASE_URL=postgresql://localhost/base_db\n",
+        "ENVIRONMENT=production\nDATABASE_URL=postgresql://localhost/base_db\n"
+        f"DATABASE_URL_FILE={database_url_file}\nREDIS_URL_FILE={redis_url_file}\n",
         encoding="utf-8",
     )
     (tmp_path / ".env.production").write_text(
-        "DATABASE_URL=postgresql://db.example/production_db\n"
-        "REDIS_URL=rediss://cache.example/1\n",
+        f"DATABASE_URL_FILE={database_url_file}\n"
+        f"REDIS_URL_FILE={redis_url_file}\n",
         encoding="utf-8",
     )
 
     settings = load_settings()
 
     assert settings.environment == "production"
-    assert settings.database_url == "postgresql://db.example/production_db"
+    assert settings.database_url == "postgresql://user:password@db.example/production_db?sslmode=verify-full"
     assert settings.redis_url == "rediss://cache.example/1"
+
+
+def test_database_url_can_be_read_from_a_mounted_secret_file(monkeypatch, tmp_path):
+    from app.config import load_settings
+
+    clear_settings_environment(monkeypatch)
+    secret_file = tmp_path / "database_url"
+    secret_file.write_text("postgresql+psycopg://user:password@db.example/platform\n", encoding="utf-8")
+    secret_file.chmod(0o400)
+    monkeypatch.setenv("DATABASE_URL_FILE", str(secret_file))
+    monkeypatch.chdir(tmp_path)
+
+    settings = load_settings()
+
+    assert settings.database_url == "postgresql+psycopg://user:password@db.example/platform"
+
+
+def test_production_rejects_unverified_database_tls_and_inline_credentials(monkeypatch, tmp_path):
+    from app.config import load_settings
+
+    clear_settings_environment(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@db.example/platform")
+    monkeypatch.setenv("REDIS_URL", "rediss://cache.example/0")
+    with pytest.raises(RuntimeError, match="TLS certificate verification"):
+        load_settings()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@db.example/platform?sslmode=verify-full")
+    with pytest.raises(RuntimeError, match="DATABASE_URL_FILE"):
+        load_settings()
 
 
 @pytest.mark.parametrize(

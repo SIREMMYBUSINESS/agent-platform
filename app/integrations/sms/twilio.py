@@ -5,11 +5,13 @@ from __future__ import annotations
 import base64
 from collections.abc import Mapping
 from urllib.parse import urlencode
+from uuid import UUID
 
 from app.integrations.provider_support import (
     JSONHTTPTransport, ProviderAuditSink, ProviderConfigurationError,
     ProviderHTTPError, TenantConfigResolver, UrllibJSONTransport, emit_audit,
 )
+from app.integrations.sms.twilio_webhooks import build_status_callback_url
 
 
 class TwilioDeliveryError(RuntimeError):
@@ -30,7 +32,8 @@ class TwilioMessageSender:
         self._timeout = timeout
 
     def send(self, *, tenant_id: str, business_id: str, channel: str,
-             recipient: str, content: Mapping[str, str], idempotency_key: str) -> None:
+             recipient: str, content: Mapping[str, str], idempotency_key: str,
+             message_id: UUID | None = None, attempt: int | None = None) -> str | None:
         if channel not in {"sms", "whatsapp"}:
             raise ValueError("TwilioMessageSender supports sms and whatsapp")
         key = self._key(idempotency_key)
@@ -53,13 +56,20 @@ class TwilioMessageSender:
                     source = self._whatsapp_address(source)
                 recipient = self._whatsapp_address(recipient)
             form = {"To": recipient, "Body": body}
+            callback_base_url = config.get("status_callback_base_url", "").strip()
+            if callback_base_url and message_id is not None and attempt is not None:
+                callback_url = build_status_callback_url(
+                    callback_base_url, tenant_id=tenant_id, business_id=business_id,
+                    message_id=message_id, attempt=attempt,
+                )
+                form["StatusCallback"] = callback_url
             if source:
                 form["From"] = source
             else:
                 form["MessagingServiceSid"] = service_sid
             data = urlencode(form).encode("utf-8")
             auth = base64.b64encode(f"{account_sid}:{auth_token}".encode()).decode("ascii")
-            status, _response = self._transport.request(
+            status, response = self._transport.request(
                 "POST", self.endpoint.format(account_sid=account_sid),
                 headers={"Authorization": f"Basic {auth}",
                          "Content-Type": "application/x-www-form-urlencoded",
@@ -71,6 +81,8 @@ class TwilioMessageSender:
             emit_audit(self._audit, tenant_id=tenant_id, business_id=business_id,
                        provider=self.provider_key, operation=f"send_{channel}",
                        idempotency_key=key, outcome="succeeded")
+            message_sid = response.get("sid")
+            return message_sid if isinstance(message_sid, str) and message_sid else None
         except Exception as exc:
             code = (f"provider_http_error:{exc.status_code}" if isinstance(exc, ProviderHTTPError)
                     else "invalid_message_request" if isinstance(exc, ValueError)

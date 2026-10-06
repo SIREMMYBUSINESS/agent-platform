@@ -1,11 +1,13 @@
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
+from sqlalchemy import text
 
 from app.auth.dependencies import get_authenticated_principal, require_role
 from app.security import AuthenticatedPrincipal
 from app.auth.principal_resolver import AuthorizationError
 from app.routes.conversations import router as conversation_router
+from app.routes.provider_webhooks import router as provider_webhook_router
 from app.services.conversation_service import ConversationConflictError
 from app.services.outreach_execution import (
     OutreachConflict, OutreachNotEligible, OutreachNotFound, RateLimitExceeded,
@@ -47,6 +49,7 @@ app.add_middleware(ObservabilityMiddleware)
 app.include_router(lead_router)
 app.include_router(campaign_router)
 app.include_router(conversation_router)
+app.include_router(provider_webhook_router)
 
 
 @app.exception_handler(AuthorizationError)
@@ -163,6 +166,21 @@ async def campaign_reply_not_found_handler(request: Request, exc: CampaignReplyN
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/ready", include_in_schema=False)
+def readiness():
+    """Readiness probe; validates the PostgreSQL connection without exposing errors."""
+    session = None
+    try:
+        session = session_factory()
+        session.exec(text("SELECT 1")).one()
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
+    finally:
+        if session is not None:
+            session.close()
+    return {"status": "ready"}
 
 
 @app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)

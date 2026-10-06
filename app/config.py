@@ -1,6 +1,7 @@
 import os
+import stat
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,6 +26,9 @@ class Settings(BaseSettings):
 
     # Local service addresses only; credentials belong in the environment or .env.
     database_url: str = "postgresql://localhost:5432/agent_platform"
+    database_url_file: Path | None = None
+    redis_url_file: Path | None = None
+    provider_secrets_dir: Path | None = None
     redis_url: str = "redis://localhost:6379/0"
 
     @field_validator("app_name", "environment", "default_region", "inbound_tenant_id")
@@ -69,14 +73,51 @@ class Settings(BaseSettings):
             raise ValueError("must be a redis:// or rediss:// URL with a host")
         return value
 
-
 def load_settings() -> Settings:
     """Load base dotenv, then environment-specific dotenv, then OS values."""
     base_settings = Settings()
     environment = os.environ.get("ENVIRONMENT", base_settings.environment).strip()
     environment_file = Path(f".env.{environment}")
     if environment_file.is_file():
-        return Settings(_env_file=(Path(".env"), environment_file))
+        base_settings = Settings(_env_file=(Path(".env"), environment_file))
+    secret_values = {}
+    for env_name, field_name in (("DATABASE_URL_FILE", "database_url"),
+                                 ("REDIS_URL_FILE", "redis_url")):
+        secret_file = os.environ.get(env_name) or getattr(base_settings, env_name.lower())
+        if not secret_file:
+            continue
+        try:
+            path = Path(secret_file)
+            if path.is_symlink():
+                raise OSError
+            metadata = path.stat()
+            if not stat.S_ISREG(metadata.st_mode):
+                raise OSError
+            if os.name != "nt":
+                mode = stat.S_IMODE(metadata.st_mode)
+                group_ids = set(os.getgroups()) | {os.getgid()}
+                if (mode & 0o007 or mode & 0o222
+                        or not mode & 0o400 and not (mode & 0o040 and metadata.st_gid in group_ids)):
+                    raise OSError
+            secret_value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            raise RuntimeError(f"{env_name} could not be read") from None
+        if not secret_value:
+            raise RuntimeError(f"{env_name} is empty")
+        secret_values[field_name] = secret_value
+    if secret_values:
+        base_settings = Settings(**(base_settings.model_dump() | secret_values))
+    if base_settings.environment.lower() == "production":
+        database = urlsplit(base_settings.database_url)
+        sslmode = parse_qs(database.query).get("sslmode", [""])[-1]
+        if sslmode not in {"verify-full", "verify-ca"}:
+            raise RuntimeError("production DATABASE_URL must require TLS certificate verification")
+        if urlsplit(base_settings.redis_url).scheme != "rediss":
+            raise RuntimeError("production REDIS_URL must use rediss://")
+        if base_settings.database_url_file is None:
+            raise RuntimeError("production DATABASE_URL must be supplied through DATABASE_URL_FILE")
+        if base_settings.redis_url_file is None:
+            raise RuntimeError("production REDIS_URL must be supplied through REDIS_URL_FILE")
     return base_settings
 
 

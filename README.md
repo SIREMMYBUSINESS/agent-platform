@@ -21,7 +21,7 @@ python -m pip install -e ".[test]"
 
 On Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
 
-Copy `.env.example` to `.env` to customize local settings. Settings are validated when loaded; `.env.<ENVIRONMENT>` overrides `.env`, and process environment variables override both. For example, use `.env.production` for production-specific values. Supply `DATABASE_URL` and `REDIS_URL` from the deployment environment in production. API startup does not connect to PostgreSQL or Redis.
+Copy `.env.example` to `.env` to customize local settings. Settings are validated when loaded; `.env.<ENVIRONMENT>` overrides `.env`, and process environment variables override both. For example, use `.env.production` for production-specific values. Production deployments must mount database and Redis URLs as protected secret files and set `DATABASE_URL_FILE` and `REDIS_URL_FILE`; production database connections require certificate-verified TLS. See the [production operations runbook](ops/runbooks/production-operations.md). API startup does not connect to PostgreSQL or Redis.
 
 ## Run locally
 
@@ -33,7 +33,7 @@ The health endpoint is `GET http://127.0.0.1:8000/health`.
 
 ## Database schema
 
-Production schema changes are managed with Alembic. Set `DATABASE_URL` to the target PostgreSQL database, then run migrations explicitly before starting inbound traffic:
+Production schema changes are managed with Alembic. Supply `DATABASE_URL` locally, or mount its protected secret file and set `DATABASE_URL_FILE` in production, then run migrations explicitly before starting inbound traffic:
 
 ```bash
 python -m alembic -c alembic.ini upgrade head

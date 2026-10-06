@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any
+from uuid import UUID
 
 from app.integrations.provider_support import ProviderAuditSink, emit_audit
 
@@ -20,7 +21,8 @@ class MultiChannelMessageSender:
         self._audit = audit_sink
 
     def send(self, *, tenant_id: str, business_id: str, channel: str,
-             recipient: str, content: Mapping[str, str], idempotency_key: str) -> None:
+             recipient: str, content: Mapping[str, str], idempotency_key: str,
+             message_id: UUID | None = None, attempt: int | None = None) -> str | None:
         sender = self._senders.get(channel)
         if sender is None:
             emit_audit(self._audit, tenant_id=tenant_id, business_id=business_id,
@@ -28,8 +30,9 @@ class MultiChannelMessageSender:
                        idempotency_key=idempotency_key, outcome="failed",
                        error_code="unsupported_channel")
             raise ValueError("unsupported outbound channel")
-        sender.send(tenant_id=tenant_id, business_id=business_id, channel=channel,
-                    recipient=recipient, content=content, idempotency_key=idempotency_key)
+        return sender.send(tenant_id=tenant_id, business_id=business_id, channel=channel,
+                           recipient=recipient, content=content, idempotency_key=idempotency_key,
+                           message_id=message_id, attempt=attempt)
 
 
 __all__ = ["MultiChannelMessageSender"]

@@ -1,0 +1,55 @@
+services:
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDIS_URL_FILE: /run/secrets/redis_url
+    secrets:
+      - database_url
+      - redis_url
+    restart: "no"
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL_FILE: /run/secrets/database_url
+      REDIS_URL_FILE: /run/secrets/redis_url
+      PROVIDER_SECRETS_DIR: /run/provider-secrets
+    secrets:
+      - database_url
+      - redis_url
+    volumes:
+      - type: bind
+        source: ${PROVIDER_SECRETS_DIR:?Set PROVIDER_SECRETS_DIR to a protected mounted secret directory}
+        target: /run/provider-secrets
+        read_only: true
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+secrets:
+  database_url:
+    file: ${DATABASE_URL_SECRET_FILE:?Set DATABASE_URL_SECRET_FILE to a read-only secret file}
+  redis_url:
+    file: ${REDIS_URL_SECRET_FILE:?Set REDIS_URL_SECRET_FILE to a read-only secret file}

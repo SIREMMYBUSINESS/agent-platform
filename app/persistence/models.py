@@ -996,6 +996,7 @@ class OutreachMessage(SQLModel, table=True):
         PrimaryKeyConstraint("id", name="pk_outreach_messages"),
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_outreach_messages_idempotency"),
         UniqueConstraint("tenant_id", "business_id", "campaign_id", "contact_id", name="uq_outreach_messages_campaign_contact"),
+        UniqueConstraint("tenant_id", "business_id", "provider_message_id", name="uq_outreach_messages_provider_id"),
         ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_outreach_messages_tenant"),
         ForeignKeyConstraint(["tenant_id", "business_id", "campaign_id"], ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"], name="fk_outreach_messages_campaign"),
         ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"], ["contacts.tenant_id", "contacts.id", "contacts.business_id"], name="fk_outreach_messages_contact"),
@@ -1013,6 +1014,9 @@ class OutreachMessage(SQLModel, table=True):
     conversation_id: UUID | None = None
     channel: str
     idempotency_key: str
+    provider_message_id: str | None = None
+    provider_status: str | None = None
+    provider_error_code: str | None = None
     content: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
     content_hash: str
     status: str = "scheduled"

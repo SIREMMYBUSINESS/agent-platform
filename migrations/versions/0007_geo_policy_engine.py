@@ -143,6 +143,10 @@ def upgrade() -> None:
     # renderer. These fixed deployment defaults are emitted as explicit SQL.
     for code, rules in profiles.items():
         encoded_rules = json.dumps(rules, separators=(",", ":"))
+        # ``sa.text`` treats JSON's ``:true`` and ``:false`` tokens as bind
+        # parameters; escape colons so online execution and offline SQL both
+        # preserve the literal JSON document.
+        encoded_rules = encoded_rules.replace(":", r"\:")
         op.execute(sa.text(
             "INSERT INTO country_policies (country_code, region_group, rules) "
             f"VALUES ('{code}', '{code}', '{encoded_rules}'::jsonb)"

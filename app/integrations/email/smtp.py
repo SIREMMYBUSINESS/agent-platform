@@ -7,6 +7,7 @@ import smtplib
 from email.message import EmailMessage
 from email.utils import parseaddr
 from typing import Mapping
+from uuid import UUID
 
 from app.integrations.provider_support import (
     ProviderAuditSink, ProviderConfigurationError, TenantConfigResolver, emit_audit,
@@ -31,7 +32,8 @@ class SMTPEmailSender:
         self._smtp_factory = smtp_factory
 
     def send(self, *, tenant_id: str, business_id: str, channel: str,
-             recipient: str, content: Mapping[str, str], idempotency_key: str) -> None:
+             recipient: str, content: Mapping[str, str], idempotency_key: str,
+             message_id: UUID | None = None, attempt: int | None = None) -> None:
         if channel != "email":
             raise ValueError("SMTPEmailSender only supports email")
         key = self._key(idempotency_key)

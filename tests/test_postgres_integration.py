@@ -7,6 +7,7 @@ run this test. It creates and drops only a temporary schema in that database.
 from __future__ import annotations
 
 import os
+from datetime import time
 from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlsplit
@@ -26,6 +27,7 @@ from app.persistence.models import (
     Conversation,
     EventLog,
     Message,
+    RoutingRule,
     Tenant,
     WorkflowStateRecord,
 )
@@ -91,6 +93,10 @@ def test_postgres_migrations_and_inbound_persistence(migrated_postgres_schema):
         "workflow_state_records",
         "event_logs",
     } <= table_names
+    outreach_columns = {column["name"] for column in inspect(engine).get_columns("outreach_messages")}
+    assert {"provider_message_id", "provider_status", "provider_error_code"} <= outreach_columns
+    outreach_constraints = inspect(engine).get_unique_constraints("outreach_messages")
+    assert any(item["name"] == "uq_outreach_messages_provider_id" for item in outreach_constraints)
 
     tenant_id = f"tenant-{uuid4()}"
     business_id = f"business-{uuid4()}"
@@ -103,10 +109,18 @@ def test_postgres_migrations_and_inbound_persistence(migrated_postgres_schema):
             vertical="general", region="CA",
         ))
         session.flush()
+        session.add_all([
+            RoutingRule(
+                tenant_id=tenant_id, business_id=business_id, weekday=weekday,
+                opens_at=time(0, 0), closes_at=time(23, 59),
+            )
+            for weekday in range(7)
+        ])
         session.add(Contact(
             id=contact_id, tenant_id=tenant_id, business_id=business_id,
             full_name="Integration contact",
         ))
+        session.flush()
         session.add(ConsentRecord(
             tenant_id=tenant_id, business_id=business_id, contact_id=contact_id,
             channel="email", status="granted", source="trusted_integration_fixture",
@@ -122,7 +136,7 @@ def test_postgres_migrations_and_inbound_persistence(migrated_postgres_schema):
         business_id=business_id,
         contact_id=contact_id,
         channel="email",
-        text="Integration test message",
+        text="What are your business hours?",
         contact_name="Integration contact",
         consent_status="granted",
         metadata={"region": "US"},
@@ -134,26 +148,36 @@ def test_postgres_migrations_and_inbound_persistence(migrated_postgres_schema):
         messages = session.exec(select(Message)).all()
         events = session.exec(select(EventLog)).all()
         workflows = session.exec(select(WorkflowStateRecord)).all()
+        persisted_business = session.get(Business, business_id)
         assert session.exec(select(Appointment)).all() == []
+        committed_event_count = len(events)
+        committed_workflow_count = len(workflows)
 
     assert len(conversations) == 1
     assert conversations[0].tenant_id == tenant_id
-    assert conversations[0].workflow_state == "intent_classified"
+    assert conversations[0].workflow_state == "business_hours_checked"
     assert len(messages) == 2
-    assert len(events) == 2
-    assert events[0].payload["region"] == "CA"
-    assert len(workflows) == 1 and workflows[0].state == "intent_classified"
+    assert {event.event_type for event in events} >= {
+        "intake.received",
+        "business.hours.checked",
+    }
+    assert persisted_business is not None and persisted_business.region == "CA"
+    assert {workflow.state for workflow in workflows} == {
+        "intake_received",
+        "intent_classified",
+        "business_hours_checked",
+    }
 
-    class FailingAgent:
-        def run(self, context):
-            raise RuntimeError("integration agent failure")
+    class FailingRoutingService:
+        def evaluate(self, **_kwargs):
+            raise RuntimeError("integration routing failure")
 
     failing_service = InboundService(
         trusted_tenant_id=tenant_id,
         uow_factory=lambda: UnitOfWork(lambda: Session(engine)),
-        receptionist_agent=FailingAgent(),
+        routing_service=FailingRoutingService(),
     )
-    with pytest.raises(RuntimeError, match="integration agent failure"):
+    with pytest.raises(RuntimeError, match="integration routing failure"):
         failing_service.handle(InboundRequest(
             tenant_id=tenant_id,
             business_id=business_id,
@@ -166,5 +190,5 @@ def test_postgres_migrations_and_inbound_persistence(migrated_postgres_schema):
     with Session(engine) as session:
         assert len(session.exec(select(Conversation)).all()) == 1
         assert len(session.exec(select(Message)).all()) == 2
-        assert len(session.exec(select(EventLog)).all()) == 2
-        assert len(session.exec(select(WorkflowStateRecord)).all()) == 1
+        assert len(session.exec(select(EventLog)).all()) == committed_event_count
+        assert len(session.exec(select(WorkflowStateRecord)).all()) == committed_workflow_count

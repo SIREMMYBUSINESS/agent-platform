@@ -45,10 +45,19 @@ def test_engine_creation_is_lazy_cached_and_replaceable():
     assert factory.engine is fake_engine
     assert calls == [
         (
-            "postgresql://db.example/agent_platform",
+            "postgresql+psycopg://db.example/agent_platform",
             {"echo": False, "pool_pre_ping": True},
         )
     ]
+
+
+def test_default_postgresql_url_selects_installed_psycopg3_driver():
+    from sqlalchemy import create_engine
+
+    engine = create_engine("postgresql+psycopg://db.example/agent_platform")
+
+    assert engine.dialect.driver == "psycopg"
+    engine.dispose()
 
 
 def test_session_factory_centralizes_engine_and_creates_separate_sessions():
@@ -57,7 +66,7 @@ def test_session_factory_centralizes_engine_and_creates_separate_sessions():
     factory_calls = []
 
     def engine_factory(database_url, **kwargs):
-        assert database_url == "postgresql://db.example/agent_platform"
+        assert database_url == "postgresql+psycopg://db.example/agent_platform"
         return fake_engine
 
     def sessionmaker_factory(**kwargs):

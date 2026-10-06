@@ -17,7 +17,7 @@ _ALLOWED_OUTCOMES = {
 }
 _ALLOWED_OPERATIONS = {
     "request", "unhandled_exception", "send_attempt", "failure", "retry",
-    "sync_attempt", "sync", "sync_request", "execution", "scrape",
+    "sync_attempt", "sync", "sync_request", "execution", "delivery_receipt", "scrape",
 }
 _BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 

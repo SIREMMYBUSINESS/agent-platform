@@ -163,6 +163,106 @@ def test_execution_retry_delivery_tracking_and_events(outreach):
     assert {"MessageScheduled", "MessageSent", "MessageDelivered"} <= event_types
 
 
+def test_verified_twilio_receipt_is_idempotent_and_survives_callback_during_send(outreach):
+    engine, _, principal, campaign_id, service, _, _, uow_factory = outreach
+    provider_principal = AuthenticatedPrincipal(
+        "twilio:account", "tenant-a", ("delivery_receipt_writer",),
+        "twilio_webhook", NOW - timedelta(minutes=1),
+    )
+    sid = "SM" + "a" * 32
+    with Session(engine) as session:
+        campaign = session.get(Campaign, campaign_id)
+        campaign.channel = "sms"
+        contact = session.get(Contact, "contact-a")
+        contact.phone = "+15559990001"
+        session.add(ConsentRecord(
+            tenant_id="tenant-a", business_id="business-a", contact_id="contact-a",
+            channel="sms", status="granted", source="test_admin",
+        ))
+        session.commit()
+
+    class CallbackDuringSend:
+        def send(self, **kwargs):
+            service.apply_twilio_receipt(
+                provider_principal, business_id="business-a", message_id=kwargs["message_id"],
+                provider_message_id=sid, attempt=kwargs["attempt"], provider_status="delivered",
+            )
+            return sid
+
+    service._sender = CallbackDuringSend()
+    scheduled = schedule(service, principal, campaign_id, key="twilio-receipt")
+    delivered = service.execute_send(principal, scheduled.id)
+    assert delivered.status == "delivered"
+    assert delivered.provider_message_id == sid
+    assert delivered.provider_status == "delivered"
+    replay = service.apply_twilio_receipt(
+        provider_principal, business_id="business-a", message_id=scheduled.id,
+        provider_message_id=sid, attempt=1, provider_status="sent",
+    )
+    assert replay.status == "delivered"
+    with Session(engine) as session:
+        events = session.exec(select(CampaignEventLog).where(
+            CampaignEventLog.event_type == "MessageDelivered",
+        )).all()
+        assert len(events) == 1
+
+
+def test_retry_scopes_receipts_to_attempt_and_ignores_late_prior_attempt(outreach):
+    engine, _, principal, campaign_id, service, _, _, _ = outreach
+    receipt_principal = AuthenticatedPrincipal(
+        "twilio:account", "tenant-a", ("delivery_receipt_writer",),
+        "twilio_webhook", NOW - timedelta(minutes=1),
+    )
+    with Session(engine) as session:
+        session.get(Campaign, campaign_id).channel = "sms"
+        contact = session.get(Contact, "contact-a")
+        contact.phone = "+15559990001"
+        session.add(ConsentRecord(
+            tenant_id="tenant-a", business_id="business-a", contact_id="contact-a",
+            channel="sms", status="granted", source="test_admin",
+        ))
+        session.commit()
+
+    class ReturningSender:
+        sid = "SM" + "a" * 32
+
+        def send(self, **_kwargs):
+            return self.sid
+
+    sender = ReturningSender()
+    service._sender = sender
+    scheduled = schedule(service, principal, campaign_id, key="twilio-retry-receipt")
+    sent = service.execute_send(principal, scheduled.id)
+    assert sent.status == "sent" and sent.provider_message_id == sender.sid
+    failed = service.apply_twilio_receipt(
+        receipt_principal, business_id="business-a", message_id=scheduled.id,
+        provider_message_id=sender.sid, attempt=1, provider_status="undelivered",
+        error_code="30007",
+    )
+    assert failed.status == "failed"
+
+    service.retry_send(principal, scheduled.id)
+    stale_during_schedule = service.apply_twilio_receipt(
+        receipt_principal, business_id="business-a", message_id=scheduled.id,
+        provider_message_id=sender.sid, attempt=1, provider_status="delivered",
+    )
+    assert stale_during_schedule.status == "scheduled"
+
+    sender.sid = "SM" + "c" * 32
+    retried = service.execute_send(principal, scheduled.id)
+    assert retried.status == "sent" and retried.provider_message_id == sender.sid
+    stale_after_retry = service.apply_twilio_receipt(
+        receipt_principal, business_id="business-a", message_id=scheduled.id,
+        provider_message_id="SM" + "a" * 32, attempt=1, provider_status="delivered",
+    )
+    assert stale_after_retry.status == "sent"
+    delivered = service.apply_twilio_receipt(
+        receipt_principal, business_id="business-a", message_id=scheduled.id,
+        provider_message_id=sender.sid, attempt=2, provider_status="delivered",
+    )
+    assert delivered.status == "delivered" and delivered.provider_status == "delivered"
+
+
 def test_failed_send_is_retryable_and_retry_limit_is_deterministic(outreach):
     engine, _, principal, campaign_id, _, _, sender, uow_factory = outreach
     sender.fail = True

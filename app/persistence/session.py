@@ -43,6 +43,12 @@ class SessionFactory:
                     database_url = (
                         self._database_url() if callable(self._database_url) else self._database_url
                     )
+                    # The project installs psycopg 3. SQLAlchemy's bare
+                    # postgresql:// default still selects the psycopg2 driver.
+                    if database_url.startswith("postgresql://"):
+                        database_url = database_url.replace(
+                            "postgresql://", "postgresql+psycopg://", 1
+                        )
                     self._engine = self._engine_factory(
                         database_url,
                         echo=False,

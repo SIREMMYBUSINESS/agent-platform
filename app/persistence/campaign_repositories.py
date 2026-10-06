@@ -310,6 +310,26 @@ class SQLOutreachMessageRepository:
         )
         return _database_call(lambda: self._session.exec(stmt).first())
 
+    def get_by_provider_message_id(self, *, tenant_id: str, business_id: str,
+                                   provider_message_id: str) -> OutreachMessage | None:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.business_id == business_id,
+            OutreachMessage.provider_message_id == provider_message_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def get_for_update(self, *, tenant_id: str, business_id: str,
+                       message_id: UUID) -> OutreachMessage | None:
+        _require_tenant(tenant_id)
+        stmt = select(OutreachMessage).where(
+            OutreachMessage.tenant_id == tenant_id,
+            OutreachMessage.business_id == business_id,
+            OutreachMessage.id == message_id,
+        ).with_for_update()
+        return _database_call(lambda: self._session.exec(stmt).first())
+
     def get_for_contact(self, *, tenant_id: str, business_id: str,
                         campaign_id: UUID, contact_id: str) -> OutreachMessage | None:
         _require_tenant(tenant_id)
@@ -383,11 +403,24 @@ class SQLOutreachMessageRepository:
     def set_state(self, *, tenant_id: str, business_id: str, message_id: UUID,
                   expected_status: str, status: str, at: datetime,
                   failure_reason: str | None = None, increment_attempts: bool = False,
-                  scheduled_at: datetime | None = None) -> OutreachMessage:
+                  scheduled_at: datetime | None = None,
+                  provider_message_id: str | None = None,
+                  provider_status: str | None = None,
+                  provider_error_code: str | None = None,
+                  clear_provider_receipt: bool = False) -> OutreachMessage:
         _require_tenant(tenant_id)
         values: dict[str, Any] = {"status": status, "updated_at": at}
         if scheduled_at is not None:
             values["scheduled_at"] = scheduled_at
+        if provider_message_id is not None:
+            values["provider_message_id"] = provider_message_id
+        if provider_status is not None:
+            values["provider_status"] = provider_status
+        if provider_error_code is not None:
+            values["provider_error_code"] = provider_error_code
+        if clear_provider_receipt:
+            values.update(provider_message_id=None, provider_status=None,
+                          provider_error_code=None)
         if status == "sent":
             values["sent_at"] = at
         elif status == "delivered":

@@ -40,7 +40,8 @@ class RateLimitExceeded(OutreachError):
 
 class MessageSender(Protocol):
     def send(self, *, tenant_id: str, business_id: str, channel: str,
-             recipient: str, content: Mapping[str, str], idempotency_key: str) -> None: ...
+             recipient: str, content: Mapping[str, str], idempotency_key: str,
+             message_id: UUID, attempt: int) -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -185,6 +186,7 @@ class OutreachExecutionService:
         # The provider receives the same key for retry deduplication. It is
         # called outside the DB transaction; status/audit updates are atomic.
         error = None
+        provider_message_id = None
         if self._sender is None:
             error = "sender_not_configured"
         else:
@@ -195,10 +197,11 @@ class OutreachExecutionService:
                 if not destination:
                     error = "recipient_address_missing"
                 else:
-                    self._sender.send(
+                    provider_message_id = self._sender.send(
                         tenant_id=row.tenant_id, business_id=row.business_id,
                         channel=row.channel, recipient=destination,
                         content=row.content, idempotency_key=row.idempotency_key,
+                        message_id=row.id, attempt=claimed.attempts,
                     )
             except Exception as exc:  # provider details may contain secrets or PII
                 error = f"provider_error:{type(exc).__name__}"
@@ -210,17 +213,25 @@ class OutreachExecutionService:
             if current is None or current.status != "sending":
                 raise OutreachConflict("outreach message state changed during delivery")
             status = "failed" if error else "sent"
+            failure_reason = error
+            receipt_status = getattr(current, "provider_status", None)
+            if receipt_status in {"delivered", "read"}:
+                status, failure_reason = "delivered", None
+            elif receipt_status in {"failed", "undelivered"}:
+                status = "failed"
+                failure_reason = f"provider_receipt:{receipt_status}:{getattr(current, 'provider_error_code', None) or 'unknown'}"
             updated = uow.outreach_messages.set_state(
                 tenant_id=principal.tenant_id, business_id=current.business_id,
                 message_id=current.id, expected_status="sending", status=status,
-                at=self._now_utc(), failure_reason=error,
+                at=self._now_utc(), failure_reason=failure_reason,
+                provider_message_id=provider_message_id,
             )
             self._event(uow, updated, principal,
-                        "MessageFailed" if error else "MessageSent",
-                        {"message_id": str(updated.id), **({"reason": error} if error else {})})
+                        "MessageDelivered" if status == "delivered" else "MessageFailed" if status == "failed" else "MessageSent",
+                        {"message_id": str(updated.id), **({"reason": failure_reason} if failure_reason else {})})
             result = self._snapshot(updated)
-        metrics.event("outreach", "send_attempt", "failed" if error else "succeeded")
-        if error:
+        metrics.event("outreach", "send_attempt", "failed" if result.status == "failed" else "succeeded")
+        if result.status == "failed":
             metrics.event("outreach", "failure", "provider")
         return result
 
@@ -248,6 +259,7 @@ class OutreachExecutionService:
                 tenant_id=principal.tenant_id, business_id=row.business_id,
                 message_id=row.id, expected_status="failed", status="scheduled",
                 at=now, scheduled_at=scheduled_at,
+                clear_provider_receipt=True,
             )
             updated = self._snapshot(updated)
             self._event(uow, row, principal, "MessageRetryScheduled", {
@@ -264,6 +276,74 @@ class OutreachExecutionService:
                     *, failure_reason: str):
         reason = self._safe_failure_reason(failure_reason)
         return self._mark_terminal(principal, message_id, status="failed", failure_reason=reason)
+
+    def apply_twilio_receipt(self, principal: AuthenticatedPrincipal, *, business_id: str,
+                             message_id: UUID, provider_message_id: str,
+                             attempt: int, provider_status: str,
+                             error_code: str | None = None):
+        """Apply a verified Twilio receipt under an internally authenticated principal."""
+        now = self._now_utc()
+        if (not isinstance(principal, AuthenticatedPrincipal)
+                or "delivery_receipt_writer" not in principal.roles
+                or principal.auth_source != "twilio_webhook"
+                or principal.issued_at > now
+                or (principal.expires_at is not None and principal.expires_at <= now)):
+            from app.auth.principal_resolver import AuthorizationError
+            raise AuthorizationError("Delivery receipt access denied")
+        if provider_status not in {"accepted", "queued", "sending", "sent", "delivered", "read", "failed", "undelivered"}:
+            raise ValueError("unsupported provider delivery status")
+        if not re.fullmatch(r"[A-Z]{2}[A-Za-z0-9]{32}", provider_message_id):
+            raise ValueError("provider message reference is invalid")
+        if not isinstance(attempt, int) or attempt < 1:
+            raise ValueError("provider delivery attempt is invalid")
+        if error_code is not None and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,40}", error_code):
+            raise ValueError("provider error code is invalid")
+        rank = {"accepted": 0, "queued": 0, "sending": 1, "sent": 2,
+                "delivered": 3, "read": 3, "failed": 3, "undelivered": 3}
+        with self._uow_factory() as uow:
+            row = uow.outreach_messages.get_for_update(
+                tenant_id=principal.tenant_id, business_id=business_id, message_id=message_id,
+            )
+            if row is None or row.channel not in {"sms", "whatsapp"}:
+                raise OutreachNotFound("provider delivery target not found")
+            if row.attempts != attempt or row.status not in {"sending", "sent"}:
+                return self._snapshot(row)
+            if row.provider_message_id not in {None, provider_message_id}:
+                return self._snapshot(row)
+            previous = row.provider_status
+            if row.status in {"delivered", "failed"}:
+                return self._snapshot(row)
+            if previous in {"delivered", "read", "failed", "undelivered"} and provider_status != previous:
+                return self._snapshot(row)
+            if previous is not None and rank[provider_status] < rank.get(previous, 0):
+                return self._snapshot(row)
+            if previous == provider_status and row.provider_message_id == provider_message_id:
+                return self._snapshot(row)
+            status = row.status
+            reason = None
+            if row.status == "sent" and provider_status in {"delivered", "read"}:
+                status = "delivered"
+            elif row.status == "sent" and provider_status in {"failed", "undelivered"}:
+                status = "failed"
+                reason = f"provider_receipt:{provider_status}:{error_code or 'unknown'}"
+            updated = uow.outreach_messages.set_state(
+                tenant_id=principal.tenant_id, business_id=business_id,
+                message_id=message_id, expected_status=row.status, status=status,
+                at=now, failure_reason=reason,
+                provider_message_id=provider_message_id,
+                provider_status=provider_status, provider_error_code=error_code,
+            )
+            event_type = ("MessageDelivered" if status == "delivered" else
+                          "MessageFailed" if status == "failed" else "MessageDeliveryReceipt")
+            self._event(uow, updated, principal, event_type, {
+                "message_id": str(message_id), "provider": "twilio",
+                "provider_status": provider_status,
+                **({"error_code": error_code} if error_code else {}),
+            })
+            result = self._snapshot(updated)
+        metrics.event("outreach", "delivery_receipt",
+                      "failed" if result.status == "failed" else "succeeded")
+        return result
 
     def _mark_terminal(self, principal, message_id, *, status, failure_reason=None):
         now = self._now_utc()

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -55,6 +59,64 @@ class MappingTenantConfig:
         if value is None:
             raise ProviderConfigurationError("provider configuration is unavailable for tenant scope")
         return dict(value)
+
+
+class DirectoryTenantConfigResolver:
+    """Resolve tenant credentials from read-only, scope-hashed mounted secret files.
+
+    A file is named by SHA-256 of the tenant/business scope, never by caller text.
+    The contents are a JSON object of string configuration values. It is intended
+    for a secret volume (for example, a Kubernetes projected Secret volume).
+    """
+
+    def __init__(self, root: str | Path, *, max_bytes: int = 65536) -> None:
+        try:
+            self._root = Path(root).resolve(strict=True)
+        except OSError:
+            raise ProviderConfigurationError("provider secret directory is unavailable") from None
+        if not self._root.is_dir() or max_bytes < 1:
+            raise ProviderConfigurationError("provider secret directory is unavailable")
+        self._max_bytes = max_bytes
+
+    def resolve(self, *, tenant_id: str, business_id: str) -> Mapping[str, str]:
+        if not tenant_id.strip() or not business_id.strip():
+            raise ProviderConfigurationError("provider scope is required")
+        scope = hashlib.sha256(f"{tenant_id}\0{business_id}".encode()).hexdigest()
+        path = self._root / f"{scope}.json"
+        try:
+            if path.is_symlink():
+                raise ProviderConfigurationError("provider configuration is unavailable")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > self._max_bytes:
+                    raise ProviderConfigurationError("provider configuration is unavailable")
+                if os.name != "nt":
+                    mode = stat.S_IMODE(metadata.st_mode)
+                    groups = set(os.getgroups()) | {os.getgid()}
+                    if (mode & 0o007 or mode & 0o222
+                            or not mode & 0o400 and not (mode & 0o040 and metadata.st_gid in groups)):
+                        raise ProviderConfigurationError("provider secret file permissions are too broad")
+                with os.fdopen(descriptor, "rb", closefd=False) as secret_file:
+                    raw = secret_file.read(self._max_bytes + 1)
+            finally:
+                os.close(descriptor)
+        except ProviderConfigurationError:
+            raise
+        except OSError:
+            raise ProviderConfigurationError("provider configuration is unavailable") from None
+        if len(raw) > self._max_bytes:
+            raise ProviderConfigurationError("provider configuration is unavailable")
+        try:
+            values = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ProviderConfigurationError("provider configuration is invalid") from None
+        if (not isinstance(values, dict) or not values
+                or any(not isinstance(key, str) or not isinstance(value, str)
+                       for key, value in values.items())):
+            raise ProviderConfigurationError("provider configuration is invalid")
+        return values
 
 
 class JSONHTTPTransport(Protocol):
@@ -121,7 +183,7 @@ def json_request(transport: JSONHTTPTransport, method: str, url: str, *,
 
 
 __all__ = [
-    "CallableAuditSink", "JSONHTTPTransport", "MappingTenantConfig",
+    "CallableAuditSink", "DirectoryTenantConfigResolver", "JSONHTTPTransport", "MappingTenantConfig",
     "ProviderAuditEvent", "ProviderAuditSink", "ProviderConfigurationError",
     "ProviderHTTPError", "TenantConfigResolver", "UrllibJSONTransport", "emit_audit",
     "json_request",

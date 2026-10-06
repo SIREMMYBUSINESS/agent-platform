@@ -63,6 +63,8 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
     assert "ck_conversations_status" in sql
     assert "fk_conversation_assignments_staff" in sql
     assert "alter table conversations add column status" in sql
+    assert '"allowed":true' in sql
+    assert '"allowed"%(true)s' not in sql
 
 
 def test_api_key_migration_downgrade_renders_in_dependency_order(capsys):
@@ -80,3 +82,17 @@ def test_conversation_migration_downgrade_preserves_existing_conversations(capsy
     assert "drop table conversation_assignments" in sql
     assert "alter table conversations drop column status" in sql
     assert "drop table conversations" not in sql
+
+
+def test_provider_receipt_migration_adds_and_drops_receipt_columns(capsys):
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    command.upgrade(config, "0013_provider_delivery_receipts", sql=True)
+    upgrade_sql = capsys.readouterr().out.lower()
+    assert "add column provider_message_id" in upgrade_sql
+    assert "add column provider_status" in upgrade_sql
+    assert "uq_outreach_messages_provider_id" in upgrade_sql
+
+    command.downgrade(config, "0013_provider_delivery_receipts:0012_crm_sync", sql=True)
+    downgrade_sql = capsys.readouterr().out.lower()
+    assert "drop column provider_message_id" in downgrade_sql
+    assert "drop column provider_status" in downgrade_sql
