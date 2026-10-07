@@ -13,6 +13,9 @@ from app.services.scheduling_optimization import SchedulingOptimizationService
 from app.services.appointment_reminder_service import AppointmentReminderService
 from app.services.crm_sync_service import CRMSyncService
 from app.services.contact_action_tokens import ContactActionTokens
+from app.observability.metrics import metrics
+from app.optimization.feedback import FeedbackEventCapture
+from app.optimization.tracker import OptimizationTracker
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,8 @@ class SchedulingService:
         self._optimizer = optimizer or SchedulingOptimizationService()
         self._reminders = AppointmentReminderService()
         self._crm = CRMSyncService()
+        self._feedback = FeedbackEventCapture()
+        self._optimization_tracker = OptimizationTracker(self._feedback)
         self._calendar = calendar_provider
         self._public_app_url = public_app_url.rstrip("/")
 
@@ -144,10 +149,40 @@ class SchedulingService:
                 tenant_id=tenant_id, conversation_id=conversation_id,
             ), "correlation_id", None) or str(conversation_id)),
         )
+        action_lead_id = None
+        if campaign_enrollment_id is not None:
+            enrollment = uow.campaign_enrollments.get_by_id(
+                tenant_id=tenant_id, business_id=business_id,
+                enrollment_id=campaign_enrollment_id,
+            )
+            action_lead_id = enrollment.lead_id if enrollment else None
+        self._feedback.capture(
+            uow=uow, tenant_id=tenant_id, business_id=business_id,
+            event_key=f"appointment-proposed:{appointment.id}",
+            correlation_id=appointment.correlation_id or str(appointment.id),
+            event_type="appointment_proposed", outcome="proposed",
+            campaign_id=campaign_id,
+            decision={"source": source, "slot_hour": self._as_utc(appointment.starts_at).hour,
+                      "staff_id": str(appointment.staff_id or "")},
+            event_metadata={"service_id": str(appointment.service_id or "")},
+        )
+        self._feedback.capture(
+            uow=uow, tenant_id=tenant_id, business_id=business_id,
+            event_key=f"action-taken:appointment-proposed:{appointment.id}",
+            correlation_id=appointment.correlation_id or str(appointment.id),
+            event_type="action_taken", outcome="appointment_proposed",
+            lead_id=action_lead_id, campaign_id=campaign_id,
+            decision={"action": "propose_appointment",
+                      "state": "lead_replied_positive" if source == "outreach" else "new_lead"},
+        )
         display_timezone = contact_timezone or "UTC"
         option_text = "; ".join(
             f"{index}) {self._routing.format_local_time(slot.starts_at, display_timezone)}"
             for index, slot in enumerate(choices, start=1)
+        )
+        metrics.appointment_proposal(
+            source=source if source in {"inbound", "outreach"} else "other",
+            tenant_id=str(tenant_id), business_id=str(business_id),
         )
         return SchedulingResult(
             appointment=appointment,
@@ -235,8 +270,51 @@ class SchedulingService:
         )
         if confirmed is None:
             return None
+        metrics.appointment_booking(
+            source=confirmed.source if confirmed.source in {"inbound", "outreach"} else "other",
+            tenant_id=str(tenant_id), business_id=str(business_id),
+        )
         confirmed.correlation_id = confirmed.correlation_id or str(
             confirmed.conversation_id or confirmed.id
+        )
+        lead = None
+        lead_score = None
+        variant = None
+        if confirmed.campaign_id and confirmed.campaign_enrollment_id:
+            enrollment = uow.campaign_enrollments.get(
+                tenant_id=tenant_id, business_id=business_id,
+                campaign_id=confirmed.campaign_id,
+                enrollment_id=confirmed.campaign_enrollment_id,
+            )
+            if enrollment is not None:
+                lead = uow.leads.get(tenant_id=tenant_id, business_id=business_id,
+                                     lead_id=enrollment.lead_id)
+                score = uow.lead_scores.latest(tenant_id=tenant_id,
+                                               business_id=business_id, lead_id=enrollment.lead_id)
+                lead_score = ([score.fit_score, score.urgency_score, score.intent_score]
+                              if score else [])
+                sequences = uow.campaign_sequences.list_for_campaign(
+                    tenant_id=tenant_id, business_id=business_id,
+                    campaign_id=confirmed.campaign_id,
+                )
+                sequence = next((item for item in sequences if item.id == enrollment.sequence_id), None)
+                variant = sequence.name if sequence else None
+        conversion_now = self._as_utc(now or datetime.now(timezone.utc))
+        lead_created = self._as_utc(lead.created_at) if lead and lead.created_at else conversion_now
+        conversion_days = max(0, (conversion_now - lead_created).days) if lead else 0
+        self._optimization_tracker.record_outcome(
+            uow=uow, tenant_id=tenant_id, business_id=business_id,
+            event_key=f"appointment-booked:{confirmed.id}",
+            correlation_id=confirmed.correlation_id,
+            event_type="appointment_booked", outcome="booked",
+            lead_id=lead.id if lead else None, campaign_id=confirmed.campaign_id,
+            decision={"source": confirmed.source, "variant": variant,
+                      "campaign_id": str(confirmed.campaign_id or ""),
+                      "staff_id": str(getattr(confirmed, "staff_id", None) or ""),
+                      "slot_hour": self._as_utc(confirmed.starts_at).hour},
+            event_metadata={"lead_score_at_contact": lead_score,
+                            "time_to_conversion_days": conversion_days},
+            occurred_at=now or datetime.now(timezone.utc),
         )
         self._reminders.schedule(uow, appointment=confirmed)
         self._crm.enqueue_appointment_activity(

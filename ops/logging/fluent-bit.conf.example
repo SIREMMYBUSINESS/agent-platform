@@ -1,0 +1,35 @@
+[SERVICE]
+    Flush        1
+    Log_Level    info
+    Parsers_File parsers.conf
+
+[INPUT]
+    Name              tail
+    Path              /var/lib/docker/containers/*/*.log
+    Parser            docker
+    Tag               agent-platform.*
+    DB                /var/lib/fluent-bit/agent-platform.db
+    Mem_Buf_Limit     32MB
+    Skip_Long_Lines   On
+
+[FILTER]
+    Name          parser
+    Match         agent-platform.*
+    Key_Name      log
+    Parser        json
+    Reserve_Data  On
+    Preserve_Key  Off
+
+[OUTPUT]
+    Name                opensearch
+    Match               agent-platform.*
+    Host                ${OPENSEARCH_HOST}
+    Port                ${OPENSEARCH_PORT}
+    tls                 On
+    tls.verify          On
+    HTTP_User           ${OPENSEARCH_USER}
+    HTTP_Passwd         ${OPENSEARCH_PASSWORD}
+    Logstash_Format     On
+    Logstash_Prefix     agent-platform
+    Suppress_Type_Name  On
+    Retry_Limit         False

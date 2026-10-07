@@ -19,10 +19,17 @@ class StructuredFormatter(logging.Formatter):
             "message": record.getMessage(),
         }
         if context is not None:
-            payload.update(request_id=context.request_id, trace_id=context.trace_id,
-                           span_id=context.span_id)
+            payload.update(request_id=context.request_id, correlation_id=context.request_id,
+                           trace_id=context.trace_id, span_id=context.span_id)
+            if getattr(context, "tenant_id", None):
+                payload["tenant_id"] = context.tenant_id
+            if getattr(context, "business_id", None):
+                payload["business_id"] = context.business_id
+        else:
+            payload["correlation_id"] = "unavailable"
         for field in ("method", "route", "status_code", "duration_ms", "component",
-                      "operation", "outcome", "error_type"):
+                      "operation", "outcome", "error_type", "tenant_id", "business_id",
+                      "task_id", "provider", "channel", "workflow_state"):
             value = getattr(record, field, None)
             if value is not None:
                 payload[field] = value

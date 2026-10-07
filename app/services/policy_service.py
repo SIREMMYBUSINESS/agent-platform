@@ -8,6 +8,13 @@ from uuid import UUID
 
 from app.services.consent_service import ConsentService
 from app.services.suppression_service import SuppressionService
+from app.observability.metrics import metrics
+from app.observability.telemetry import start_span
+from opentelemetry import trace
+import logging
+
+
+logger = logging.getLogger("app.observability")
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,23 @@ class PolicyService:
                  direction: str, lead_id: UUID | None = None,
                  override_actor: str | None = None,
                  override_reason: str | None = None) -> PolicyDecision:
+        with start_span("policy.evaluate", attributes={
+            "policy.channel": channel, "policy.direction": direction,
+            "tenant.id": str(tenant.id), "business.id": str(business.id),
+        }):
+            decision = self._evaluate(
+                uow, tenant=tenant, business=business, contact=contact,
+                channel=channel, direction=direction, lead_id=lead_id,
+                override_actor=override_actor, override_reason=override_reason,
+            )
+            trace.get_current_span().set_attribute("policy.allowed", decision.allowed)
+            trace.get_current_span().set_attribute("policy.reason_code", decision.reason_code)
+            return decision
+
+    def _evaluate(self, uow, *, tenant, business, contact, channel: str,
+                  direction: str, lead_id: UUID | None = None,
+                  override_actor: str | None = None,
+                  override_reason: str | None = None) -> PolicyDecision:
         tenant_id, business_id = tenant.id, business.id
         country_code = (getattr(business, "country_code", None)
                         or business.region or tenant.region or "").strip().upper()
@@ -193,6 +217,10 @@ class PolicyService:
             if not override_reason or not override_actor:
                 reason = f"{reason}; override requires actor and reason"
 
+        metrics.policy_decision(channel=channel if channel in {
+            "sms", "email", "voice", "call", "chat", "voicemail", "whatsapp", "unknown",
+        } else "unknown", direction=direction, allowed=allowed,
+            tenant_id=str(tenant_id), business_id=str(business_id))
         uow.policy_decisions.add(
             tenant_id=tenant_id, business_id=business_id,
             direction=direction, channel=channel, country_code=country_code or "UNKNOWN",
@@ -204,6 +232,11 @@ class PolicyService:
             override_actor=override_actor if override_attempted else None,
             override_reason=override_reason if override_attempted else None,
         )
+        logger.info("policy decision", extra={
+            "tenant_id": str(tenant_id), "business_id": str(business_id),
+            "component": "workflow", "operation": "policy_decision",
+            "outcome": "allowed" if allowed else "blocked",
+        })
         return PolicyDecision(allowed, reason, country_code, consent_status,
                               source, overridden)
 

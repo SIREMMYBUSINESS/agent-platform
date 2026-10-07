@@ -119,7 +119,8 @@ class SQLCampaignEnrollmentRepository:
         self._session = session
 
     def get_or_create(self, *, tenant_id: str, business_id: str, campaign_id: UUID,
-                      sequence_id: UUID, lead_id: UUID, next_step_at: datetime) -> CampaignEnrollment:
+                      sequence_id: UUID, lead_id: UUID, next_step_at: datetime,
+                      experiment_group: str = "all") -> CampaignEnrollment:
         _require_tenant(tenant_id)
         stmt = select(CampaignEnrollment).where(
             CampaignEnrollment.tenant_id == tenant_id,
@@ -132,8 +133,9 @@ class SQLCampaignEnrollmentRepository:
             if existing is not None:
                 return existing
             row = CampaignEnrollment(tenant_id=tenant_id, business_id=business_id,
-                                     campaign_id=campaign_id, sequence_id=sequence_id,
-                                     lead_id=lead_id, next_step_at=next_step_at)
+                               campaign_id=campaign_id, sequence_id=sequence_id,
+                               experiment_group=experiment_group,
+                               lead_id=lead_id, next_step_at=next_step_at)
             self._session.add(row)
             self._session.flush()
             return row
@@ -277,6 +279,16 @@ class SQLCampaignStepRunRepository:
             CampaignStepRun.tenant_id == tenant_id,
             CampaignStepRun.business_id == business_id,
             CampaignStepRun.id == run_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def get_by_message(self, *, tenant_id: str, business_id: str,
+                       message_id: UUID) -> CampaignStepRun | None:
+        _require_tenant(tenant_id)
+        stmt = select(CampaignStepRun).where(
+            CampaignStepRun.tenant_id == tenant_id,
+            CampaignStepRun.business_id == business_id,
+            CampaignStepRun.message_id == message_id,
         )
         return _database_call(lambda: self._session.exec(stmt).first())
 

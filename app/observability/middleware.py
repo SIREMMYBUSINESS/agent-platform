@@ -10,17 +10,21 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.observability.metrics import metrics
+from app.observability.telemetry import configure_telemetry, extract_context, span_context_fields, start_span
+from app.config import settings
 from app.observability.request_context import (
     create_request_context, current_request_context, traceparent_header,
 )
 
 
 logger = logging.getLogger("app.observability")
+configure_telemetry(environment=settings.environment, metrics_registry=metrics)
 
 
 class ObservabilityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        context = create_request_context(request.headers.get("x-request-id"),
+        context = create_request_context(request.headers.get("x-correlation-id") or
+                                         request.headers.get("x-request-id"),
                                          request.headers.get("traceparent"))
         token = current_request_context.set(context)
         request.state.request_id = context.request_id
@@ -28,11 +32,22 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
         response: Response | None = None
         outcome = "success"
         status = 500
+        parent = extract_context({"traceparent": request.headers.get("traceparent", "")})
         try:
-            response = await call_next(request)
-            status = response.status_code
-            outcome = "failure" if status >= 500 else "success"
-            return response
+            with start_span("http.request", parent_context=parent,
+                            attributes={"http.request.method": request.method}) as span:
+                fields = span_context_fields(span)
+                if fields:
+                    from dataclasses import replace
+                    context = replace(context, trace_id=fields[0], span_id=fields[1])
+                    current_request_context.set(context)
+                    request.state.request_id = context.request_id
+                response = await call_next(request)
+                status = response.status_code
+                outcome = "failure" if status >= 500 else "success"
+                span.set_attribute("http.response.status_code", status)
+                span.set_attribute("http.route", _route_name(request))
+                return response
         except Exception as exc:
             outcome = "failure"
             metrics.event("http", "unhandled_exception", "failure")
@@ -49,11 +64,14 @@ class ObservabilityMiddleware(BaseHTTPMiddleware):
             if route != "/metrics":
                 metrics.increment("http_requests_total", method=_metric_method(request.method),
                                   route=_metric_route(route), status=str(status))
-                metrics.observe("http_request_duration_seconds", elapsed)
+                metrics.observe("http_request_duration_seconds", elapsed,
+                                method=_metric_method(request.method), route=_metric_route(route),
+                                status=str(status))
                 if outcome == "failure":
                     metrics.event("http", "request", "failure")
             if response is not None:
                 response.headers["X-Request-ID"] = context.request_id
+                response.headers["X-Correlation-ID"] = context.request_id
                 response.headers["traceparent"] = traceparent_header(context)
             logger.info("request completed", extra={
                 "method": request.method, "route": route, "status_code": status,

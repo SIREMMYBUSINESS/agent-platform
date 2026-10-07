@@ -167,6 +167,7 @@ def resolve_escalation(
         return service.resolve(
             principal, ticket_id, resolution=request.resolution,
             response_to_contact=request.response_to_contact,
+            customer_satisfaction=request.customer_satisfaction,
         )
     except LookupError as exc:
         raise HTTPException(404, "Escalation not found") from exc

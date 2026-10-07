@@ -8,6 +8,7 @@ from app.persistence.unit_of_work import UnitOfWork
 from app.services.contact_preference_service import ContactPreferenceService
 from app.services.crm_sync_service import CRMSyncService
 from app.services.outbound_delivery_service import OutboundDeliveryService
+from app.observability.metrics import metrics
 
 
 class FollowUpService:
@@ -68,6 +69,10 @@ class FollowUpService:
                         tenant_id=tenant_id, business_id=business_id,
                         lead_id=lead.id, expected_state="booked", new_state="converted",
                         context={"appointment_id": str(appointment_id)},
+                    )
+                    metrics.lead_conversion(
+                        source=lead.source if lead.source in {"inbound", "outreach"} else "other",
+                        tenant_id=str(tenant_id), business_id=str(business_id),
                     )
             CRMSyncService().enqueue_appointment_activity(
                 uow, appointment=completed, activity_type="appointment_completed",

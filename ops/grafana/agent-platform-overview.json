@@ -39,7 +39,22 @@
       "targets": [{"expr": "sum by (component, operation, outcome) (rate(platform_operations_total{operation=\"retry\"}[5m]))", "refId": "A"}],
       "title": "Retry activity",
       "type": "timeseries"
-    }
+    },
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":16},"id":5,"targets":[{"expr":"sum by (channel) (rate(inbound_intake_total[5m]))","refId":"A"},{"expr":"sum by (source) (rate(appointment_proposals_total[5m]))","refId":"B"},{"expr":"sum by (source) (rate(appointment_bookings_total[5m]))","refId":"C"}],"title":"Intake to appointment funnel","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":12,"y":16},"id":6,"targets":[{"expr":"sum by (channel,outcome) (rate(outreach_deliveries_total[5m]))","refId":"A"}],"title":"Campaign delivery by channel","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":24},"id":7,"targets":[{"expr":"sum by (channel,classification) (rate(campaign_replies_total[5m]))","refId":"A"}],"title":"Campaign reply rate","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":12,"y":24},"id":8,"targets":[{"expr":"sum by (source) (rate(appointment_bookings_total[5m]))","refId":"A"}],"title":"Appointment bookings","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"short"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":32},"id":9,"targets":[{"expr":"sum by (queue_domain,task_status) (queue_depth)","refId":"A"}],"title":"Worker queue depth","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"s"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":12,"y":32},"id":10,"targets":[{"expr":"histogram_quantile(0.95, sum by (le,queue_domain) (rate(queue_task_wait_seconds_bucket[5m])))","refId":"A"}],"title":"Queue wait latency p95","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"short"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":40},"id":11,"targets":[{"expr":"sum by (queue_domain) (queue_depth{task_status=\"dead_letter\"})","refId":"A"}],"title":"Dead-letter depth","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":12,"y":40},"id":12,"targets":[{"expr":"sum by (provider,outcome) (rate(provider_calls_total[5m]))","refId":"A"}],"title":"Provider health and errors","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"s"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":48},"id":13,"targets":[{"expr":"histogram_quantile(0.95, sum by (le,provider) (rate(provider_request_duration_seconds_bucket[5m])))","refId":"A"}],"title":"Provider API latency p95","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":12,"y":48},"id":14,"targets":[{"expr":"sum by (outcome,tenant_bucket,business_bucket) (rate(policy_decisions_total[5m]))","refId":"A"}],"title":"Policy block analysis","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"short"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":56},"id":15,"targets":[{"expr":"worker_heartbeat","refId":"A"}],"title":"Worker heartbeat by queue","type":"stat"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":12,"y":56},"id":16,"targets":[{"expr":"sum by (source,tenant_bucket,business_bucket) (rate(lead_conversions_total[5m]))","refId":"A"}],"title":"Lead to appointment conversion","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":64},"id":17,"targets":[{"expr":"sum by (outcome) (rate(platform_operations_total{operation=\"optimization_recommendation\"}[1d]))","refId":"A"}],"title":"Optimization recommendations generated","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"ops"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":12,"y":64},"id":18,"targets":[{"expr":"sum by (operation,outcome) (rate(platform_operations_total{operation=~\"optimization_review|optimization_rollout\"}[1d]))","refId":"A"}],"title":"Optimization review and rollout actions","type":"timeseries"},
+    {"datasource":{"type":"prometheus","uid":"${DS_PROMETHEUS}"},"fieldConfig":{"defaults":{"unit":"short"},"overrides":[]},"gridPos":{"h":8,"w":12,"x":0,"y":72},"id":19,"targets":[{"expr":"optimization_rollout_rollback","refId":"A"}],"title":"Latest optimization rollout rollback by scope bucket","type":"stat"}
   ],
   "schemaVersion": 39,
   "tags": ["agent-platform", "operations"],
@@ -48,5 +63,5 @@
   "timezone": "browser",
   "title": "Agent Platform Operations",
   "uid": "agent-platform-operations",
-  "version": 1
+  "version": 2
 }

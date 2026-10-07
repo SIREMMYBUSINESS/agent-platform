@@ -15,6 +15,7 @@ celery_app = Celery(
     include=[
         "app.workers.inbound", "app.workers.outreach", "app.workers.scheduling",
         "app.workers.escalation", "app.workers.analytics", "app.workers.dispatcher",
+        "app.workers.optimization_batch",
     ],
 )
 celery_app.conf.update(
@@ -40,6 +41,11 @@ celery_app.conf.update(
             "task": "agent_platform.queue.dispatch_due",
             "schedule": 5.0,
             "options": {"queue": "agent.control"},
+        },
+        "daily-feedback-optimization": {
+            "task": "agent_platform.optimization.run_daily",
+            "schedule": 86400.0,
+            "options": {"queue": "agent.analytics"},
         },
     },
 )

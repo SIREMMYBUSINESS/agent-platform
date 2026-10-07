@@ -9,6 +9,8 @@ from app.services.reply_parser_service import ReplyClassification, ReplyParserSe
 from app.services.receptionist_intake_service import ReceptionistIntakeService
 from app.queue.contracts import QueueDomain
 from datetime import UTC, datetime
+from app.observability.metrics import metrics
+from app.optimization.feedback import FeedbackEventCapture
 
 
 class CampaignReplyNotFoundError(Exception):
@@ -28,6 +30,7 @@ class ReplyService:
         self._uow_factory = uow_factory
         self._parser = parser or ReplyParserService()
         self._opt_out = opt_out or OptOutService()
+        self._feedback = FeedbackEventCapture()
 
     def process(self, campaign_id: UUID, request, *, correlation_id: str | None = None) -> dict:
         if request.tenant_id != self._tenant_id:
@@ -61,6 +64,11 @@ class ReplyService:
             if lead is None:
                 raise CampaignReplyNotFoundError("campaign lead not found")
             classification = self._parser.classify(request.text)
+            channel = campaign.channel if campaign.channel in {
+                "sms", "email", "voice", "call", "chat", "voicemail", "whatsapp",
+            } else "unknown"
+            metrics.campaign_reply(channel=channel, classification=classification.value,
+                                   campaign_id=str(campaign_id))
             reply = uow.campaign_replies.add(
                 tenant_id=tenant_id, business_id=business_id,
                 campaign_id=campaign_id, enrollment_id=enrollment.id,
@@ -68,12 +76,29 @@ class ReplyService:
                 classification=classification.value,
                 external_message_id=request.external_message_id,
             )
+            reply_correlation_id = correlation_id or f"campaign-reply:{reply.id}"
+            sequence = next((item for item in uow.campaign_sequences.list_for_campaign(
+                tenant_id=tenant_id, business_id=business_id, campaign_id=campaign_id,
+            ) if item.id == enrollment.sequence_id), None)
+            self._feedback.capture(
+                uow=uow, tenant_id=tenant_id, business_id=business_id,
+                event_key=f"campaign-reply:{reply.id}",
+                correlation_id=reply_correlation_id,
+                event_type="reply_received", outcome=classification.value,
+                lead_id=lead.id, campaign_id=campaign_id,
+                decision={"variant": sequence.name if sequence else "unknown",
+                          "test_group": getattr(enrollment, "experiment_group", "all"),
+                          "step": enrollment.current_step_order, "state": "lead_contacted_no_reply"},
+                event_metadata={"sentiment": classification.value,
+                                "channel": campaign.channel},
+            )
             uow.campaign_events.add(
                 tenant_id=tenant_id, business_id=business_id,
                 campaign_id=campaign_id, enrollment_id=enrollment.id,
                 event_type="campaign.reply.received",
                 payload={"reply_id": str(reply.id), "classification": classification.value,
-                         "channel": campaign.channel},
+                         "channel": campaign.channel,
+                         "correlation_id": reply_correlation_id},
             )
             if classification == ReplyClassification.OPT_OUT:
                 self._opt_out.apply(
@@ -103,7 +128,7 @@ class ReplyService:
                 )
             elif classification in {ReplyClassification.BOOK_APPOINTMENT, ReplyClassification.POSITIVE}:
                 self._record_response_state(uow, tenant_id, business_id, lead, classification)
-                correlation_id = correlation_id or f"campaign-reply:{reply.id}"
+                correlation_id = reply_correlation_id
                 preferences = ReceptionistIntakeService().classify(request.text).entities
                 uow.queue_tasks.enqueue(
                     tenant_id=tenant_id, business_id=business_id,

@@ -12,6 +12,9 @@ from app.persistence.unit_of_work import UnitOfWork
 from app.schemas import LeadImportRequest
 from app.services.enrichment_service import EnrichmentAdapter, EnrichmentService
 from app.services.lead_scoring_service import LeadScoringService
+from app.optimization.feedback import FeedbackEventCapture
+from app.optimization.tracker import OptimizationTracker
+import hashlib
 
 
 class LeadTenantMismatchError(Exception):
@@ -52,6 +55,8 @@ class LeadImportService:
         self._uow_factory = uow_factory
         self._enrichment = EnrichmentService(enrichment_adapter)
         self._scoring = scoring_service or LeadScoringService()
+        self._feedback = FeedbackEventCapture()
+        self._optimization_tracker = OptimizationTracker(self._feedback)
 
     def _scope(self) -> tuple[str, str]:
         if not self._business_id:
@@ -131,10 +136,44 @@ class LeadImportService:
                             lead_id=lead.id, event_type="lead.enriched",
                             payload={"provider": enrichment_result.provider_name})
 
-            score = self._scoring.score(enrichment_values)
+            score_weights = None
+            rollout_percentage = 0
+            scoring_flag = uow.optimization.feature_flag(
+                tenant_id=tenant_id, business_id=business_id,
+                flag_key="optimization.lead_scoring",
+            )
+            if scoring_flag and scoring_flag.enabled:
+                rollout_percentage = scoring_flag.rollout_percentage
+                rollout_bucket = int.from_bytes(hashlib.sha256(str(lead.id).encode()).digest()[:4], "big") % 100
+                if rollout_bucket < rollout_percentage:
+                    score_weights = scoring_flag.config.get("weights")
+            self._feedback.capture(
+                uow=uow, tenant_id=tenant_id, business_id=business_id,
+                event_key=f"flag-exposure:optimization.lead_scoring:{lead.id}",
+                correlation_id=f"lead:{lead.id}", event_type="feature_flag_exposure",
+                outcome="exposed", lead_id=lead.id,
+                decision={"flag_key": "optimization.lead_scoring",
+                          "applied": score_weights is not None},
+                event_metadata={"rollout_percentage": rollout_percentage},
+            )
+            score = self._scoring.score(enrichment_values, weights=score_weights)
             persisted_score = uow.lead_scores.add(
                 tenant_id=tenant_id, business_id=business_id, lead_id=lead.id,
                 scores=score.persistence_values(),
+            )
+            fit_signal = (enrichment_values or {}).get("lead_fit_signal", {})
+            company_info = (enrichment_values or {}).get("company_info", {})
+            self._optimization_tracker.record_lead_score(
+                uow=uow, tenant_id=tenant_id, business_id=business_id,
+                lead_id=lead.id, score_id=persisted_score.id,
+                correlation_id=f"lead:{lead.id}", fit_score=score.fit_score,
+                urgency_score=score.urgency_score, intent_score=score.intent_score,
+                source=source.source_type,
+                industry=company_info.get("industry", "unknown"),
+                country=company_info.get("country", "unknown"),
+                weights=score.rationale.get("weights", {}),
+                rollout_percentage=rollout_percentage,
+                in_rollout=score_weights is not None,
             )
             previous = "enriched" if enrichment_values else "imported"
             uow.lead_transitions.transition(

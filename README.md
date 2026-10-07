@@ -550,3 +550,31 @@ Business-wide lead conversion is available at `GET /businesses/{business_id}/fun
 Provision each active `staff` row with its email address to receive urgent escalation alerts. `EscalationService` writes the ticket, alert event, and idempotent `escalation.notify_staff` task in one transaction. Workers send a PII-minimized notice through the tenant/business email adapter; exhausted provider failures follow the normal retry/DLQ path. Tickets remain available in `GET /escalations` if no staff email is configured or notification delivery fails. The notification task key is stable per ticket and staff member.
 
 To enable exact FAQ responses, configure the worker bootstrap and include a business-scoped `faq_entries_json` value in its protected tenant/business configuration. It is a JSON array, for example `[{"question":"What are your hours?","answer":"Monday through Friday, 9 AM to 5 PM."},{"keywords":["parking"],"answer":"Street parking is available."}]`. Exact-question and unique keyword matches return the configured answer. Missing or ambiguous matches use the human follow-up fallback; malformed configuration fails the task visibly and retries before DLQ. Apply migrations through `0024_outreach_dry_run_status` before deploying the current Phase 6 schema.
+
+## Phase 8 optimization feedback
+
+Apply migration `0025_optimization_feedback` before running the optimization API or worker. Feedback is stored in `feedback_events`; recommendations, metrics, feature flags, and audit records are scoped by tenant/business. Recommendation generation, review, rollout, rollback, and manual feedback are auditable. The capture layer bounds event payloads, rejects common PII field names, and replays supported durable workflow and campaign events idempotently.
+
+Configure `OPTIMIZATION_MIN_SAMPLE_SIZE` (default `30`), `OPTIMIZATION_CONFIDENCE_THRESHOLD` (default `0.75`), and `OPTIMIZATION_DRY_RUN` (default `false`). Variant, timing, and routing recommendations require minimum sample sizes and a two-proportion normal-approximation confidence gate; lead scoring compares signals using Fisher's z approximation. These confidence calculations are approximations over aggregated event counts, so use controlled experiments for high-impact changes. A/B test groups remain isolated. Timing analysis currently uses UTC send hour and an `unknown` segment when trusted segment data is unavailable.
+
+Run a scoped analysis from the repository root:
+
+```powershell
+.\.venv\Scripts\python.exe -m app.workers.optimization_batch --tenant-id tenant-1 --dry-run
+.\.venv\Scripts\python.exe -m app.workers.optimization_batch --tenant-id tenant-1 --business-id business-1
+```
+
+Dry-run computes recommendations and idempotently backfills replayable feedback, but does not store recommendations or metrics and does not change feature flags. The daily Celery beat task analyzes each provisioned business. A recommendation must be approved through the authenticated review API before it changes a feature flag. Approval starts at 10%; the rollout monitor advances to 50% and then 100% when the minimum sample is available, and rolls back to the saved configuration after a conversion drop greater than 10%. Optimization cannot change policy or compliance rules.
+
+Grant `optimization_reader` to read `GET /optimization/metrics`, `GET /optimization/recommendations`, and `GET /optimization/audit`; grant `optimization_approver` to approve or reject recommendations; and grant `optimization_feedback_writer` to submit outcome feedback to `POST /optimization/feedback`. Tenant comes from the authenticated principal and business from `LEAD_BUSINESS_ID`; callers cannot choose either scope. Review with:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/optimization/recommendations -Headers @{ Authorization = "Bearer $API_KEY" }
+Invoke-RestMethod -Method Put http://localhost:8000/optimization/recommendations/00000000-0000-0000-0000-000000000000/approve -Headers @{ Authorization = "Bearer $API_KEY" }
+```
+
+The Grafana overview includes optimization recommendations and audit panels. Compare conversion outcomes before advancing a rollout. To rollback immediately, disable the business-scoped `optimization.*` feature flag or restore its saved `previous` configuration; the automatic monitor also records rollback decisions. Inspect the scoped audit trail before retrying a change.
+
+Phase 8 operational updates: `GET /optimization/next-best-actions/{lead_id}` derives the lead state from persisted feedback and checks persisted channel consent/suppression policy before ranking send actions. Each recommendation is recorded for audit and later action/outcome learning. The daily analytics job also monitors approved flags against captured treatment/control exposures and records rollout advancement or rollback. For a confirmed appointment that has ended without attendance, an authorized feedback writer can post `event_type: "appointment_no_show"` with the scoped `appointment_id`; the service derives campaign, lead, contact, and correlation from the appointment record and uses a stable idempotency key. Campaign funnel snapshots are available from `GET /optimization/metrics`. Prometheus rules alert on durable batch failures and any automatic rollout rollback; Grafana includes recommendation and rollout activity panels.
+
+Escalation tickets now persist an assigned staff member. The assignment uses a stable contact hash when there is not enough history; after three or more recorded resolutions per staff member, it prioritizes higher customer satisfaction and shorter resolution time. Notifications go to the assigned staff member when an email is available and otherwise use the configured active staff recipients. Staff can include `customer_satisfaction` (1–5) when resolving a ticket; the value is stored only as bounded optimization feedback. Apply migrations through `0026_escalation_staff_assignment` before deploying this update.

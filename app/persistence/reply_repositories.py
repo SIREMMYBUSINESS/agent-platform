@@ -61,6 +61,15 @@ class SQLCampaignReplyRepository:
         )
         return _database_call(lambda: self._session.exec(stmt).first())
 
+    def get_by_id(self, *, tenant_id: str, business_id: str, reply_id: UUID):
+        _require_tenant(tenant_id)
+        stmt = select(CampaignReply).where(
+            CampaignReply.tenant_id == tenant_id,
+            CampaignReply.business_id == business_id,
+            CampaignReply.id == reply_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
     def add(self, *, tenant_id: str, business_id: str, campaign_id: UUID,
             enrollment_id: UUID, lead_id: UUID, channel: str, classification: str,
             external_message_id: str | None = None):

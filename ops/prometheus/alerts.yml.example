@@ -1,0 +1,48 @@
+groups:
+  - name: agent-platform
+    rules:
+      - alert: HighQueueDepth
+        expr: sum by (queue_domain) (queue_depth{task_status=~"pending|retrying"}) > 100
+        for: 5m
+        labels: { severity: warning }
+        annotations: { summary: "Queue depth is high for {{ $labels.queue_domain }}" }
+      - alert: HighWorkerErrorRate
+        expr: sum(rate(queue_tasks_total{outcome=~"retrying|dead_letter"}[5m])) / clamp_min(sum(rate(queue_tasks_total{operation="execution"}[5m])), 1) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Worker task errors exceed 5 percent" }
+      - alert: PolicyBlockSurge
+        expr: sum(rate(policy_decisions_total{outcome="blocked"}[5m])) / clamp_min(sum(rate(policy_decisions_total[5m])), 1) > 0.25
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Policy blocks exceed 25 percent" }
+      - alert: ProviderApiFailures
+        expr: sum(rate(provider_calls_total{outcome="failure"}[5m])) / clamp_min(sum(rate(provider_calls_total[5m])), 1) > 0.05
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Provider failures exceed 5 percent" }
+      - alert: AppointmentConfirmationRateDrop
+        expr: (sum(rate(appointment_bookings_total[15m])) / clamp_min(sum(rate(appointment_proposals_total[15m])), 0.001)) < 0.5 * (sum(rate(appointment_bookings_total[7d])) / clamp_min(sum(rate(appointment_proposals_total[7d])), 0.001)) and sum(rate(appointment_proposals_total[7d])) > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "Appointment bookings are below half of baseline" }
+      - alert: ConversionRateAnomaly
+        expr: sum(rate(lead_conversions_total[15m])) < 0.5 * sum(rate(lead_conversions_total[7d])) and sum(rate(lead_conversions_total[7d])) > 0
+        for: 30m
+        labels: { severity: warning }
+        annotations: { summary: "Lead conversion is below half of baseline" }
+      - alert: DeadLetterDepth
+        expr: sum(queue_depth{task_status="dead_letter"}) >= 10
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Dead-letter task depth reached threshold" }
+      - alert: OptimizationBatchFailure
+        expr: optimization_batch_failed > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "Optimization batch failed for tenant bucket {{ $labels.tenant_bucket }} business bucket {{ $labels.business_bucket }}" }
+      - alert: OptimizationRollback
+        expr: optimization_rollout_rollback > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations: { summary: "Optimization rollout was reverted after a conversion regression for tenant bucket {{ $labels.tenant_bucket }} business bucket {{ $labels.business_bucket }}" }

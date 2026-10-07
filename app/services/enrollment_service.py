@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+import hashlib
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -24,6 +25,8 @@ from app.services.sequence_experiments import SequenceExperimentService
 from app.queue.contracts import QueueDomain
 from app.services.contact_preference_service import ContactPreferenceService
 from app.services.outbound_delivery_service import OutboundDeliveryService
+from app.optimization.feedback import FeedbackEventCapture
+from app.optimization.segments import segment_for_lead
 
 
 class CampaignEligibilityError(Exception):
@@ -43,6 +46,7 @@ class EnrollmentService:
         self._experiments = SequenceExperimentService()
         self._policy_service = policy_service or PolicyService()
         self._now = now_provider or (lambda: datetime.now(UTC))
+        self._feedback = FeedbackEventCapture()
 
     def _scope(self) -> tuple[str, str]:
         if not self.business_id:
@@ -80,11 +84,34 @@ class EnrollmentService:
             result = []
             for lead in leads:
                 sequence_by_name = {item.name: item for item in sequences}
+                experiment_group = ("test_group_a" if int.from_bytes(
+                    hashlib.sha256(f"{campaign.id}:{lead.id}".encode()).digest()[:2], "big") % 2 == 0
+                    else "test_group_b")
+                weights = {name: 1 for name in sequence_by_name}
+                variant_flag = uow.optimization.feature_flag(
+                    tenant_id=tenant_id, business_id=business_id,
+                    flag_key="optimization.message_variants",
+                )
+                variant_applied = False
+                if variant_flag and variant_flag.enabled and int.from_bytes(
+                    hashlib.sha256(f"variant:{lead.id}".encode()).digest()[:4], "big") % 100 < variant_flag.rollout_percentage:
+                    change = variant_flag.config
+                    if (change.get("campaign_id") == str(campaign.id)
+                            and change.get("test_group") in {"all", experiment_group}
+                            and isinstance(change.get("weights"), dict)):
+                        proposed_weights = change["weights"]
+                        weights = {name: int(proposed_weights.get(name, 0))
+                                   for name in sequence_by_name
+                                   if int(proposed_weights.get(name, 0)) > 0}
+                        if not weights:
+                            weights = {name: 1 for name in sequence_by_name}
+                        else:
+                            variant_applied = True
                 variant = self._experiments.assign_variant(
                     tenant_id=tenant_id, business_id=business_id,
                     campaign_id=str(campaign.id), lead_id=str(lead.id),
                     experiment_id=f"campaign-sequence:{campaign.id}",
-                    weights={name: 1 for name in sequence_by_name},
+                    weights=weights,
                 )
                 sequence = sequence_by_name[variant]
                 steps = self._sequences.steps_for(
@@ -93,6 +120,25 @@ class EnrollmentService:
                 )
                 if not steps:
                     raise CampaignProvisioningError("campaign sequence has no steps")
+                next_step_at = now + timedelta(seconds=steps[0].delay_seconds)
+                timing_flag = uow.optimization.feature_flag(
+                    tenant_id=tenant_id, business_id=business_id,
+                    flag_key="optimization.send_time",
+                )
+                timing_applied = False
+                if (timing_flag and timing_flag.enabled and int.from_bytes(
+                        hashlib.sha256(f"timing:{lead.id}".encode()).digest()[:4], "big") % 100
+                        < timing_flag.rollout_percentage):
+                    change = timing_flag.config
+                    lead_segment = segment_for_lead(
+                        uow, tenant_id=tenant_id, business_id=business_id, lead_id=lead.id,
+                    )
+                    if change.get("segment") in {lead_segment, "all"} and isinstance(change.get("send_hour"), int):
+                        candidate = next_step_at.replace(hour=change["send_hour"], minute=0, second=0, microsecond=0)
+                        if candidate < next_step_at:
+                            candidate += timedelta(days=1)
+                        next_step_at = candidate
+                        timing_applied = True
                 existing = uow.campaign_enrollments.get_for_lead(
                     tenant_id=tenant_id, business_id=business_id,
                     campaign_id=campaign.id, lead_id=lead.id,
@@ -100,7 +146,27 @@ class EnrollmentService:
                 enrollment = uow.campaign_enrollments.get_or_create(
                     tenant_id=tenant_id, business_id=business_id,
                     campaign_id=campaign.id, sequence_id=sequence.id,
-                    lead_id=lead.id, next_step_at=now + timedelta(seconds=steps[0].delay_seconds),
+                    lead_id=lead.id, next_step_at=next_step_at,
+                    experiment_group=experiment_group,
+                )
+                correlation_id = f"campaign:{campaign.id}:enrollment:{enrollment.id}"
+                self._feedback.capture(
+                    uow=uow, tenant_id=tenant_id, business_id=business_id,
+                    event_key=f"flag-exposure:optimization.message_variants:{enrollment.id}",
+                    correlation_id=correlation_id, event_type="feature_flag_exposure",
+                    outcome="exposed", lead_id=lead.id, campaign_id=campaign.id,
+                    decision={"flag_key": "optimization.message_variants",
+                              "applied": variant_applied},
+                    event_metadata={"test_group": experiment_group},
+                )
+                self._feedback.capture(
+                    uow=uow, tenant_id=tenant_id, business_id=business_id,
+                    event_key=f"flag-exposure:optimization.send_time:{enrollment.id}",
+                    correlation_id=correlation_id, event_type="feature_flag_exposure",
+                    outcome="exposed", lead_id=lead.id, campaign_id=campaign.id,
+                    decision={"flag_key": "optimization.send_time",
+                              "applied": timing_applied},
+                    event_metadata={"test_group": experiment_group},
                 )
                 if existing is None:
                     uow.campaign_events.add(

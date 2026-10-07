@@ -14,6 +14,13 @@ from app.integrations.sms.twilio import TwilioMessageSender
 from app.integrations.voice.twilio import TwilioVoiceProvider
 from app.integrations.crm.hubspot import HubSpotCRMProvider
 from app.integrations.crm.salesforce import SalesforceCRMProvider
+from app.observability.metrics import metrics
+from app.observability.telemetry import start_span
+import time
+import logging
+
+
+logger = logging.getLogger("app.observability")
 
 
 class ProviderAdapterFactory:
@@ -66,10 +73,38 @@ class TenantScopedMessageSender:
         if kind is None:
             raise ValueError("unsupported outbound channel")
         adapter = self._factory.build(kind, tenant_id=tenant_id, business_id=business_id)
-        return adapter.send(tenant_id=tenant_id, business_id=business_id, channel=channel,
-                            recipient=recipient, content=content,
-                            idempotency_key=idempotency_key, message_id=message_id,
-                            attempt=attempt)
+        provider = getattr(adapter, "provider_key", "unknown")
+        if provider not in {"twilio", "sendgrid", "smtp"}:
+            provider = "unknown"
+        started = time.perf_counter()
+        outcome = "failure"
+        try:
+            with start_span("provider.message.send", attributes={
+                "provider.type": provider, "messaging.channel": channel,
+                "tenant.id": tenant_id, "business.id": business_id,
+                "message.id": str(message_id or ""),
+            }):
+                result = adapter.send(tenant_id=tenant_id, business_id=business_id, channel=channel,
+                                      recipient=recipient, content=content,
+                                      idempotency_key=idempotency_key, message_id=message_id,
+                                      attempt=attempt)
+            outcome = "success"
+            return result
+        finally:
+            normalized_channel = channel if channel in {
+                "sms", "email", "voice", "call", "chat", "voicemail", "whatsapp",
+            } else "unknown"
+            metrics.provider_call(provider=provider, operation="provider_call", outcome=outcome,
+                                  duration_seconds=time.perf_counter() - started,
+                                  tenant_id=tenant_id, business_id=business_id)
+            metrics.outreach_delivery(channel=normalized_channel, outcome=outcome,
+                                      tenant_id=tenant_id, business_id=business_id)
+            logger.info("provider call completed", extra={
+                "tenant_id": tenant_id, "business_id": business_id,
+                "provider": provider, "channel": normalized_channel,
+                "component": "outreach", "operation": "send_attempt",
+                "outcome": outcome,
+            })
 
 
 __all__ = ["ProviderAdapterFactory", "TenantScopedMessageSender"]

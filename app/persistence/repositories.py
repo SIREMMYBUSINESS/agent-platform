@@ -163,6 +163,7 @@ class EscalationRepository(Protocol):
     def create(
         self, *, tenant_id: str, business_id: str, contact_id: str,
         conversation_id: UUID, reason: str, priority: str,
+        assigned_staff_id: UUID | None = None,
     ) -> EscalationTicket: ...
 
 
@@ -217,6 +218,9 @@ class SQLTenantRepository:
     def exists(self, *, tenant_id: str) -> bool:
         return self.get(tenant_id=tenant_id) is not None
 
+    def list_ids(self) -> list[str]:
+        return list(_database_call(lambda: self._session.exec(select(Tenant.id).order_by(Tenant.id)).all()))
+
 
 class SQLBusinessRepository:
     def __init__(self, session: Session) -> None:
@@ -228,6 +232,11 @@ class SQLBusinessRepository:
             Business.tenant_id == tenant_id, Business.id == business_id
         )
         return _database_call(lambda: self._session.exec(statement).first())
+
+    def list_for_tenant(self, *, tenant_id: str) -> list[Business]:
+        _require_tenant(tenant_id)
+        statement = select(Business).where(Business.tenant_id == tenant_id).order_by(Business.id)
+        return _database_call(lambda: list(self._session.exec(statement).all()))
 
 
 class SQLContactRepository:
@@ -504,6 +513,19 @@ class SQLEventRepository:
             .where(EventLog.tenant_id == tenant_id, EventLog.conversation_id == _uuid(conversation_id))
             .order_by(EventLog.created_at, EventLog.id)
         )
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def list_for_business(self, *, tenant_id: str, business_id: str,
+                          since: datetime | None = None, limit: int = 10000) -> list[EventLog]:
+        _require_tenant(tenant_id)
+        if not 1 <= limit <= 50000:
+            raise ValueError("event replay limit must be between 1 and 50000")
+        statement = select(EventLog).where(
+            EventLog.tenant_id == tenant_id, EventLog.business_id == business_id,
+        )
+        if since is not None:
+            statement = statement.where(EventLog.created_at >= since)
+        statement = statement.order_by(EventLog.created_at, EventLog.id).limit(limit)
         return _database_call(lambda: list(self._session.exec(statement).all()))
 
 
@@ -860,6 +882,7 @@ class SQLEscalationRepository:
     def create(
         self, *, tenant_id: str, business_id: str, contact_id: str,
         conversation_id: UUID, reason: str, priority: str,
+        assigned_staff_id: UUID | None = None,
     ) -> EscalationTicket:
         _require_tenant(tenant_id)
         ticket = EscalationTicket(
@@ -869,6 +892,7 @@ class SQLEscalationRepository:
             conversation_id=conversation_id,
             reason=reason,
             priority=priority,
+            assigned_staff_id=assigned_staff_id,
         )
 
         def persist() -> EscalationTicket:

@@ -55,6 +55,7 @@ from app.persistence.policy_repositories import (
     SQLPolicyDecisionRepository, SQLPolicyProfileRepository,
     SQLSuppressionRepository,
 )
+from app.persistence.optimization_repositories import SQLOptimizationRepository
 
 
 class UnitOfWork:
@@ -116,6 +117,7 @@ class UnitOfWork:
         self.policy_profiles: SQLPolicyProfileRepository | None = None
         self.suppressions: SQLSuppressionRepository | None = None
         self.policy_decisions: SQLPolicyDecisionRepository | None = None
+        self.optimization: SQLOptimizationRepository | None = None
 
     @property
     def session(self) -> Session:
@@ -175,6 +177,7 @@ class UnitOfWork:
             self.policy_profiles = SQLPolicyProfileRepository(self._session)
             self.suppressions = SQLSuppressionRepository(self._session)
             self.policy_decisions = SQLPolicyDecisionRepository(self._session)
+            self.optimization = SQLOptimizationRepository(self._session)
         except BaseException:
             self.close()
             raise

@@ -407,6 +407,7 @@ class EscalationResolveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resolution: str = Field(min_length=1, max_length=2000)
     response_to_contact: str | None = Field(default=None, min_length=1, max_length=2000)
+    customer_satisfaction: int | None = Field(default=None, ge=1, le=5)
 
 
 class EscalationReadResponse(BaseModel):

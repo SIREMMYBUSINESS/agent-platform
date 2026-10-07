@@ -10,6 +10,7 @@ from app.routes.conversations import router as conversation_router
 from app.routes.provider_webhooks import router as provider_webhook_router
 from app.routes.provider_ingress import router as provider_ingress_router
 from app.routes.workflows import router as workflow_router
+from app.routes.optimization import router as optimization_router
 from app.services.conversation_service import ConversationConflictError
 from app.services.outreach_execution import (
     OutreachConflict, OutreachNotEligible, OutreachNotFound, RateLimitExceeded,
@@ -44,6 +45,8 @@ from app.services.reply_service import CampaignReplyNotFoundError, CampaignReply
 from app.observability.logging import configure_structured_logging
 from app.observability.middleware import ObservabilityMiddleware
 from app.observability.metrics import metrics
+from app.observability.health import check_components
+from app.observability.collectors import refresh_optimization_health, refresh_queue_depths
 from app.queue.contracts import QueueDomain, QueueTaskSubmission, QueueTaskView
 from app.queue.service import QueueAuthorizationError, QueueTaskConflict, QueueTaskService
 from uuid import uuid4
@@ -57,6 +60,7 @@ app.include_router(conversation_router)
 app.include_router(provider_webhook_router)
 app.include_router(provider_ingress_router)
 app.include_router(workflow_router)
+app.include_router(optimization_router)
 
 
 @app.exception_handler(AuthorizationError)
@@ -176,6 +180,16 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/components", include_in_schema=False)
+def component_health():
+    """Report dependency and worker health without exposing host or error details."""
+    from app.queue.celery import celery_app
+    result = check_components(session_factory=session_factory,
+                              redis_url=settings.redis_url, celery_app=celery_app)
+    return JSONResponse(status_code=200 if result["status"] == "healthy" else 503,
+                        content=result)
+
+
 def get_queue_task_service() -> QueueTaskService:
     return QueueTaskService(uow_factory=lambda: UnitOfWork(session_factory))
 
@@ -235,6 +249,8 @@ def metrics_endpoint(
     principal: AuthenticatedPrincipal = Depends(require_role("metrics_reader")),
 ) -> PlainTextResponse:
     """Prometheus scrape output; protected and free of tenant/contact labels."""
+    refresh_queue_depths(session_factory)
+    refresh_optimization_health(session_factory)
     return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 @app.post("/inbound", response_model=InboundResponse)

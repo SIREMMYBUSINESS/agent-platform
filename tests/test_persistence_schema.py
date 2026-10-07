@@ -60,6 +60,11 @@ EXPECTED_TABLES = {
     "campaign_replies",
     "outreach_messages",
     "crm_sync_records",
+    "feedback_events",
+    "optimization_metrics",
+    "optimization_recommendations",
+    "optimization_feature_flags",
+    "optimization_audit_logs",
 }
 
 

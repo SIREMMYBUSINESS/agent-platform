@@ -32,11 +32,14 @@ ALLOWED_LEAD_TRANSITIONS = {
 
 class LeadSourceRepository(Protocol):
     def get_or_create(self, *, tenant_id: str, business_id: str, name: str, source_type: str = "manual", external_reference: str | None = None, source_metadata: dict[str, Any] | None = None) -> LeadSource: ...
+    def get(self, *, tenant_id: str, business_id: str, source_id: UUID) -> LeadSource | None: ...
 
 
 class LeadRepository(Protocol):
     def create(self, *, tenant_id: str, business_id: str, contact_id: str, source_id: UUID) -> Lead: ...
     def get(self, *, tenant_id: str, business_id: str, lead_id: UUID) -> Lead | None: ...
+    def latest_for_contact(self, *, tenant_id: str, business_id: str,
+                           contact_id: str) -> Lead | None: ...
     def list(self, *, tenant_id: str, business_id: str, offset: int, limit: int) -> list[Lead]: ...
 
 
@@ -82,6 +85,15 @@ class SQLLeadSourceRepository:
             return source
         return _database_call(persist)
 
+    def get(self, *, tenant_id: str, business_id: str, source_id: UUID) -> LeadSource | None:
+        _require_tenant(tenant_id)
+        statement = select(LeadSource).where(
+            LeadSource.tenant_id == tenant_id,
+            LeadSource.business_id == business_id,
+            LeadSource.id == source_id,
+        )
+        return _database_call(lambda: self._session.exec(statement).first())
+
 
 class SQLLeadRepository:
     def __init__(self, session: Session) -> None:
@@ -99,6 +111,15 @@ class SQLLeadRepository:
     def get(self, *, tenant_id: str, business_id: str, lead_id: UUID) -> Lead | None:
         _require_tenant(tenant_id)
         statement = select(Lead).where(Lead.tenant_id == tenant_id, Lead.business_id == business_id, Lead.id == lead_id)
+        return _database_call(lambda: self._session.exec(statement).first())
+
+    def latest_for_contact(self, *, tenant_id: str, business_id: str,
+                           contact_id: str) -> Lead | None:
+        _require_tenant(tenant_id)
+        statement = select(Lead).where(
+            Lead.tenant_id == tenant_id, Lead.business_id == business_id,
+            Lead.contact_id == contact_id,
+        ).order_by(Lead.created_at.desc(), Lead.id.desc())
         return _database_call(lambda: self._session.exec(statement).first())
 
     def list(self, *, tenant_id: str, business_id: str, offset: int = 0, limit: int = 50) -> list[Lead]:

@@ -17,6 +17,8 @@ class RequestContext:
     request_id: str
     trace_id: str
     span_id: str
+    tenant_id: str | None = None
+    business_id: str | None = None
 
 
 current_request_context: ContextVar[RequestContext | None] = ContextVar(

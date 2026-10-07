@@ -52,6 +52,11 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
         "suppression_rules",
         "policy_decision_logs",
         "queue_task_records",
+        "feedback_events",
+        "optimization_metrics",
+        "optimization_recommendations",
+        "optimization_feature_flags",
+        "optimization_audit_logs",
     ):
         assert f"create table {table_name}" in sql
 
@@ -66,6 +71,8 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
     assert "ck_conversations_status" in sql
     assert "fk_conversation_assignments_staff" in sql
     assert "alter table conversations add column status" in sql
+    assert "assigned_staff_id" in sql
+    assert "fk_escalation_tickets_assigned_staff" in sql
     assert '"allowed":true' in sql
     assert '"allowed"%(true)s' not in sql
 

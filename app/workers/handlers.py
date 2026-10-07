@@ -27,6 +27,8 @@ from app.integrations.crm.events import CRMEventType, CRMEvent
 from app.integrations.crm.sync_engine import CRMSyncEngine
 from app.workflows.escalation import EscalationService
 from app.workflows.receptionist import ReceptionistActions, ReceptionistWorkflowEngine
+from app.optimization.feedback import FeedbackEventCapture
+from app.optimization.segments import segment_for_lead
 
 
 def _trusted_worker(task: QueueTaskEnvelope, *roles: str) -> AuthenticatedPrincipal:
@@ -251,14 +253,63 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
                     provider_message_id=provider_id, error_code=error_code,
                 )
                 if task.payload.get("campaign_step_run_id"):
+                    step_run_id = UUID(str(task.payload["campaign_step_run_id"]))
                     uow.campaign_step_runs.set_status(
                         tenant_id=task.tenant_id, business_id=task.business_id,
-                        run_id=UUID(str(task.payload["campaign_step_run_id"])),
+                        run_id=step_run_id,
                         status=("failed" if error_code and task.attempts >= task.max_attempts
                                 else "sent" if not error_code else "queued"),
                         sent_at=datetime.now(UTC) if not error_code else None,
                         skip_reason=error_code if error_code and task.attempts >= task.max_attempts else None,
                     )
+                    if not error_code:
+                        step_run = uow.campaign_step_runs.get(
+                            tenant_id=task.tenant_id, business_id=task.business_id,
+                            run_id=step_run_id,
+                        )
+                        enrollment = (uow.campaign_enrollments.get_by_id(
+                            tenant_id=task.tenant_id, business_id=task.business_id,
+                            enrollment_id=step_run.enrollment_id,
+                        ) if step_run else None)
+                        campaign = (uow.campaigns.get(
+                            tenant_id=task.tenant_id, business_id=task.business_id,
+                            campaign_id=enrollment.campaign_id,
+                        ) if enrollment else None)
+                        sequence = next((item for item in uow.campaign_sequences.list_for_campaign(
+                            tenant_id=task.tenant_id, business_id=task.business_id,
+                            campaign_id=enrollment.campaign_id,
+                        ) if item.id == enrollment.sequence_id), None) if enrollment else None
+                        FeedbackEventCapture().capture(
+                            uow=uow, tenant_id=task.tenant_id, business_id=task.business_id,
+                            event_key=f"campaign-step-sent:{step_run_id}",
+                            correlation_id=task.correlation_id,
+                            event_type="campaign_step_sent", outcome="sent",
+                            lead_id=enrollment.lead_id if enrollment else None,
+                            campaign_id=enrollment.campaign_id if enrollment else None,
+                            decision={"variant": sequence.name if sequence else "unknown",
+                                      "test_group": getattr(enrollment, "experiment_group", "all"),
+                                      "step": step_run.step_order if step_run else -1,
+                                      "sent_hour": datetime.now(UTC).hour,
+                                      "segment": (segment_for_lead(
+                                          uow, tenant_id=task.tenant_id,
+                                          business_id=task.business_id,
+                                          lead_id=enrollment.lead_id,
+                                      ) if enrollment else "source=manual;industry=unknown;country=unknown")},
+                            event_metadata={"channel": campaign.channel if campaign else channel},
+                        )
+                        FeedbackEventCapture().capture(
+                            uow=uow, tenant_id=task.tenant_id, business_id=task.business_id,
+                            event_key=f"action-taken:campaign-step:{step_run_id}",
+                            correlation_id=task.correlation_id,
+                            event_type="action_taken", outcome="sent",
+                            lead_id=enrollment.lead_id if enrollment else None,
+                            campaign_id=enrollment.campaign_id if enrollment else None,
+                            decision={"action": ("send_email" if campaign and campaign.channel == "email"
+                                                 else "send_whatsapp" if campaign and campaign.channel == "whatsapp"
+                                                 else "send_sms"),
+                                      "state": "new_lead"},
+                            event_metadata={"variant": sequence.name if sequence else "unknown"},
+                        )
                 mark_campaign_lead_contacted(uow, task, delivered_message)
                 uow.events.add(
                     tenant_id=task.tenant_id, business_id=task.business_id,
@@ -321,7 +372,10 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
                 staff = uow.staff.list_active(
                     tenant_id=task.tenant_id, business_id=task.business_id,
                 )
-                recipients = [(row.id, row.email) for row in staff if row.email]
+                assigned = next((row for row in staff
+                                 if row.id == getattr(ticket, "assigned_staff_id", None)), None)
+                recipients = ([(assigned.id, assigned.email)] if assigned and assigned.email
+                              else [(row.id, row.email) for row in staff if row.email])
                 priority = ticket.priority
                 conversation_id = ticket.conversation_id
             if not recipients:

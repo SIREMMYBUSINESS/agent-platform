@@ -10,6 +10,7 @@ from app.integrations.persistence_audit import SQLProviderAuditSink
 from app.integrations.provider_support import DirectoryTenantConfigResolver
 from app.integrations.knowledge import ConfiguredFAQKnowledgeAdapter
 from app.services.faq_service import FAQService
+from app.observability.provider_calls import call_provider
 
 
 def build_message_sender():
@@ -49,19 +50,19 @@ class _TenantScopedCalendarProvider:
         self._factory = factory
 
     def create_event(self, **kwargs):
-        return self._factory.build(
-            "calendar", tenant_id=kwargs["tenant_id"], business_id=kwargs["business_id"],
-        ).create_event(**kwargs)
+        return self._call("create_event", **kwargs)
 
     def cancel_event(self, **kwargs):
-        return self._factory.build(
-            "calendar", tenant_id=kwargs["tenant_id"], business_id=kwargs["business_id"],
-        ).cancel_event(**kwargs)
+        return self._call("cancel_event", **kwargs)
 
     def availability(self, **kwargs):
-        return self._factory.build(
-            "calendar", tenant_id=kwargs["tenant_id"], business_id=kwargs["business_id"],
-        ).availability(**kwargs)
+        return self._call("availability", **kwargs)
+
+    def _call(self, operation, **kwargs):
+        tenant_id, business_id = kwargs["tenant_id"], kwargs["business_id"]
+        provider = self._factory.build("calendar", tenant_id=tenant_id, business_id=business_id)
+        return call_provider(kind="calendar", provider="google_calendar", operation=operation,
+                             callback=getattr(provider, operation), **kwargs)
 
 
 class _TenantScopedCRMProvider:
@@ -77,7 +78,11 @@ class _TenantScopedCRMProvider:
             provider = self._factory.build(
                 "crm", tenant_id=kwargs["tenant_id"], business_id=kwargs["business_id"],
             )
-            return getattr(provider, name)(*args, **kwargs)
+            method = getattr(provider, name)
+            if args:
+                return method(*args, **kwargs)
+            return call_provider(kind="crm", provider=getattr(provider, "provider_key", "crm"),
+                                 operation=name, callback=method, **kwargs)
         return call
 
 

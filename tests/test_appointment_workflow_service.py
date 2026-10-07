@@ -30,6 +30,9 @@ class FakeUow:
         self.events = SimpleNamespace(add=lambda **kwargs: self.events_list.append(kwargs))
         self.events_list = []
         self.workflows = SimpleNamespace(append=lambda **kwargs: None)
+        self.optimization = SimpleNamespace(
+            add_feedback=lambda **kwargs: SimpleNamespace(id=uuid4()),
+        )
 
     def __enter__(self):
         return self

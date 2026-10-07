@@ -4,13 +4,24 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
 import re
+import logging
+import time
 from typing import Any, Callable
 from uuid import UUID
 
 from app.observability.metrics import metrics
 from app.observability.request_context import current_request_context, create_request_context
+from app.observability.telemetry import extract_context, span_context_fields, start_span
+from app.observability.telemetry import configure_telemetry
+from app.observability.logging import configure_structured_logging
+from app.config import settings
 from app.persistence.models import QueueTaskRecord
 from app.persistence.unit_of_work import UnitOfWork
+
+
+logger = logging.getLogger("app.observability")
+configure_structured_logging(settings.log_level)
+configure_telemetry(environment=settings.environment, metrics_registry=metrics)
 
 
 @dataclass(frozen=True)
@@ -85,14 +96,35 @@ class QueueTaskRunner:
                 traceparent=row.traceparent, attempts=row.attempts + 1,
                 max_attempts=row.max_attempts,
             )
+            available_at = row.available_at
             claimed = uow.queue_tasks.claim(task_id=task_id, now=now, lease=self._lease)
         if claimed is None:
             return {"status": "duplicate_or_terminal"}
-        trace_token = current_request_context.set(
-            create_request_context(task.correlation_id, task.traceparent)
-        )
+        if available_at.tzinfo is None:
+            available_at = available_at.replace(tzinfo=UTC)
+        metrics.observe("queue_task_wait_seconds",
+                        max(0.0, (now - available_at.astimezone(UTC)).total_seconds()),
+                        queue_domain=task.domain)
+        context = create_request_context(task.correlation_id, task.traceparent)
+        from dataclasses import replace
+        context = replace(context, tenant_id=task.tenant_id, business_id=task.business_id)
+        trace_token = current_request_context.set(context)
+        started = time.perf_counter()
+        parent = extract_context({"traceparent": task.traceparent or ""})
         try:
-            output = self._handlers.get(task.domain, task.task_name)(task) or {}
+            with start_span("queue.task.execute", parent_context=parent, attributes={
+                "queue.domain": task.domain, "task.name": task.task_name,
+                "task.id": str(task.id), "tenant.id": task.tenant_id,
+                "business.id": task.business_id,
+            }) as span:
+                span_fields = span_context_fields(span)
+                if span_fields:
+                    current_request_context.set(replace(context, trace_id=span_fields[0],
+                                                        span_id=span_fields[1]))
+                logger.info("queue task started", extra={"tenant_id": task.tenant_id,
+                    "business_id": task.business_id, "component": "workflow",
+                    "operation": "execution", "outcome": "attempted"})
+                output = self._handlers.get(task.domain, task.task_name)(task) or {}
             if not isinstance(output, dict):
                 raise TypeError("task handler must return an object")
             encoded = json.dumps(output, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -117,14 +149,24 @@ class QueueTaskRunner:
                 metrics.queue_event(task.domain, "dead_letter", "dead_letter")
             else:
                 metrics.queue_event(task.domain, "retry", "retrying")
-            return {"status": status, "error_code": error_code}
-        finally:
+            metrics.observe("queue_task_execution_seconds", time.perf_counter() - started,
+                            queue_domain=task.domain)
+            logger.error("queue task failed", extra={"tenant_id": task.tenant_id,
+                "business_id": task.business_id, "component": "workflow",
+                "operation": "failure", "outcome": "failed", "error_type": error_code})
             current_request_context.reset(trace_token)
+            return {"status": status, "error_code": error_code}
         with self._uow_factory() as uow:
             row = uow.queue_tasks.succeed(task_id=task.id, now=self._now(), result=result)
             status = row.status if row is not None else "lost_claim"
         metrics.event("workflow", "execution", "succeeded")
         metrics.queue_event(task.domain, "execution", "succeeded")
+        metrics.observe("queue_task_execution_seconds", time.perf_counter() - started,
+                        queue_domain=task.domain)
+        logger.info("queue task completed", extra={"tenant_id": task.tenant_id,
+            "business_id": task.business_id, "component": "workflow",
+            "operation": "execution", "outcome": "succeeded"})
+        current_request_context.reset(trace_token)
         return {"status": status, "result": result}
 
 

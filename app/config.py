@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     provider_secrets_dir: Path | None = None
     worker_bootstrap_module: str | None = None
     workflow_dry_run: bool = False
+    optimization_min_sample_size: int = Field(default=30, ge=2, le=100000)
+    optimization_confidence_threshold: float = Field(default=0.75, ge=0.5, le=1.0)
+    optimization_dry_run: bool = False
     public_app_url: str = "http://localhost:3000"
     redis_url: str = "redis://localhost:6379/0"
 

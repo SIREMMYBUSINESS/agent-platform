@@ -34,6 +34,10 @@ class FakeRepositories:
         self.country_policies = SimpleNamespace(get=lambda **kwargs: None)
         self.suppressions = SimpleNamespace(find_active=lambda **kwargs: None)
         self.policy_decisions = SimpleNamespace(add=lambda **kwargs: self.calls.append(("policy_decision", kwargs)))
+        self.optimization = SimpleNamespace(
+            add_feedback=lambda **kwargs: self.calls.append(("feedback", kwargs))
+            or SimpleNamespace(id=uuid4()),
+        )
 
     def get(self, **kwargs):
         self.calls.append(("get", kwargs))

@@ -711,6 +711,11 @@ class EscalationTicket(SQLModel, table=True):
             ["conversations.tenant_id", "conversations.id"],
             name="fk_escalation_tickets_tenant_conversation",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "business_id", "assigned_staff_id"],
+            ["staff.tenant_id", "staff.business_id", "staff.id"],
+            name="fk_escalation_tickets_assigned_staff",
+        ),
         Index("ix_escalation_tickets_tenant_business_status", "tenant_id", "business_id", "status"),
     )
 
@@ -722,6 +727,7 @@ class EscalationTicket(SQLModel, table=True):
     reason: str
     priority: str = "urgent"
     status: str = "open"
+    assigned_staff_id: UUID | None = None
     resolved_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     resolution: Optional[str] = None
     created_at: datetime = Field(
@@ -971,6 +977,7 @@ class CampaignEnrollment(SQLModel, table=True):
     campaign_id: UUID
     sequence_id: UUID
     lead_id: UUID
+    experiment_group: str = "all"
     status: str = "active"
     current_step_order: int = -1
     next_step_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
@@ -1216,6 +1223,113 @@ class ProviderInteractionLog(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
 
 
+class FeedbackEvent(SQLModel, table=True):
+    """PII-minimized, idempotent outcome linked to the originating decision."""
+    __tablename__ = "feedback_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "business_id", "event_key", name="uq_feedback_events_event_key"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_feedback_events_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_feedback_events_business"),
+        Index("ix_feedback_events_scope_time", "tenant_id", "business_id", "occurred_at"),
+        Index("ix_feedback_events_scope_type", "tenant_id", "business_id", "event_type", "occurred_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    event_key: str = Field(max_length=200)
+    correlation_id: str = Field(max_length=100)
+    lead_id: UUID | None = None
+    contact_id: str | None = None
+    campaign_id: UUID | None = None
+    event_type: str = Field(max_length=64)
+    decision: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    outcome: str = Field(max_length=64)
+    event_metadata: dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", json_storage_type(), nullable=False, default=dict))
+    occurred_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class OptimizationMetric(SQLModel, table=True):
+    __tablename__ = "optimization_metrics"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "business_id", "metric_key", "period_start", name="uq_optimization_metrics_period"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_optimization_metrics_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_optimization_metrics_business"),
+        Index("ix_optimization_metrics_scope_type", "tenant_id", "business_id", "metric_type", "period_start"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    metric_key: str = Field(max_length=200)
+    metric_type: str = Field(max_length=64)
+    segment: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    sample_size: int = 0
+    metric_values: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    period_start: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    period_end: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class OptimizationRecommendation(SQLModel, table=True):
+    __tablename__ = "optimization_recommendations"
+    __table_args__ = (
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_optimization_recommendation_confidence"),
+        CheckConstraint("sample_size >= 0", name="ck_optimization_recommendation_sample_size"),
+        CheckConstraint("status IN ('pending', 'approved', 'rejected', 'applied', 'rolled_back')", name="ck_optimization_recommendation_status"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_optimization_recommendations_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_optimization_recommendations_business"),
+        Index("ix_optimization_recommendations_scope_status", "tenant_id", "business_id", "status", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    recommendation_type: str = Field(max_length=64)
+    status: str = Field(default="pending", max_length=24)
+    change: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    confidence: float
+    expected_impact: float = 0.0
+    sample_size: int = 0
+    rationale: str = Field(max_length=2000)
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class FeatureFlag(SQLModel, table=True):
+    __tablename__ = "optimization_feature_flags"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "business_id", "flag_key", name="uq_optimization_feature_flag_scope"),
+        CheckConstraint("rollout_percentage >= 0 AND rollout_percentage <= 100", name="ck_optimization_feature_flag_rollout"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_optimization_feature_flags_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_optimization_feature_flags_business"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    flag_key: str = Field(max_length=100)
+    enabled: bool = False
+    rollout_percentage: int = 0
+    config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class OptimizationAuditLog(SQLModel, table=True):
+    __tablename__ = "optimization_audit_logs"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_optimization_audit_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_optimization_audit_business"),
+        Index("ix_optimization_audit_scope_created", "tenant_id", "business_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    recommendation_id: UUID | None = None
+    action: str = Field(max_length=64)
+    actor_id: str = Field(max_length=160)
+    details: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
 __all__ = [
     "Appointment",
     "AppointmentSlot",
@@ -1239,6 +1353,8 @@ __all__ = [
     "CountryPolicy",
     "Conversation",
     "EventLog",
+    "FeedbackEvent",
+    "FeatureFlag",
     "EscalationTicket",
     "Lead",
     "LeadEnrichment",
@@ -1250,6 +1366,9 @@ __all__ = [
     "Message",
     "PolicyDecisionLog",
     "PolicyProfile",
+    "OptimizationAuditLog",
+    "OptimizationMetric",
+    "OptimizationRecommendation",
     "RoutingRule",
     "Service",
     "Staff",

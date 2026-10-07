@@ -6,6 +6,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
+import hashlib
 
 from app.persistence.models import Business, Contact, Tenant
 from app.persistence.repositories import EntityNotFoundError
@@ -20,6 +21,10 @@ from app.services.outbound_delivery_service import OutboundDeliveryService
 from app.services.contact_preference_service import ContactPreferenceService
 from app.services.faq_service import FAQService
 from app.services.receptionist_intake_service import ReceptionistIntakeService
+from app.observability.metrics import metrics
+from app.optimization.feedback import FeedbackEventCapture
+from app.observability.request_context import current_request_context
+import logging
 
 
 class InboundTenantMismatchError(Exception):
@@ -36,6 +41,7 @@ URGENT_TERMS = (
 )
 APPOINTMENT_TERMS = ("appointment", "schedule", "booking", "book", "reschedule")
 SUPPORTED_CHANNELS = {"chat", "sms", "voicemail", "phone", "whatsapp", "email"}
+logger = logging.getLogger("app.observability")
 
 
 class IntakeService:
@@ -71,6 +77,7 @@ class IntakeService:
         self._preferences = ContactPreferenceService()
         self._faq = faq_service or FAQService()
         self._receptionist = ReceptionistIntakeService()
+        self._feedback = FeedbackEventCapture()
         self._now = now_provider or (lambda: datetime.now(UTC))
 
     @staticmethod
@@ -113,6 +120,11 @@ class IntakeService:
         state: str,
         context: dict[str, Any] | None = None,
     ) -> None:
+        logger.info("workflow state transition", extra={
+            "tenant_id": str(tenant_id), "business_id": str(business_id),
+            "component": "workflow", "operation": "workflow_transition",
+            "outcome": "success", "workflow_state": state,
+        })
         uow.workflows.append(
             tenant_id=tenant_id,
             conversation_id=conversation_id,
@@ -168,6 +180,10 @@ class IntakeService:
         correlation_id = correlation_id or uuid4().hex
         if len(correlation_id) > 100:
             raise ValueError("correlation_id exceeds 100 characters")
+        request_context = current_request_context.get()
+        if request_context is not None:
+            from dataclasses import replace
+            current_request_context.set(replace(request_context, tenant_id=tenant_id))
 
         with self._uow_factory() as uow:
             tenant: Tenant | None = uow.tenants.get(tenant_id=tenant_id)
@@ -181,6 +197,11 @@ class IntakeService:
                 raise InboundProvisioningError("tenant, business, or contact is not provisioned")
             if contact.business_id != business.id:
                 raise InboundProvisioningError("contact is not provisioned for this business")
+            request_context = current_request_context.get()
+            if request_context is not None:
+                from dataclasses import replace
+                current_request_context.set(replace(request_context, tenant_id=tenant_id,
+                                                    business_id=str(business.id)))
 
             existing = uow.conversations.get_by_correlation_id(
                 tenant_id=tenant_id, business_id=business.id,
@@ -231,6 +252,9 @@ class IntakeService:
                 uow, tenant=tenant, business=business, contact=contact,
                 channel=request.channel, direction="inbound",
             )
+            metrics.intake(channel=_metric_channel(request.channel),
+                           outcome="success" if decision.allowed else "blocked",
+                           tenant_id=str(tenant_id), business_id=str(business.id))
             if not decision.allowed:
                 reason = decision.reason_code
                 # Preserve the established human-readable response for the
@@ -280,6 +304,37 @@ class IntakeService:
             intent, priority = classification.intent, classification.priority
             if request.channel not in SUPPORTED_CHANNELS:
                 intent = "unknown"
+            lead_repository = getattr(uow, "leads", None)
+            latest_lead_for_contact = getattr(lead_repository, "latest_for_contact", None)
+            lead = (latest_lead_for_contact(
+                tenant_id=tenant_id, business_id=business.id, contact_id=contact.id,
+            ) if latest_lead_for_contact is not None else None)
+            routing_flag = uow.optimization.feature_flag(
+                tenant_id=tenant_id, business_id=business.id,
+                flag_key="optimization.escalation_threshold",
+            ) if lead is not None else None
+            if lead is not None and routing_flag is not None and routing_flag.enabled:
+                bucket = int.from_bytes(hashlib.sha256(str(lead.id).encode()).digest()[:4], "big") % 100
+                applied = bucket < routing_flag.rollout_percentage
+                self._feedback.capture(
+                    uow=uow, tenant_id=tenant_id, business_id=business.id,
+                    event_key=(f"flag-exposure:optimization.escalation_threshold:{lead.id}:"
+                               f"{routing_flag.rollout_percentage}"),
+                    correlation_id=correlation_id,
+                    event_type="feature_flag_exposure", outcome="exposed", lead_id=lead.id,
+                    decision={"flag_key": "optimization.escalation_threshold",
+                              "applied": applied},
+                    event_metadata={"rollout_percentage": routing_flag.rollout_percentage},
+                )
+                if applied and priority != "urgent":
+                    lead_score = uow.lead_scores.latest(
+                        tenant_id=tenant_id, business_id=business.id, lead_id=lead.id,
+                    )
+                    threshold = max(0, min(100, 85 + int(
+                        routing_flag.config.get("threshold_delta", 0),
+                    )))
+                    if lead_score is not None and lead_score.urgency_score >= threshold:
+                        priority = "urgent"
             self._transition(
                 uow,
                 tenant_id=tenant_id,
@@ -479,6 +534,15 @@ class IntakeService:
                     contact=contact, conversation_id=conversation.id,
                     channel=request.channel, content=response,
                 )
+                self._feedback.capture(
+                    uow=uow, tenant_id=tenant_id, business_id=business.id,
+                    event_key=f"intake-resolved:business-hours:{conversation.id}",
+                    correlation_id=correlation_id,
+                    event_type="contact_resolved_without_escalation", outcome="resolved",
+                    contact_id=contact.id,
+                    decision={"intent": "business_hours", "source": "routing_rules"},
+                    event_metadata={"channel": request.channel},
+                )
                 return {
                     "success": True, "status": "ok",
                     "workflow_state": "business_hours_checked",
@@ -505,6 +569,16 @@ class IntakeService:
                     contact=contact, conversation_id=conversation.id,
                     channel=request.channel, content=answer.text,
                 )
+                if answer.source == "knowledge_base":
+                    self._feedback.capture(
+                        uow=uow, tenant_id=tenant_id, business_id=business.id,
+                        event_key=f"intake-resolved:faq:{conversation.id}",
+                        correlation_id=correlation_id,
+                        event_type="contact_resolved_without_escalation", outcome="resolved",
+                        contact_id=contact.id,
+                        decision={"intent": "question", "source": "knowledge_base"},
+                        event_metadata={"channel": request.channel},
+                    )
                 return {
                     "success": True, "status": "ok", "workflow_state": "faq_answered",
                     "agent_response": answer.text,
@@ -544,6 +618,10 @@ class IntakeService:
             "success": True, "status": "escalated",
             "workflow_state": "escalated", "agent_response": response,
         }
+
+
+def _metric_channel(channel: str) -> str:
+    return channel if channel in {"sms", "email", "voice", "call", "chat", "voicemail", "whatsapp"} else "unknown"
 
 
 __all__ = ["InboundProvisioningError", "InboundTenantMismatchError", "IntakeService"]
