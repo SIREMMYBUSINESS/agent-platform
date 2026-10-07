@@ -5,7 +5,7 @@ import pytest
 from sqlmodel import Session, select
 
 from app.persistence.campaign_repositories import SQLCampaignEventRepository
-from app.persistence.models import Campaign, CampaignEventLog, Contact, ConsentRecord, OutreachMessage, SuppressionRule
+from app.persistence.models import Campaign, CampaignEventLog, Contact, ConsentRecord, OutreachMessage, QueueTaskRecord, SuppressionRule
 from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 from app.services.campaign_service import CampaignNotFoundError, CampaignService, CampaignTenantMismatchError
@@ -142,6 +142,52 @@ def test_scheduling_is_idempotent_and_campaign_contact_unique(outreach):
                               scheduled_at=NOW)
     with pytest.raises(OutreachConflict, match="already selected"):
         schedule(service, principal, campaign_id, key="send-2")
+
+
+def test_http_delivery_command_enqueues_without_calling_provider(outreach):
+    engine, _, principal, campaign_id, service, _, sender, _ = outreach
+    row = schedule(service, principal, campaign_id)
+
+    queued = service.enqueue_send(principal, row.id)
+
+    assert queued.id == row.id and queued.status == "scheduled"
+    assert sender.calls == []
+    with Session(engine) as session:
+        task = session.exec(select(QueueTaskRecord).where(
+            QueueTaskRecord.task_name == "outreach.execute_send",
+            QueueTaskRecord.aggregate_id == str(row.id),
+        )).one()
+        assert task.idempotency_key == f"outreach:{row.id}:attempt:1"
+        assert task.payload == {"message_id": str(row.id)}
+        assert task.tenant_id == "tenant-a" and task.business_id == "business-a"
+
+
+def test_legacy_outreach_worker_dry_run_never_calls_provider(outreach, monkeypatch):
+    from app.config import settings
+    from app.queue.runtime import QueueTaskRunner
+    from app.workers import handlers
+
+    engine, _, principal, campaign_id, service, _, sender, uow_factory = outreach
+    row = schedule(service, principal, campaign_id)
+    service.enqueue_send(principal, row.id)
+    with Session(engine) as session:
+        task_id = session.exec(select(QueueTaskRecord).where(
+            QueueTaskRecord.task_name == "outreach.execute_send",
+            QueueTaskRecord.aggregate_id == str(row.id),
+        )).one().id
+    monkeypatch.setattr(settings, "workflow_dry_run", True)
+    monkeypatch.setattr(handlers, "session_factory", lambda: Session(engine))
+    runner = QueueTaskRunner(uow_factory=uow_factory,
+                             handlers=handlers.build_default_handlers(message_sender=sender))
+
+    result = runner.execute(task_id, expected_domain="outreach")
+
+    assert result["status"] == "succeeded"
+    assert result["result"]["status"] == "dry_run"
+    assert sender.calls == []
+    with Session(engine) as session:
+        persisted = session.get(OutreachMessage, row.id)
+        assert persisted.status == "dry_run"
 
 
 def test_execution_retry_delivery_tracking_and_events(outreach):

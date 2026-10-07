@@ -42,5 +42,35 @@ class OptOutService:
             payload={"lead_id": str(lead.id), "channel": campaign.channel},
         )
 
+    def apply_contact(self, uow, *, tenant_id: str, business_id: str,
+                      contact_id: str, channel: str, source: str) -> int:
+        """Revoke one channel and stop every active campaign enrollment on it."""
+        self._consent.revoke(
+            uow, tenant_id=tenant_id, business_id=business_id,
+            contact_id=contact_id, channel=channel, source=source,
+        )
+        cancelled = 0
+        enrollments = uow.campaign_enrollments.list_active_for_contact(
+            tenant_id=tenant_id, business_id=business_id, contact_id=contact_id,
+        )
+        for enrollment in enrollments:
+            campaign = uow.campaigns.get(
+                tenant_id=tenant_id, business_id=business_id,
+                campaign_id=enrollment.campaign_id,
+            )
+            if campaign is None or campaign.channel != channel:
+                continue
+            lead = uow.leads.get(
+                tenant_id=tenant_id, business_id=business_id, lead_id=enrollment.lead_id,
+            )
+            if lead is None:
+                continue
+            self.apply(
+                uow, tenant_id=tenant_id, business_id=business_id,
+                campaign_id=campaign.id, enrollment_id=enrollment.id, lead=lead,
+            )
+            cancelled += 1
+        return cancelled
+
 
 __all__ = ["OptOutService"]

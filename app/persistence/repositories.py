@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -68,6 +68,8 @@ class ContactRepository(Protocol):
 
 class ConversationRepository(Protocol):
     def get(self, *, tenant_id: str, conversation_id: UUID | str) -> Conversation | None: ...
+    def get_by_correlation_id(self, *, tenant_id: str, business_id: str,
+                              correlation_id: str) -> Conversation | None: ...
     def get_for_update(self, *, tenant_id: str, conversation_id: UUID | str) -> Conversation | None: ...
     def create(
         self, *, tenant_id: str, business_id: str, contact_id: str, channel: str,
@@ -83,7 +85,8 @@ class ConversationRepository(Protocol):
 class MessageRepository(Protocol):
     def add(
         self, *, tenant_id: str, conversation_id: UUID | str, sender: str,
-        channel: str, content: str, direction: str,
+        channel: str, content: str, direction: str, delivery_status: str | None = None,
+        message_id: UUID | None = None, subject: str | None = None,
     ) -> Message: ...
     def list_for_conversation(
         self, *, tenant_id: str, conversation_id: UUID | str,
@@ -139,14 +142,24 @@ class AppointmentRepository(Protocol):
         self, *, tenant_id: str, business_id: str, contact_id: str,
         conversation_id: UUID, staff_id: UUID, service_id: UUID, slot_id: UUID,
         starts_at: datetime, ends_at: datetime, status: str = "proposed",
+        source: str = "inbound",
+        campaign_id: UUID | None = None, campaign_enrollment_id: UUID | None = None,
+        correlation_id: str | None = None, proposal_slot_ids: list[str] | None = None,
+        contact_action_token_hash: str | None = None,
     ) -> Appointment: ...
     def latest_proposed(
         self, *, tenant_id: str, business_id: str, contact_id: str,
     ) -> Appointment | None: ...
     def confirm(self, *, tenant_id: str, appointment_id: UUID | str) -> Appointment | None: ...
+    def get_by_contact_action_token(self, *, token_hash: str) -> Appointment | None: ...
+    def select_proposed_slot(self, *, tenant_id: str, business_id: str,
+                             appointment_id: UUID | str, slot_id: UUID | str) -> Appointment | None: ...
 
 
 class EscalationRepository(Protocol):
+    def get_in_tenant(self, *, tenant_id: str, ticket_id: UUID | str) -> EscalationTicket | None: ...
+    def list_for_tenant(self, *, tenant_id: str, status: str | None = None,
+                        offset: int = 0, limit: int = 100) -> list[EscalationTicket]: ...
     def create(
         self, *, tenant_id: str, business_id: str, contact_id: str,
         conversation_id: UUID, reason: str, priority: str,
@@ -261,6 +274,16 @@ class SQLConversationRepository:
         )
         return _database_call(lambda: self._session.exec(statement).first())
 
+    def get_by_correlation_id(self, *, tenant_id: str, business_id: str,
+                              correlation_id: str) -> Conversation | None:
+        _require_tenant(tenant_id)
+        statement = select(Conversation).where(
+            Conversation.tenant_id == tenant_id,
+            Conversation.business_id == business_id,
+            Conversation.correlation_id == correlation_id,
+        ).order_by(Conversation.started_at, Conversation.id)
+        return _database_call(lambda: self._session.exec(statement).first())
+
     def get_for_update(self, *, tenant_id: str,
                        conversation_id: UUID | str) -> Conversation | None:
         _require_tenant(tenant_id)
@@ -339,17 +362,43 @@ class SQLMessageRepository:
 
     def add(
         self, *, tenant_id: str, conversation_id: UUID | str, sender: str,
-        channel: str, content: str, direction: str,
+        channel: str, content: str, direction: str, delivery_status: str | None = None,
+        message_id: UUID | None = None, subject: str | None = None,
     ) -> Message:
         _require_tenant(tenant_id)
         message = Message(
-            tenant_id=tenant_id, conversation_id=_uuid(conversation_id), sender=sender,
-            channel=channel, content=content, direction=direction,
+            id=message_id or uuid4(), tenant_id=tenant_id,
+            conversation_id=_uuid(conversation_id), sender=sender,
+            channel=channel, content=content, subject=subject, direction=direction,
+            delivery_status=delivery_status or ("pending" if direction == "outbound" else "not_applicable"),
         )
         def persist() -> Message:
             self._session.add(message)
             self._session.flush()
             return message
+        return _database_call(persist)
+
+    def get_in_tenant(self, *, tenant_id: str, message_id: UUID | str) -> Message | None:
+        _require_tenant(tenant_id)
+        return _database_call(lambda: self._session.exec(select(Message).where(
+            Message.tenant_id == tenant_id, Message.id == _uuid(message_id),
+        )).first())
+
+    def set_delivery(self, *, tenant_id: str, message_id: UUID | str, status: str,
+                     provider_message_id: str | None = None, error_code: str | None = None) -> Message | None:
+        _require_tenant(tenant_id)
+        def persist():
+            row = self._session.exec(select(Message).where(
+                Message.tenant_id == tenant_id, Message.id == _uuid(message_id),
+            )).first()
+            if row is None:
+                return None
+            row.delivery_status = status
+            if provider_message_id is not None:
+                row.provider_message_id = provider_message_id
+            row.delivery_error_code = error_code
+            self._session.flush()
+            return row
         return _database_call(persist)
 
     def list_for_conversation(
@@ -551,6 +600,17 @@ class SQLAppointmentSlotRepository:
 
         return _database_call(persist)
 
+    def release_reservation(self, *, tenant_id: str, slot_id: UUID | str) -> bool:
+        _require_tenant(tenant_id)
+        def persist():
+            result = self._session.exec(update(AppointmentSlot).where(
+                AppointmentSlot.tenant_id == tenant_id,
+                AppointmentSlot.id == _uuid(slot_id),
+                AppointmentSlot.status == "reserved",
+            ).values(status="available"))
+            return result.rowcount == 1
+        return _database_call(persist)
+
 
 class SQLAppointmentRepository:
     def __init__(self, session: Session) -> None:
@@ -560,6 +620,10 @@ class SQLAppointmentRepository:
         self, *, tenant_id: str, business_id: str, contact_id: str,
         conversation_id: UUID, staff_id: UUID, service_id: UUID, slot_id: UUID,
         starts_at: datetime, ends_at: datetime, status: str = "proposed",
+        source: str = "inbound", campaign_id: UUID | None = None,
+        campaign_enrollment_id: UUID | None = None, correlation_id: str | None = None,
+        proposal_slot_ids: list[str] | None = None,
+        contact_action_token_hash: str | None = None,
     ) -> Appointment:
         _require_tenant(tenant_id)
         appointment = Appointment(
@@ -573,6 +637,12 @@ class SQLAppointmentRepository:
             starts_at=starts_at,
             ends_at=ends_at,
             status=status,
+            source=source,
+            campaign_id=campaign_id,
+            campaign_enrollment_id=campaign_enrollment_id,
+            correlation_id=correlation_id,
+            proposal_slot_ids=proposal_slot_ids or [],
+            contact_action_token_hash=contact_action_token_hash,
         )
 
         def persist() -> Appointment:
@@ -597,6 +667,140 @@ class SQLAppointmentRepository:
             .order_by(Appointment.created_at.desc(), Appointment.id.desc())
         )
         return _database_call(lambda: self._session.exec(statement).first())
+
+    def get_for_tenant(self, *, tenant_id: str, business_id: str, appointment_id: UUID | str) -> Appointment | None:
+        _require_tenant(tenant_id)
+        return _database_call(lambda: self._session.exec(select(Appointment).where(
+            Appointment.tenant_id == tenant_id, Appointment.business_id == business_id,
+            Appointment.id == _uuid(appointment_id),
+        )).first())
+
+    def get_in_tenant(self, *, tenant_id: str, appointment_id: UUID | str) -> Appointment | None:
+        _require_tenant(tenant_id)
+        return _database_call(lambda: self._session.exec(select(Appointment).where(
+            Appointment.tenant_id == tenant_id, Appointment.id == _uuid(appointment_id),
+        )).first())
+
+    def get_by_contact_action_token(self, *, token_hash: str) -> Appointment | None:
+        if len(token_hash) != 64:
+            return None
+        statement = select(Appointment).where(Appointment.contact_action_token_hash == token_hash)
+        return _database_call(lambda: self._session.exec(statement).first())
+
+    def for_conversation(self, *, tenant_id: str, business_id: str,
+                         conversation_id: UUID | str) -> Appointment | None:
+        _require_tenant(tenant_id)
+        return _database_call(lambda: self._session.exec(select(Appointment).where(
+            Appointment.tenant_id == tenant_id,
+            Appointment.business_id == business_id,
+            Appointment.conversation_id == _uuid(conversation_id),
+        ).order_by(Appointment.created_at.desc(), Appointment.id.desc())).first())
+
+    def cancel(self, *, tenant_id: str, business_id: str, appointment_id: UUID | str) -> Appointment | None:
+        _require_tenant(tenant_id)
+        def persist() -> Appointment | None:
+            row = self._session.exec(select(Appointment).where(
+                Appointment.tenant_id == tenant_id, Appointment.business_id == business_id,
+                Appointment.id == _uuid(appointment_id), Appointment.status.in_(("proposed", "confirmed")),
+            )).first()
+            if row is None:
+                return None
+            row.status = "cancelled"
+            row.updated_at = datetime.now(UTC)
+            if row.slot_id is not None:
+                self._session.exec(update(AppointmentSlot).where(
+                    AppointmentSlot.tenant_id == tenant_id, AppointmentSlot.id == row.slot_id,
+                    AppointmentSlot.status.in_(("reserved", "booked")),
+                ).values(status="available"))
+            self._session.flush()
+            return row
+        return _database_call(persist)
+
+    def select_proposed_slot(self, *, tenant_id: str, business_id: str,
+                             appointment_id: UUID | str, slot_id: UUID | str) -> Appointment | None:
+        """Atomically reserve one of the appointment's persisted offered choices."""
+        _require_tenant(tenant_id)
+        appointment_uuid, slot_uuid = _uuid(appointment_id), _uuid(slot_id)
+
+        def persist() -> Appointment | None:
+            row = self._session.exec(select(Appointment).where(
+                Appointment.tenant_id == tenant_id,
+                Appointment.business_id == business_id,
+                Appointment.id == appointment_uuid,
+                Appointment.status == "proposed",
+            ).with_for_update()).first()
+            if row is None or str(slot_uuid) not in (row.proposal_slot_ids or []):
+                return None
+            target = self._session.exec(select(AppointmentSlot).where(
+                AppointmentSlot.tenant_id == tenant_id,
+                AppointmentSlot.business_id == business_id,
+                AppointmentSlot.id == slot_uuid,
+                AppointmentSlot.service_id == row.service_id,
+                AppointmentSlot.status == "available",
+            )).first()
+            if target is None:
+                return None
+            claimed = self._session.exec(update(AppointmentSlot).where(
+                AppointmentSlot.tenant_id == tenant_id,
+                AppointmentSlot.business_id == business_id,
+                AppointmentSlot.id == slot_uuid,
+                AppointmentSlot.status == "available",
+            ).values(status="reserved"))
+            if claimed.rowcount != 1:
+                return None
+            if row.slot_id is not None and row.slot_id != slot_uuid:
+                self._session.exec(update(AppointmentSlot).where(
+                    AppointmentSlot.tenant_id == tenant_id,
+                    AppointmentSlot.business_id == business_id,
+                    AppointmentSlot.id == row.slot_id,
+                    AppointmentSlot.status == "reserved",
+                ).values(status="available"))
+            row.slot_id = target.id
+            row.staff_id = target.staff_id
+            row.service_id = target.service_id
+            row.starts_at = target.starts_at
+            row.ends_at = target.ends_at
+            row.updated_at = datetime.now(UTC)
+            self._session.flush()
+            return row
+
+        return _database_call(persist)
+
+    def mark_conflict(self, *, tenant_id: str, appointment_id: UUID | str) -> Appointment | None:
+        _require_tenant(tenant_id)
+        def persist():
+            row = self._session.exec(select(Appointment).where(
+                Appointment.tenant_id == tenant_id,
+                Appointment.id == _uuid(appointment_id),
+                Appointment.status == "proposed",
+            )).first()
+            if row is None:
+                return None
+            row.status = "conflict"
+            row.slot_id = None
+            row.updated_at = datetime.now(UTC)
+            self._session.flush()
+            return row
+        return _database_call(persist)
+
+    def mark_completed(self, *, tenant_id: str, business_id: str,
+                       appointment_id: UUID | str, now: datetime) -> Appointment | None:
+        _require_tenant(tenant_id)
+        def persist():
+            row = self._session.exec(select(Appointment).where(
+                Appointment.tenant_id == tenant_id,
+                Appointment.business_id == business_id,
+                Appointment.id == _uuid(appointment_id),
+                Appointment.status == "confirmed",
+                Appointment.ends_at <= now,
+            )).first()
+            if row is None:
+                return None
+            row.status = "completed"
+            row.updated_at = now
+            self._session.flush()
+            return row
+        return _database_call(persist)
 
     def confirm(self, *, tenant_id: str, appointment_id: UUID | str) -> Appointment | None:
         _require_tenant(tenant_id)
@@ -633,6 +837,26 @@ class SQLEscalationRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
+    def get_in_tenant(self, *, tenant_id: str, ticket_id: UUID | str) -> EscalationTicket | None:
+        _require_tenant(tenant_id)
+        try:
+            parsed_id = _uuid(ticket_id)
+        except ValueError:
+            return None
+        return self._session.exec(select(EscalationTicket).where(
+            EscalationTicket.tenant_id == tenant_id,
+            EscalationTicket.id == parsed_id,
+        )).first()
+
+    def list_for_tenant(self, *, tenant_id: str, status: str | None = None,
+                        offset: int = 0, limit: int = 100) -> list[EscalationTicket]:
+        _require_tenant(tenant_id)
+        stmt = select(EscalationTicket).where(EscalationTicket.tenant_id == tenant_id)
+        if status is not None:
+            stmt = stmt.where(EscalationTicket.status == status)
+        stmt = stmt.order_by(EscalationTicket.created_at, EscalationTicket.id)
+        return list(self._session.exec(stmt.offset(offset).limit(limit)).all())
+
     def create(
         self, *, tenant_id: str, business_id: str, contact_id: str,
         conversation_id: UUID, reason: str, priority: str,
@@ -652,6 +876,24 @@ class SQLEscalationRepository:
             self._session.flush()
             return ticket
 
+        return _database_call(persist)
+
+    def resolve(self, *, tenant_id: str, business_id: str, ticket_id: UUID | str, resolution: str) -> EscalationTicket | None:
+        _require_tenant(tenant_id)
+        def persist() -> EscalationTicket | None:
+            row = self._session.exec(select(EscalationTicket).where(
+                EscalationTicket.tenant_id == tenant_id,
+                EscalationTicket.business_id == business_id,
+                EscalationTicket.id == _uuid(ticket_id),
+                EscalationTicket.status.in_(("open", "in_progress", "escalated_to_human")),
+            )).first()
+            if row is None:
+                return None
+            row.status = "resolved"
+            row.resolution = resolution
+            row.resolved_at = datetime.now(UTC)
+            self._session.flush()
+            return row
         return _database_call(persist)
 
 

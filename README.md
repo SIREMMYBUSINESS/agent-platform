@@ -446,7 +446,7 @@ Campaign creation can include up to four named `sequence_variants` alongside the
 
 Provider credentials belong in a protected, read-only secret volume, never in application settings, `.env`, task payloads, or source control. Set `PROVIDER_SECRETS_DIR` to the mount and `WORKER_BOOTSTRAP_MODULE` to `app.integrations.bootstrap_example`. The bootstrap builds tenant-scoped SMS, email, voice, calendar, and CRM adapters. Secret files use the SHA-256 filename of `tenant_id + NUL + business_id` and contain provider selectors (`sms_provider`, `email_provider`, `voice_provider`, `calendar_provider`, `crm_provider`) plus that scope's credentials and configuration.
 
-Supported adapters include Twilio SMS and voice, SMTP email, Google Calendar, and HubSpot or Salesforce CRM. Configure Twilio inbound SMS to `POST /webhooks/sms?tenant_id=...&business_id=...` and set the exact public URL in `sms_inbound_webhook_url`. Configure the Twilio call callback at `/webhooks/call` and set `call_webhook_url`. Email and CRM callbacks use `/webhooks/email` and `/webhooks/crm`, scoped with those query parameters and signed with the configured callback secret. Verified webhook events are idempotently stored in `provider_webhook_events`; provider attempt metadata is stored in `provider_interaction_logs` without credentials or message content. Inbound SMS must match a contact provisioned under that tenant and business and is sent through the existing intake queue and policy checks.
+Supported adapters include Twilio SMS and voice, SMTP email, Google Calendar, and HubSpot or Salesforce CRM. Configure Twilio inbound SMS to `POST /webhooks/sms?tenant_id=...&business_id=...` and set the exact public URL in `sms_inbound_webhook_url`. Configure the Twilio call callback at `/webhooks/call` and set `call_webhook_url`. Email and CRM callbacks use `/webhooks/email` and `/webhooks/crm`, scoped with those query parameters and signed with the configured callback secret. Verified webhook events are idempotently stored in `provider_webhook_events`; provider attempt metadata is stored in `provider_interaction_logs` without credentials or message content. Inbound SMS must match a contact provisioned under that tenant and business and is sent through the existing intake queue and policy checks. Inbound email replies use `POST /webhooks/email/inbound?tenant_id=...&business_id=...`; configure `inbound_email_address` and a high-entropy `email_inbound_webhook_secret` in that business secret file. The trusted mail gateway sends JSON `{ "from": "customer@example.com", "to": "inbox@example.com", "message_id": "provider-id", "text": "reply" }` with `X-Provider-Signature: sha256=<HMAC-SHA256 of the exact raw body>`. The endpoint matches the provisioned email, persists webhook idempotency, applies opt-outs immediately, and queues other replies for intake. For chat that should execute asynchronously, use the authenticated `POST /inbound/queue`; `/inbound` remains the backward-compatible synchronous API.
 
 Before production, configure sandbox credentials and callback URLs in the secret manager, apply migrations through `0015_provider_webhook_events`, run provider tests, then exercise a controlled sandbox message and callback. SMTP uses a stable Message-ID and idempotency header, but SMTP servers do not universally guarantee deduplication after ambiguous connection failures; delivery is at-least-once. Twilio sends reuse the durable outreach message idempotency key.
 
@@ -461,3 +461,92 @@ Provider secret file examples use these keys (values are supplied by the secret 
 The application has no provider credentials in configuration. Deployments must provision per-business secret files, migrate the database, configure the worker bootstrap, register provider callback URLs, and run sandbox exercises. No live provider credentials or sandbox tenant were available for this verification run.
 
 Signature specifics: Twilio callbacks use `X-Twilio-Signature` and the tenant-scoped auth token. SendGrid uses its signed Event Webhook ECDSA public key in `email_webhook_public_key` and the timestamp/signature headers. The CRM webhook endpoint currently expects an `X-Provider-Signature` HMAC-SHA256 using `crm_webhook_secret`; configure a trusted gateway to validate native HubSpot/Salesforce signatures and forward only verified requests when those native formats differ.
+
+## End-to-end workflows (Phase 6)
+
+Appointment confirmation is an explicit durable transition. An authorized `workflow_executor` can retrieve a tenant-scoped appointment with `GET /appointments/{id}`, confirm it with `POST /workflows/confirm-appointment` and body `{"appointment_id":"..."}`, or cancel it with `POST /appointments/{id}/cancel` and body `{"reason":"Customer request"}`. A contact can use the same endpoint with the appointment action `token` in the body; the capability is matched to the path ID server-side and determines the trusted tenant. Confirmation/cancellation changes the local appointment and reserves/releases its local slot in a transaction, writes an event, and creates an idempotent scheduling queue task in that same transaction. Calendar create/cancel operations run from `scheduling.calendar_sync`; configure a tenant-scoped `calendar_provider` in the worker bootstrap. Calendar create requests use the appointment ID as their stable idempotency key. A provider outage leaves the appointment durable while the queue retries and ultimately dead-letters exhausted work.
+
+`GET /campaigns/{id}/funnel` returns the same persisted campaign conversion counts and variant metrics as `/analytics`. Human staff can resolve an escalation with `POST /escalations/{id}/resolve` and `{"resolution":"..."}`; this writes the status and `escalation.resolved` event under the authenticated tenant.
+
+Migration `0016_phase6_workflow_fields` adds appointment calendar/CRM/correlation references, contact channel/language preferences, and escalation resolution details. Apply it with `alembic upgrade head` before deploying this release.
+
+Set `WORKFLOW_DRY_RUN=true` on workers to persist delivery intent and report provider-bound message, calendar, CRM, and staff notification tasks as planned without calling those providers. The database workflow still advances, so use an isolated test tenant and inspect durable events, messages, appointments, and provider interaction logs. This is a worker-wide setting rather than a request-level switch.
+
+Vertical flow configuration remains business-owned: healthcare can use intake, proposed appointment, confirmed calendar event, then follow-up; legal can intake a matter, route document questions to the configured knowledge service, then schedule a consultation; real estate can qualify a lead, propose a viewing, then trigger follow-up. These domain templates require business policy, provider secrets, staff, services, appointment slots, consent records, and contact preferences before activation. Calendar availability is checked when proposing and confirming; provider-side create failures retry and eventually dead-letter for staff review.
+
+Troubleshooting: missing calendar configuration is retried then dead-lettered as `calendar_provider_not_configured`; inspect the scoped queue task and configure the tenant/business adapter before redrive. CRM sync remains optional and should be reconciled from its durable sync records; CRM outages do not invalidate an appointment. A cancelled or unconsented contact is stopped by the policy service before any future outbound delivery. Provider-backed delivery and calendar/CRM sync require configured tenant/business secrets and sandbox verification.
+
+## Phase 6 runtime notes
+
+This section supersedes the older receptionist workflow notes above. Outbound SMS/email responses are policy checked, recorded on the message, and queued to the outreach worker; chat responses are returned by the synchronous chat endpoint. Confirmed appointments enqueue calendar sync, 24-hour/1-hour reminders when still upcoming, completion follow-up, and optional CRM activity records. Calendar availability is checked when proposing and again when confirming; conflicts release the prior slot and propose another available slot. Outreach replies classified as appointment requests enqueue the same scheduling proposal service and carry campaign/enrollment links through booking and completion analytics.
+
+Apply migrations through `0024_outreach_dry_run_status`. Set `WORKFLOW_DRY_RUN=true` on workers to record outbound SMS/email, calendar, CRM, and staff notification plans without provider calls. Legacy campaign message execution also runs from the durable outreach queue; dry-run marks the message `dry_run` and does not call the provider. Escalation tickets are durable and available in the authenticated inbox; configure staff email and a knowledge adapter for those optional integrations.
+
+### Phase 6 workflow updates
+
+General customer questions are classified separately from scheduling and business-hours requests. `FAQService` is the knowledge boundary: until a trusted tenant/business knowledge adapter is configured, it returns a transparent “team will follow up” fallback and records `faq.answer.generated`; it does not invent factual answers. The resulting message still passes the outbound policy gate.
+
+Human escalation tickets appear in the authenticated dashboard inbox at `GET /escalations?status=open` (filter by `in_progress`, `resolved`, or `escalated_to_human`; paginate with `offset` and `limit`). The endpoint is tenant-scoped and requires `workflow_executor`. Staff can resolve through `POST /escalations/{id}/resolve` with `resolution`; to send an approved answer to the customer, also provide `response_to_contact`. That reply is durably queued and rechecked against current consent and suppression before provider delivery. The `human.escalation.alert` event is the durable alert/inbox signal; an external Slack/email notifier still requires deployment wiring.
+
+A negative outreach reply cancels the active enrollment, clears its next-step timer, closes the lead, and records lead and campaign events. Positive replies retain the scheduled sequence; booking replies use the appointment proposal workflow. Opt-outs revoke channel consent and cancel enrollment atomically.
+
+### Phase 6 vertical examples
+
+All examples use previously provisioned tenant, business, contact, channel consent, and provider configuration. Never include caller-supplied region or consent metadata; policy reads trusted persisted configuration. Replace the IDs below with provisioned values.
+
+Healthcare receptionist intake:
+
+```json
+{
+  "tenant_id": "tenant-123",
+  "business_id": "clinic-456",
+  "contact_id": "contact-789",
+  "channel": "sms",
+  "text": "I need an appointment for a consultation"
+}
+```
+
+Post this to `/inbound`. Configure clinic services, active staff and slots, Google Calendar, approved SMS delivery, and contact SMS consent. A confirmed booking queues calendar sync, reminders, CRM activity when configured, and post-appointment follow-up.
+
+Legal intake document request:
+
+```json
+{
+  "tenant_id": "tenant-123",
+  "business_id": "firm-456",
+  "contact_id": "contact-789",
+  "channel": "chat",
+  "text": "What documents should I bring to my consultation?"
+}
+```
+
+Until a trusted knowledge adapter is supplied, the FAQ response says that staff will follow up. Configure legal intake guidance in the business knowledge adapter before relying on automated factual answers. Appointment requests use the same configured service, staff, slot, and policy workflow.
+
+Real estate outreach campaign:
+
+```json
+{
+  "tenant_id": "tenant-123",
+  "name": "Viewing follow-up",
+  "channel": "email",
+  "audience_filters": {"minimum_priority_score": 65},
+  "steps": [
+    {"delay_seconds": 0, "template": {"subject": "Property viewing", "body": "Would you like to schedule a viewing?"}},
+    {"delay_seconds": 86400, "template": {"subject": "Viewing follow-up", "body": "Would another viewing time work for you?"}}
+  ]
+}
+```
+
+Create the campaign in the tenant-scoped campaigns API, enroll eligible leads with recorded consent, and trigger the campaign. Configure contact email preferences, provider credentials, property context in the approved enrichment/template path, and calendar slots for viewings. Positive booking replies create an outreach-linked appointment proposal; negative replies close the lead and stop its sequence; opt-outs revoke consent and stop future delivery.
+
+To dry-run outreach delivery, set `WORKFLOW_DRY_RUN=true` for workers and inspect message `delivery_status` and workflow events; dry-run does not validate provider delivery. Keep Calendar/CRM adapters on sandbox configuration when executing appointment workflows. For a blocked send, inspect the policy decision and contact consent/suppression records. For calendar conflicts, the workflow releases the old proposal and generates another; for CRM outages, inspect the independent `crm.sync_activity` queue task and redrive after configuration is repaired.
+
+Appointment proposals persist the offered slot IDs (`proposal_slot_ids`) in their appointment record and present the available choices as numbered local times. SMS/chat replies accept `1`, `2`, `3`, `option 2`, and ordinal forms; the worker rechecks and atomically reserves the exact offered slot. If another booking claimed it or Calendar now reports a conflict, the proposal is released and alternate choices are sent. Proposals also include a `PUBLIC_APP_URL/appointments/action?token=...` link. Only the SHA-256 token hash is stored on the appointment. A customer web client submits `{ "token": "...", "slot_number": 1 }` to `POST /workflows/confirm-appointment`, or `{ "token": "...", "reason": "..." }` to `POST /contact/appointments/cancel`; these requests do not accept tenant, business, contact, or appointment IDs. Confirmation reuses calendar conflict checks and queues calendar, CRM, and reminder work. Set `PUBLIC_APP_URL` to the deployed customer web application origin; this repository provides the API contract, not a customer web page. Apply migrations through `0024_outreach_dry_run_status` before deploying this behavior.
+
+Business-wide lead conversion is available at `GET /businesses/{business_id}/funnel` for principals with `campaign_reader` or `workflow_executor`. The endpoint verifies the business under the authenticated tenant and returns lead, contacted, replied, booked, completed, and converted counts. Campaign funnel analytics remain available at `GET /campaigns/{id}/funnel` and expose campaign-specific delivery, reply, booking, completion, and variant counts.
+
+### Staff escalation notifications and FAQ configuration
+
+Provision each active `staff` row with its email address to receive urgent escalation alerts. `EscalationService` writes the ticket, alert event, and idempotent `escalation.notify_staff` task in one transaction. Workers send a PII-minimized notice through the tenant/business email adapter; exhausted provider failures follow the normal retry/DLQ path. Tickets remain available in `GET /escalations` if no staff email is configured or notification delivery fails. The notification task key is stable per ticket and staff member.
+
+To enable exact FAQ responses, configure the worker bootstrap and include a business-scoped `faq_entries_json` value in its protected tenant/business configuration. It is a JSON array, for example `[{"question":"What are your hours?","answer":"Monday through Friday, 9 AM to 5 PM."},{"keywords":["parking"],"answer":"Street parking is available."}]`. Exact-question and unique keyword matches return the configured answer. Missing or ambiguous matches use the human follow-up fallback; malformed configuration fails the task visibly and retries before DLQ. Apply migrations through `0024_outreach_dry_run_status` before deploying the current Phase 6 schema.

@@ -35,6 +35,16 @@ def get_authenticated_principal(
         raise HTTPException(403, "Tenant access denied") from None
 
 
+def get_optional_authenticated_principal(
+    credential: HTTPAuthorizationCredentials | None = Depends(bearer),
+    uow_factory=Depends(get_auth_uow_factory),
+) -> AuthenticatedPrincipal | None:
+    """Resolve credentials when supplied; capability-token routes may be public."""
+    if credential is None:
+        return None
+    return get_authenticated_principal(credential=credential, uow_factory=uow_factory)
+
+
 def require_role(role: str):
     """Require an explicit role; resource lookups still enforce tenant scope."""
     def dependency(

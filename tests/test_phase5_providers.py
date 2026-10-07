@@ -9,7 +9,9 @@ from app.integrations.calendar.google import GoogleCalendarProvider
 from app.integrations.factory import ProviderAdapterFactory, TenantScopedMessageSender
 from app.integrations.provider_support import MappingTenantConfig
 from app.integrations.voice.twilio import TwilioVoiceProvider
-from app.persistence.models import Business, ConsentRecord, Contact, ProviderWebhookEvent, Tenant
+from app.persistence.models import (
+    Business, ConsentRecord, Contact, ProviderWebhookEvent, QueueTaskRecord, Tenant,
+)
 from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 from app.services.voice_delivery_service import VoiceDeliveryBlocked, VoiceDeliveryService
@@ -182,6 +184,51 @@ def test_inbound_sms_webhook_verifies_then_enqueues_once(monkeypatch):
     assert stopped.status_code == 202 and stopped.json()["consent_status"] == "revoked"
     with Session(engine) as session:
         assert session.exec(select(ConsentRecord)).one().status == "revoked"
+    engine.dispose()
+
+
+def test_inbound_email_reply_webhook_matches_contact_queues_once(monkeypatch):
+    import app.routes.provider_ingress as ingress
+    from app.main import app
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    event.listen(engine, "connect", lambda conn, record: conn.execute("PRAGMA foreign_keys=ON"))
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(Tenant(id="tenant-email-hook", name="Email tenant", region="US"))
+        session.flush()
+        session.add(Business(id="business-email-hook", tenant_id="tenant-email-hook",
+                             name="Email business", vertical="general", region="US"))
+        session.flush()
+        session.add(Contact(id="contact-email-hook", tenant_id="tenant-email-hook",
+                            business_id="business-email-hook", email="person@example.test",
+                            consent_status="granted"))
+        session.commit()
+
+    class Resolver:
+        def __init__(self, _): pass
+        def resolve(self, *, tenant_id, business_id):
+            assert tenant_id == "tenant-email-hook" and business_id == "business-email-hook"
+            return {"email_inbound_webhook_secret": "hook-secret",
+                    "inbound_email_address": "replies@example.test"}
+
+    monkeypatch.setattr(ingress.settings, "provider_secrets_dir", __import__("pathlib").Path("secrets"))
+    monkeypatch.setattr(ingress, "DirectoryTenantConfigResolver", Resolver)
+    monkeypatch.setattr(ingress, "_verify_hmac", lambda *args: True)
+    monkeypatch.setattr(ingress, "session_factory", lambda: Session(engine))
+    client = TestClient(app)
+    url = "/webhooks/email/inbound?tenant_id=tenant-email-hook&business_id=business-email-hook"
+    payload = {"from": "Jordan <person@example.test>", "to": "replies@example.test",
+               "message_id": "email-reply-1", "text": "Yes, Monday morning works"}
+    first = client.post(url, json=payload, headers={"X-Provider-Signature": "verified"})
+    second = client.post(url, json=payload, headers={"X-Provider-Signature": "verified"})
+    assert first.status_code == second.status_code == 202
+    assert first.json()["duplicate"] is False and second.json()["duplicate"] is True
+    with Session(engine) as session:
+        task = session.exec(select(QueueTaskRecord)).one()
+    assert task.task_name == "inbound.process"
+    assert task.payload["external_message_id"] == "email-reply-1"
+    assert task.payload["contact_id"] == "contact-email-hook"
     engine.dispose()
 
 

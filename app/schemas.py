@@ -210,7 +210,7 @@ class OutreachMessageResponse(BaseModel):
     contact_id: str
     conversation_id: UUID | None
     channel: Literal["email", "sms", "whatsapp"]
-    status: Literal["scheduled", "sending", "sent", "delivered", "failed"]
+    status: Literal["scheduled", "sending", "sent", "delivered", "failed", "dry_run"]
     attempts: int
     scheduled_at: datetime
     sent_at: datetime | None
@@ -309,6 +309,7 @@ class CampaignTriggerResponse(BaseModel):
     processed: int
     sent: int
     skipped: int
+    queued: int = 0
 
 
 class CampaignReplyRequest(BaseModel):
@@ -339,9 +340,81 @@ class CampaignVariantAnalytics(BaseModel):
 class CampaignAnalyticsResponse(BaseModel):
     campaign_id: UUID
     sent_count: int
+    contacted_count: int
     opened_count: int
     reply_count: int
     positive_reply_rate: float = Field(ge=0, le=1)
     opt_out_count: int
     booked_appointments: int
+    completed_appointments: int
     variant_metrics: list[CampaignVariantAnalytics] = Field(default_factory=list)
+
+
+class BusinessFunnelResponse(BaseModel):
+    business_id: str
+    lead_count: int
+    contacted_count: int
+    replied_count: int
+    booked_count: int
+    completed_count: int
+    converted_count: int
+
+
+class AppointmentWorkflowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    appointment_id: UUID | None = None
+    token: str | None = Field(default=None, min_length=32, max_length=128)
+    slot_number: int | None = Field(default=None, ge=1, le=3)
+
+    @model_validator(mode="after")
+    def validate_action_scope(self):
+        if (self.appointment_id is None) == (self.token is None):
+            raise ValueError("provide exactly one of appointment_id or token")
+        return self
+
+
+class AppointmentCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1, max_length=500)
+    token: str | None = Field(default=None, min_length=32, max_length=128)
+
+
+class ContactAppointmentActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=32, max_length=128)
+    slot_number: int | None = Field(default=None, ge=1, le=3)
+
+
+class ContactAppointmentCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str = Field(min_length=32, max_length=128)
+    reason: str = Field(default="contact requested cancellation", min_length=1, max_length=500)
+
+
+class AppointmentWorkflowResponse(BaseModel):
+    id: UUID
+    business_id: str
+    contact_id: str
+    starts_at: datetime
+    ends_at: datetime
+    status: str
+    calendar_event_id: str | None = None
+    crm_record_id: str | None = None
+    correlation_id: str | None = None
+
+
+class EscalationResolveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    resolution: str = Field(min_length=1, max_length=2000)
+    response_to_contact: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class EscalationReadResponse(BaseModel):
+    id: UUID
+    business_id: str
+    contact_id: str
+    conversation_id: UUID
+    reason: str
+    priority: str
+    status: str
+    created_at: datetime

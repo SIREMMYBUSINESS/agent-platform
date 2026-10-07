@@ -26,5 +26,16 @@ class CampaignAnalyticsService:
                 raise CampaignReplyNotFoundError("campaign not found")
             return result
 
+    def business_funnel(self, *, business_id: str, roles: tuple[str, ...]) -> dict:
+        if "workflow_executor" not in roles and "campaign_reader" not in roles:
+            raise PermissionError("business funnel access denied")
+        with self._uow_factory() as uow:
+            result = uow.campaign_analytics.aggregate_business_funnel(
+                tenant_id=self._tenant_id, business_id=business_id,
+            )
+            if result is None:
+                raise CampaignReplyNotFoundError("business not found")
+            return result
+
 
 __all__ = ["CampaignAnalyticsService"]

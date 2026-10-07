@@ -6,6 +6,7 @@ import hmac
 import base64
 import json
 from datetime import UTC, datetime
+from email.utils import parseaddr
 from urllib.parse import parse_qsl
 from uuid import uuid4
 
@@ -18,7 +19,7 @@ from app.integrations.sms.twilio_webhooks import validate_twilio_signature
 from app.persistence.session import session_factory
 from app.persistence.unit_of_work import UnitOfWork
 from app.services.policy_service import PolicyService
-from app.services.consent_service import ConsentService
+from app.services.opt_out_service import OptOutService
 from app.services.reply_parser_service import ReplyClassification, ReplyParserService
 from app.queue.contracts import QueueDomain, QueueTaskSubmission
 from app.queue.service import QueueTaskService
@@ -125,7 +126,7 @@ async def inbound_sms(request: Request):
             if existing is not None:
                 event_id, created = existing.id, False
             else:
-                ConsentService().revoke(
+                canceled_enrollments = OptOutService().apply_contact(
                     uow, tenant_id=tenant_id, business_id=business_id,
                     contact_id=contact_id, channel="sms", source="twilio_inbound_opt_out",
                 )
@@ -134,7 +135,8 @@ async def inbound_sms(request: Request):
                     event_key=external_id, event_type="sms.opt_out",
                     payload={"MessageSid": external_id, "From": sender, "To": recipient,
                              "Body": body}, status="processed",
-                    result={"consent_status": "revoked"},
+                    result={"consent_status": "revoked",
+                            "canceled_enrollments": canceled_enrollments},
                 )
                 event_id = event.id
         return {"accepted": True, "duplicate": not created, "event_id": str(event_id),
@@ -145,12 +147,13 @@ async def inbound_sms(request: Request):
     )
     try:
         task = QueueTaskService(uow_factory=lambda: UnitOfWork(session_factory)).enqueue(
-            principal, QueueTaskSubmission(
+        principal, QueueTaskSubmission(
                 domain=QueueDomain.INBOUND, task_name="inbound.process",
                 business_id=business_id, idempotency_key=f"twilio-inbound:{external_id}",
                 aggregate_type="contact", aggregate_id=contact_id,
                 payload={"contact_id": contact_id, "channel": "sms", "text": body,
-                         "contact_name": contact_name}, correlation_id=uuid4().hex,
+                         "contact_name": contact_name,
+                         "external_message_id": external_id}, correlation_id=uuid4().hex,
             ),
         )
     except Exception:
@@ -158,6 +161,83 @@ async def inbound_sms(request: Request):
     stored, created = _persist(
         tenant_id, business_id, "twilio", external_id, "sms.inbound",
         {key: values.get(key) for key in ("MessageSid", "From", "To", "Body", "NumMedia")},
+        {"queue_task_id": str(task.id), "status": task.status.value},
+    )
+    return {"accepted": True, "duplicate": not created, "event_id": str(stored["id"])}
+
+
+@router.post("/email/inbound", status_code=202)
+async def inbound_email(request: Request):
+    """Accept a signed tenant-scoped inbound email and queue it as a contact reply."""
+    tenant_id = request.query_params.get("tenant_id", "")
+    business_id = request.query_params.get("business_id", "")
+    if not tenant_id or not business_id:
+        raise HTTPException(400, "Provider scope is required")
+    raw = await _body(request)
+    config = _scoped_config(tenant_id, business_id)
+    if not _verify_hmac(
+        raw, request.headers.get("x-provider-signature", ""),
+        config.get("email_inbound_webhook_secret", ""),
+    ):
+        raise HTTPException(403, "Provider callback authentication failed")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(400, "Invalid inbound email") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Inbound email must be an object")
+    sender = parseaddr(str(payload.get("from", "")))[1].strip().casefold()
+    recipient = parseaddr(str(payload.get("to", "")))[1].strip().casefold()
+    configured_recipient = config.get("inbound_email_address", "").strip().casefold()
+    external_id = str(payload.get("message_id", "")).strip().strip("<>")
+    body = payload.get("text")
+    if (not sender or not recipient or recipient != configured_recipient or not external_id
+            or not isinstance(body, str) or not body.strip() or len(body) > 20_000):
+        raise HTTPException(400, "Inbound email is missing valid sender, recipient, ID, or text")
+    with UnitOfWork(session_factory) as uow:
+        contact = uow.contacts.get_by_destination(
+            tenant_id=tenant_id, business_id=business_id, channel="email", address=sender,
+        )
+        if contact is None:
+            raise HTTPException(404, "Inbound contact is not provisioned")
+        contact_id, contact_name = contact.id, contact.full_name
+        duplicate = uow.provider_webhooks.get_by_key(
+            tenant_id=tenant_id, business_id=business_id,
+            provider="email_inbound", event_key=external_id,
+        )
+        if duplicate is not None:
+            return {"accepted": True, "duplicate": True, "event_id": str(duplicate.id)}
+        if ReplyParserService().classify(body) == ReplyClassification.OPT_OUT:
+            canceled = OptOutService().apply_contact(
+                uow, tenant_id=tenant_id, business_id=business_id,
+                contact_id=contact_id, channel="email", source="email_inbound_opt_out",
+            )
+            event, _ = uow.provider_webhooks.record(
+                tenant_id=tenant_id, business_id=business_id, provider="email_inbound",
+                event_key=external_id, event_type="email.opt_out",
+                payload={"message_id": external_id, "from": sender, "to": recipient,
+                         "text": body}, status="processed",
+                result={"consent_status": "revoked", "canceled_enrollments": canceled},
+            )
+            return {"accepted": True, "duplicate": False, "event_id": str(event.id),
+                    "consent_status": "revoked"}
+    principal = AuthenticatedPrincipal(
+        principal_id=f"email-inbound:{tenant_id}:{business_id}", tenant_id=tenant_id,
+        roles=("inbound_writer",), auth_source="email_inbound_webhook", issued_at=datetime.now(UTC),
+    )
+    task = QueueTaskService(uow_factory=lambda: UnitOfWork(session_factory)).enqueue(
+        principal, QueueTaskSubmission(
+            domain=QueueDomain.INBOUND, task_name="inbound.process", business_id=business_id,
+            idempotency_key=f"email-inbound:{external_id}", aggregate_type="contact",
+            aggregate_id=contact_id,
+            payload={"contact_id": contact_id, "channel": "email", "text": body,
+                     "contact_name": contact_name, "external_message_id": external_id},
+            correlation_id=uuid4().hex,
+        ),
+    )
+    stored, created = _persist(
+        tenant_id, business_id, "email_inbound", external_id, "email.inbound",
+        {"message_id": external_id, "from": sender, "to": recipient, "text": body},
         {"queue_task_id": str(task.id), "status": task.status.value},
     )
     return {"accepted": True, "duplicate": not created, "event_id": str(stored["id"])}

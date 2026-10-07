@@ -16,7 +16,16 @@ if settings.worker_bootstrap_module:
     bootstrap = importlib.import_module(settings.worker_bootstrap_module)
 message_sender_factory = getattr(bootstrap, "build_message_sender", None) if bootstrap else None
 message_sender = message_sender_factory() if callable(message_sender_factory) else None
-handlers = build_default_handlers(message_sender=message_sender)
+calendar_provider_factory = getattr(bootstrap, "build_calendar_provider", None) if bootstrap else None
+calendar_provider = calendar_provider_factory() if callable(calendar_provider_factory) else None
+crm_provider_factory = getattr(bootstrap, "build_crm_provider", None) if bootstrap else None
+crm_provider = crm_provider_factory() if callable(crm_provider_factory) else None
+faq_service_factory = getattr(bootstrap, "build_faq_service", None) if bootstrap else None
+faq_service = faq_service_factory() if callable(faq_service_factory) else None
+handlers = build_default_handlers(
+    message_sender=message_sender, calendar_provider=calendar_provider,
+    crm_provider=crm_provider, faq_service=faq_service,
+)
 
 
 def register_handler(domain: str, task_name: str, handler) -> None:

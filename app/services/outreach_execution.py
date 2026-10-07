@@ -14,6 +14,7 @@ from uuid import UUID
 from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 from app.observability.metrics import metrics
+from app.queue.contracts import QueueDomain
 from app.services.policy_service import PolicyService
 from app.services.recipient_selection import require_campaign_writer
 
@@ -235,8 +236,39 @@ class OutreachExecutionService:
             metrics.event("outreach", "failure", "provider")
         return result
 
+    def enqueue_send(self, principal: AuthenticatedPrincipal, message_id: UUID):
+        """Queue a scheduled delivery; HTTP callers never invoke providers."""
+        now = self._now_utc()
+        require_campaign_writer(principal, now)
+        with self._uow_factory() as uow:
+            row = uow.outreach_messages.get_for_tenant(
+                tenant_id=principal.tenant_id, message_id=message_id,
+            )
+            if row is None:
+                raise OutreachNotFound("outreach message not found")
+            if row.status != "scheduled":
+                if row.status in {"sent", "delivered"}:
+                    return self._snapshot(row)
+                raise OutreachConflict(f"message cannot be queued while {row.status}")
+            if self._persisted_utc(row.scheduled_at) > now:
+                raise OutreachConflict("message is not due")
+            self._enqueue_delivery(uow, row, available_at=now, attempt=row.attempts + 1)
+            return self._snapshot(row)
+
+    @staticmethod
+    def _enqueue_delivery(uow, row, *, available_at: datetime, attempt: int) -> None:
+        uow.queue_tasks.enqueue(
+            tenant_id=row.tenant_id, business_id=row.business_id,
+            domain=QueueDomain.OUTREACH.value, task_name="outreach.execute_send",
+            idempotency_key=f"outreach:{row.id}:attempt:{attempt}",
+            aggregate_type="outreach_message", aggregate_id=str(row.id),
+            payload={"message_id": str(row.id)},
+            correlation_id=f"outreach:{row.id}", traceparent=None,
+            available_at=available_at, max_attempts=6,
+        )
+
     def retry_send(self, principal: AuthenticatedPrincipal, message_id: UUID,
-                   *, scheduled_at: datetime | None = None):
+                   *, scheduled_at: datetime | None = None, enqueue: bool = False):
         now = self._now_utc()
         require_campaign_writer(principal, now)
         scheduled_at = self._aware(scheduled_at or now, "scheduled_at").astimezone(UTC)
@@ -266,6 +298,10 @@ class OutreachExecutionService:
                 "message_id": str(row.id), "scheduled_at": scheduled_at.isoformat(),
                 "attempt": row.attempts + 1,
             })
+            if enqueue:
+                self._enqueue_delivery(
+                    uow, updated, available_at=scheduled_at, attempt=row.attempts + 1,
+                )
         metrics.event("outreach", "retry", "scheduled")
         return updated
 

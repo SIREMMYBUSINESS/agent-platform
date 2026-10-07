@@ -6,6 +6,9 @@ from uuid import UUID
 
 from app.services.opt_out_service import OptOutService
 from app.services.reply_parser_service import ReplyClassification, ReplyParserService
+from app.services.receptionist_intake_service import ReceptionistIntakeService
+from app.queue.contracts import QueueDomain
+from datetime import UTC, datetime
 
 
 class CampaignReplyNotFoundError(Exception):
@@ -26,7 +29,7 @@ class ReplyService:
         self._parser = parser or ReplyParserService()
         self._opt_out = opt_out or OptOutService()
 
-    def process(self, campaign_id: UUID, request) -> dict:
+    def process(self, campaign_id: UUID, request, *, correlation_id: str | None = None) -> dict:
         if request.tenant_id != self._tenant_id:
             raise CampaignReplyTenantMismatchError("request tenant does not match trusted tenant")
         if not self._business_id:
@@ -76,6 +79,45 @@ class ReplyService:
                 self._opt_out.apply(
                     uow, tenant_id=tenant_id, business_id=business_id,
                     campaign_id=campaign_id, enrollment_id=enrollment.id, lead=lead,
+                )
+            elif classification == ReplyClassification.NEGATIVE:
+                uow.campaign_reply_enrollments.cancel(
+                    tenant_id=tenant_id, business_id=business_id,
+                    campaign_id=campaign_id, enrollment_id=enrollment.id,
+                )
+                if lead.status not in {"closed", "opted_out", "converted"}:
+                    uow.lead_transitions.transition(
+                        tenant_id=tenant_id, business_id=business_id, lead_id=lead.id,
+                        expected_state=lead.status, new_state="closed",
+                        context={"source": "campaign_reply", "reason": "negative_reply"},
+                    )
+                    uow.lead_events.add(
+                        tenant_id=tenant_id, business_id=business_id, lead_id=lead.id,
+                        event_type="lead.closed", payload={"source": "campaign_reply"},
+                    )
+                uow.campaign_events.add(
+                    tenant_id=tenant_id, business_id=business_id,
+                    campaign_id=campaign_id, enrollment_id=enrollment.id,
+                    event_type="campaign.negative_reply.closed",
+                    payload={"lead_id": str(lead.id)},
+                )
+            elif classification in {ReplyClassification.BOOK_APPOINTMENT, ReplyClassification.POSITIVE}:
+                self._record_response_state(uow, tenant_id, business_id, lead, classification)
+                correlation_id = correlation_id or f"campaign-reply:{reply.id}"
+                preferences = ReceptionistIntakeService().classify(request.text).entities
+                uow.queue_tasks.enqueue(
+                    tenant_id=tenant_id, business_id=business_id,
+                    domain=QueueDomain.SCHEDULING.value,
+                    task_name="scheduling.propose_for_lead",
+                    idempotency_key=f"campaign-reply:{reply.id}:appointment-proposal",
+                    aggregate_type="lead", aggregate_id=str(lead.id),
+                    payload={
+                        "campaign_id": str(campaign_id), "enrollment_id": str(enrollment.id),
+                        "lead_id": str(lead.id), "reply_id": str(reply.id),
+                        "preferences": preferences,
+                    },
+                    correlation_id=correlation_id, traceparent=None,
+                    available_at=datetime.now(UTC), max_attempts=6,
                 )
             elif classification != ReplyClassification.UNKNOWN:
                 self._record_response_state(uow, tenant_id, business_id, lead,

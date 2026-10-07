@@ -185,7 +185,7 @@ def execute_campaign_message(
     principal: AuthenticatedPrincipal = Depends(require_role("campaign_writer")),
     service: OutreachExecutionService = Depends(get_outreach_execution_service),
 ) -> OutreachMessageResponse:
-    return OutreachMessageResponse.model_validate(service.execute_send(principal, message_id), from_attributes=True)
+    return OutreachMessageResponse.model_validate(service.enqueue_send(principal, message_id), from_attributes=True)
 
 
 @router.post("/messages/{message_id}/retry", response_model=OutreachMessageResponse)
@@ -194,7 +194,9 @@ def retry_campaign_message(
     principal: AuthenticatedPrincipal = Depends(require_role("campaign_writer")),
     service: OutreachExecutionService = Depends(get_outreach_execution_service),
 ) -> OutreachMessageResponse:
-    return OutreachMessageResponse.model_validate(service.retry_send(principal, message_id), from_attributes=True)
+    return OutreachMessageResponse.model_validate(
+        service.retry_send(principal, message_id, enqueue=True), from_attributes=True,
+    )
 
 
 @router.post("/messages/{message_id}/delivered", response_model=OutreachMessageResponse)
@@ -267,6 +269,16 @@ def get_campaign_analytics(
     principal: AuthenticatedPrincipal = Depends(require_role("campaign_reader")),
     service: CampaignAnalyticsService = Depends(get_campaign_analytics_service),
 ) -> CampaignAnalyticsResponse:
+    return CampaignAnalyticsResponse(**service.get(campaign_id))
+
+
+@router.get("/{campaign_id}/funnel", response_model=CampaignAnalyticsResponse)
+def get_campaign_funnel(
+    campaign_id: UUID,
+    principal: AuthenticatedPrincipal = Depends(require_role("campaign_reader")),
+    service: CampaignAnalyticsService = Depends(get_campaign_analytics_service),
+) -> CampaignAnalyticsResponse:
+    """Return the persisted campaign funnel counts and variant conversion data."""
     return CampaignAnalyticsResponse(**service.get(campaign_id))
 
 

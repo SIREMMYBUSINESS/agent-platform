@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from app.persistence.unit_of_work import UnitOfWork
 from app.services.policy_service import PolicyService
@@ -21,6 +21,9 @@ from app.services.campaign_service import (
 )
 from app.services.campaign_sequence_service import CampaignSequenceService
 from app.services.sequence_experiments import SequenceExperimentService
+from app.queue.contracts import QueueDomain
+from app.services.contact_preference_service import ContactPreferenceService
+from app.services.outbound_delivery_service import OutboundDeliveryService
 
 
 class CampaignEligibilityError(Exception):
@@ -148,7 +151,7 @@ class EnrollmentService:
             if request.enrollment_id and enrollments[0] is None:
                 raise CampaignNotFoundError("campaign enrollment not found")
 
-            processed = sent = skipped = 0
+            processed = sent = skipped = queued = 0
             for enrollment in enrollments:
                 due_at = enrollment.next_step_at
                 if due_at is not None and due_at.tzinfo is None:
@@ -203,15 +206,47 @@ class EnrollmentService:
                 rendered = self._render(step.template_data, contact=contact,
                                         business=uow.businesses.get(tenant_id=tenant_id, business_id=business_id),
                                         enrichment=enrichment)
+                step_correlation_id = (
+                    f"campaign:{campaign.id}:enrollment:{enrollment.id}:step:{step.step_order}"
+                )
+                conversation = uow.conversations.get_by_correlation_id(
+                    tenant_id=tenant_id, business_id=business_id,
+                    correlation_id=step_correlation_id,
+                )
+                if conversation is None:
+                    conversation = uow.conversations.create(
+                        tenant_id=tenant_id, business_id=business_id,
+                        contact_id=contact.id, channel=campaign.channel,
+                        correlation_id=step_correlation_id,
+                    )
                 run = uow.campaign_step_runs.add(
                     tenant_id=tenant_id, business_id=business_id,
                     enrollment_id=enrollment.id, step_id=step.id,
-                    step_order=step.step_order, status="sent",
+                    step_order=step.step_order, status="queued",
                     rendered_content=rendered, skip_reason=None,
-                    generated_at=now, sent_at=now,
+                    generated_at=now, sent_at=None,
                 )
-                # Delivery is simulated. No provider call occurs in Phase 2B;
-                # the sent state means accepted by this local orchestration run.
+                channel = (ContactPreferenceService().choose_channel(
+                    contact=contact, fallback=campaign.channel,
+                ) or campaign.channel)
+                message_id = uuid5(NAMESPACE_URL, f"campaign-step-run:{run.id}")
+                body = rendered.get("body") or rendered.get("text") or ""
+                message = OutboundDeliveryService().queue(
+                    uow, tenant=uow.tenants.get(tenant_id=tenant_id),
+                    business=uow.businesses.get(tenant_id=tenant_id, business_id=business_id),
+                    contact=contact, conversation=conversation, channel=channel,
+                    content=body, subject=rendered.get("subject"),
+                    message_id=message_id, correlation_id=step_correlation_id,
+                    campaign_step_run_id=run.id,
+                )
+                uow.campaign_step_runs.set_status(
+                    tenant_id=tenant_id, business_id=business_id, run_id=run.id,
+                    status="blocked" if message.delivery_status == "blocked" else
+                           "sent" if message.delivery_status == "sent" else "queued",
+                    sent_at=now if message.delivery_status == "sent" else None,
+                    skip_reason="delivery_blocked" if message.delivery_status == "blocked" else None,
+                    message_id=message.id,
+                )
                 uow.campaign_events.add(
                     tenant_id=tenant_id, business_id=business_id,
                     campaign_id=campaign.id, enrollment_id=enrollment.id,
@@ -221,8 +256,11 @@ class EnrollmentService:
                 uow.campaign_events.add(
                     tenant_id=tenant_id, business_id=business_id,
                     campaign_id=campaign.id, enrollment_id=enrollment.id,
-                    event_type="step.sent",
-                    payload={"step_order": step.step_order, "delivery_mode": "simulated"},
+                    event_type="step.blocked" if message.delivery_status == "blocked" else
+                               "step.sent" if message.delivery_status == "sent" else "step.queued",
+                    payload={"step_order": step.step_order, "run_id": str(run.id),
+                             "message_id": str(message.id),
+                             "delivery_status": message.delivery_status},
                 )
                 next_step = self._sequences.next_step(
                     uow=uow, tenant_id=tenant_id, business_id=business_id,
@@ -237,7 +275,29 @@ class EnrollmentService:
                     current_step_order=step.step_order, status=status,
                     next_step_at=next_due,
                 )
-                sent += 1
+                if message.delivery_status == "blocked":
+                    uow.campaign_reply_enrollments.cancel(
+                        tenant_id=tenant_id, business_id=business_id,
+                        campaign_id=campaign.id, enrollment_id=enrollment.id,
+                    )
+                    skipped += 1
+                elif message.delivery_status == "sent":
+                    sent += 1
+                else:
+                    queued += 1
+                if next_step is not None and status == "active":
+                    uow.queue_tasks.enqueue(
+                        tenant_id=tenant_id, business_id=business_id,
+                        domain=QueueDomain.OUTREACH.value,
+                        task_name="outreach.trigger_enrollment",
+                        idempotency_key=(f"campaign:{campaign.id}:enrollment:{enrollment.id}:"
+                                         f"step:{next_step.step_order}"),
+                        aggregate_type="campaign_enrollment", aggregate_id=str(enrollment.id),
+                        payload={"campaign_id": str(campaign.id),
+                                 "enrollment_id": str(enrollment.id)},
+                        correlation_id=step_correlation_id, traceparent=None,
+                        available_at=next_due, max_attempts=6,
+                    )
 
             all_enrollments = uow.campaign_enrollments.list_all(
                 tenant_id=tenant_id, business_id=business_id, campaign_id=campaign.id
@@ -259,7 +319,8 @@ class EnrollmentService:
                     tenant_id=tenant_id, business_id=business_id, campaign_id=campaign.id
                 )
             return {"campaign_id": campaign.id, "status": campaign.status,
-                    "processed": processed, "sent": sent, "skipped": skipped}
+                    "processed": processed, "sent": sent, "queued": queued,
+                    "skipped": skipped}
 
     def _assert_eligible(self, uow: Any, campaign: Any, lead: Any,
                          tenant_id: str, business_id: str) -> None:

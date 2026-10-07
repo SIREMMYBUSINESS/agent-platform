@@ -10,7 +10,7 @@ from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app.persistence.models import (
-    Campaign, CampaignEnrollment, CampaignEventLog, OutreachMessage, CampaignSequence,
+    Campaign, CampaignEnrollment, CampaignEventLog, Lead, OutreachMessage, CampaignSequence,
     CampaignStep, CampaignStepRun,
 )
 from app.persistence.repositories import _database_call, _require_tenant
@@ -150,6 +150,16 @@ class SQLCampaignEnrollmentRepository:
         )
         return _database_call(lambda: self._session.exec(stmt).first())
 
+    def get_by_id(self, *, tenant_id: str, business_id: str,
+                  enrollment_id: UUID) -> CampaignEnrollment | None:
+        _require_tenant(tenant_id)
+        stmt = select(CampaignEnrollment).where(
+            CampaignEnrollment.tenant_id == tenant_id,
+            CampaignEnrollment.business_id == business_id,
+            CampaignEnrollment.id == enrollment_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
     def get_for_lead(self, *, tenant_id: str, business_id: str,
                      campaign_id: UUID, lead_id: UUID) -> CampaignEnrollment | None:
         _require_tenant(tenant_id)
@@ -181,6 +191,46 @@ class SQLCampaignEnrollmentRepository:
             CampaignEnrollment.status == "active",
         ).order_by(CampaignEnrollment.enrolled_at, CampaignEnrollment.id)
         return _database_call(lambda: list(self._session.exec(stmt).all()))
+
+    def list_active_for_contact(self, *, tenant_id: str, business_id: str,
+                                contact_id: str) -> list[CampaignEnrollment]:
+        """List active outreach sequences for a scoped contact."""
+        _require_tenant(tenant_id)
+        stmt = select(CampaignEnrollment).join(
+            Lead,
+            (Lead.tenant_id == CampaignEnrollment.tenant_id)
+            & (Lead.business_id == CampaignEnrollment.business_id)
+            & (Lead.id == CampaignEnrollment.lead_id),
+        ).where(
+            CampaignEnrollment.tenant_id == tenant_id,
+            CampaignEnrollment.business_id == business_id,
+            CampaignEnrollment.status == "active",
+            Lead.contact_id == contact_id,
+        ).order_by(CampaignEnrollment.updated_at.desc(), CampaignEnrollment.id.desc())
+        return _database_call(lambda: list(self._session.exec(stmt).all()))
+
+    def latest_reply_enrollment_for_contact(self, *, tenant_id: str, business_id: str,
+                                            contact_id: str) -> CampaignEnrollment | None:
+        _require_tenant(tenant_id)
+        stmt = select(CampaignEnrollment).join(
+            Lead,
+            (Lead.tenant_id == CampaignEnrollment.tenant_id)
+            & (Lead.business_id == CampaignEnrollment.business_id)
+            & (Lead.id == CampaignEnrollment.lead_id),
+        ).where(
+            CampaignEnrollment.tenant_id == tenant_id,
+            CampaignEnrollment.business_id == business_id,
+            CampaignEnrollment.status.in_(("active", "completed")),
+            CampaignEnrollment.current_step_order >= 0,
+            Lead.contact_id == contact_id,
+        ).order_by(CampaignEnrollment.updated_at.desc(), CampaignEnrollment.id.desc()).limit(1)
+        return _database_call(lambda: self._session.exec(stmt).first())
+
+    def latest_active_for_contact(self, *, tenant_id: str, business_id: str,
+                                  contact_id: str) -> CampaignEnrollment | None:
+        return next((row for row in self.list_active_for_contact(
+            tenant_id=tenant_id, business_id=business_id, contact_id=contact_id,
+        ) if row.current_step_order >= 0), None)
 
     def advance(self, *, tenant_id: str, business_id: str, enrollment_id: UUID,
                 expected_status: str, current_step_order: int, status: str,
@@ -220,6 +270,16 @@ class SQLCampaignStepRunRepository:
         )
         return _database_call(lambda: self._session.exec(stmt).first() is not None)
 
+    def get(self, *, tenant_id: str, business_id: str,
+            run_id: UUID) -> CampaignStepRun | None:
+        _require_tenant(tenant_id)
+        stmt = select(CampaignStepRun).where(
+            CampaignStepRun.tenant_id == tenant_id,
+            CampaignStepRun.business_id == business_id,
+            CampaignStepRun.id == run_id,
+        )
+        return _database_call(lambda: self._session.exec(stmt).first())
+
     def list_for_campaign(self, *, tenant_id: str, business_id: str,
                           campaign_id: UUID) -> list[CampaignStepRun]:
         _require_tenant(tenant_id)
@@ -238,17 +298,46 @@ class SQLCampaignStepRunRepository:
     def add(self, *, tenant_id: str, business_id: str, enrollment_id: UUID,
             step_id: UUID, step_order: int, status: str,
             rendered_content: dict[str, Any], skip_reason: str | None,
-            generated_at: datetime, sent_at: datetime | None) -> CampaignStepRun:
+            generated_at: datetime, sent_at: datetime | None,
+            message_id: UUID | None = None) -> CampaignStepRun:
         _require_tenant(tenant_id)
         row = CampaignStepRun(tenant_id=tenant_id, business_id=business_id,
                               enrollment_id=enrollment_id, step_id=step_id,
                               step_order=step_order, status=status,
+                              message_id=message_id,
                               rendered_content=rendered_content, skip_reason=skip_reason,
                               generated_at=generated_at, sent_at=sent_at)
         def persist():
             self._session.add(row)
             self._session.flush()
             return row
+        return _database_call(persist)
+
+    def set_status(self, *, tenant_id: str, business_id: str, run_id: UUID,
+                   status: str, sent_at: datetime | None = None,
+                   skip_reason: str | None = None,
+                   message_id: UUID | None = None) -> CampaignStepRun | None:
+        _require_tenant(tenant_id)
+        values: dict[str, Any] = {"status": status, "skip_reason": skip_reason}
+        if sent_at is not None:
+            values["sent_at"] = sent_at
+        if message_id is not None:
+            values["message_id"] = message_id
+        stmt = update(CampaignStepRun).where(
+            CampaignStepRun.tenant_id == tenant_id,
+            CampaignStepRun.business_id == business_id,
+            CampaignStepRun.id == run_id,
+        ).values(**values)
+        def persist():
+            result = self._session.exec(stmt)
+            if result.rowcount != 1:
+                return None
+            self._session.flush()
+            return self._session.exec(select(CampaignStepRun).where(
+                CampaignStepRun.tenant_id == tenant_id,
+                CampaignStepRun.business_id == business_id,
+                CampaignStepRun.id == run_id,
+            )).first()
         return _database_call(persist)
 
 

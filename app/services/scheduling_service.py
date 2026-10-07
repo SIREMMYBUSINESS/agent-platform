@@ -3,32 +3,54 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
+import re
 from typing import Any
 
 from app.persistence.models import Appointment
 from app.services.routing_service import RoutingService
 from app.services.scheduling_optimization import SchedulingOptimizationService
+from app.services.appointment_reminder_service import AppointmentReminderService
+from app.services.crm_sync_service import CRMSyncService
+from app.services.contact_action_tokens import ContactActionTokens
 
 
 @dataclass(frozen=True)
 class SchedulingResult:
     appointment: Appointment
     response: str
+    reproposed: bool = False
 
 
 class SchedulingService:
     """Schedules only from provisioned active services, staff, and slots."""
 
     def __init__(self, routing_service: RoutingService | None = None,
-                 optimizer: SchedulingOptimizationService | None = None) -> None:
+                 optimizer: SchedulingOptimizationService | None = None,
+                 calendar_provider=None, public_app_url: str = "http://localhost:3000") -> None:
         self._routing = routing_service or RoutingService()
         self._optimizer = optimizer or SchedulingOptimizationService()
+        self._reminders = AppointmentReminderService()
+        self._crm = CRMSyncService()
+        self._calendar = calendar_provider
+        self._public_app_url = public_app_url.rstrip("/")
+
+    @staticmethod
+    def selection_index(text: str) -> int | None:
+        normalized = " ".join(text.casefold().split())
+        if normalized in {"1", "1st", "option 1", "first", "the first"}:
+            return 0
+        if normalized in {"2", "2nd", "option 2", "second", "the second"}:
+            return 1
+        if normalized in {"3", "3rd", "option 3", "third", "the third"}:
+            return 2
+        match = re.fullmatch(r"(?:option|slot)\s+([1-3])", normalized)
+        return int(match.group(1)) - 1 if match else None
 
     @staticmethod
     def is_confirmation(text: str) -> bool:
         normalized = text.casefold().strip()
-        return any(
+        return SchedulingService.selection_index(normalized) is not None or any(
             phrase in normalized
             for phrase in ("confirm", "yes", "that works", "book it", "accept the time")
         )
@@ -44,6 +66,12 @@ class SchedulingService:
         text: str,
         now: datetime,
         contact_timezone: str | None,
+        source: str = "inbound",
+        campaign_id=None,
+        campaign_enrollment_id=None,
+        preferred_date: str | None = None,
+        preferred_weekday: int | None = None,
+        preferred_time: list[str] | tuple[str, str] | None = None,
     ) -> SchedulingResult | None:
         services = uow.services.list_active(tenant_id=tenant_id, business_id=business_id)
         staff = uow.staff.list_active(tenant_id=tenant_id, business_id=business_id)
@@ -59,20 +87,40 @@ class SchedulingService:
         available = uow.appointment_slots.list_available(
             tenant_id=tenant_id, business_id=business_id, after=now
         )
+        parsed_preferred_date = date.fromisoformat(preferred_date) if preferred_date else None
+        parsed_preferred_time = (
+            (time.fromisoformat(preferred_time[0]), time.fromisoformat(preferred_time[1]))
+            if preferred_time else None
+        )
         choices = self._optimizer.rank_slots(
             [slot for slot in available if slot.service_id == service.id],
             now=now, timezone_name=contact_timezone,
+            preferred_date=parsed_preferred_date,
+            preferred_weekday=preferred_weekday,
+            preferred_time=parsed_preferred_time,
         )
+        if choices and self._calendar is not None:
+            earliest = min(self._as_utc(slot.starts_at) for slot in choices)
+            latest = max(self._as_utc(slot.ends_at) for slot in choices)
+            events = self._calendar.availability(
+                tenant_id=tenant_id, business_id=business_id,
+                time_min=earliest.isoformat(), time_max=latest.isoformat(),
+            )
+            busy = [(self._event_time(event, "start"), self._event_time(event, "end"))
+                    for event in events]
+            choices = [slot for slot in choices if not any(
+                self._as_utc(slot.starts_at) < end and self._as_utc(slot.ends_at) > start
+                for start, end in busy
+            )]
         if not choices:
             return None
 
-        selected_slot = None
-        for candidate in choices:
-            selected_slot = uow.appointment_slots.reserve(
-                tenant_id=tenant_id, slot_id=candidate.id
-            )
-            if selected_slot is not None:
-                break
+        choices = choices[:3]
+        action_token, action_token_hash = ContactActionTokens.issue()
+
+        selected_slot = uow.appointment_slots.reserve(
+            tenant_id=tenant_id, slot_id=choices[0].id
+        )
         if selected_slot is None:
             return None
 
@@ -87,23 +135,26 @@ class SchedulingService:
             starts_at=selected_slot.starts_at,
             ends_at=selected_slot.ends_at,
             status="proposed",
+            source=source,
+            campaign_id=campaign_id,
+            campaign_enrollment_id=campaign_enrollment_id,
+            proposal_slot_ids=[str(slot.id) for slot in choices],
+            contact_action_token_hash=action_token_hash,
+            correlation_id=(getattr(uow.conversations.get(
+                tenant_id=tenant_id, conversation_id=conversation_id,
+            ), "correlation_id", None) or str(conversation_id)),
         )
         display_timezone = contact_timezone or "UTC"
-        selected_time = self._routing.format_local_time(selected_slot.starts_at, display_timezone)
-        alternate_times = [
-            self._routing.format_local_time(slot.starts_at, display_timezone)
-            for slot in choices
-            if slot.id != selected_slot.id
-        ][:2]
-        if alternate_times:
-            options = "; other options are " + " or ".join(alternate_times)
-        else:
-            options = ""
+        option_text = "; ".join(
+            f"{index}) {self._routing.format_local_time(slot.starts_at, display_timezone)}"
+            for index, slot in enumerate(choices, start=1)
+        )
         return SchedulingResult(
             appointment=appointment,
             response=(
-                f"I can schedule your {service.name} for {selected_time}{options}. "
-                "Reply yes to confirm or tell me what time works better."
+                f"I can schedule your {service.name} at: {option_text}. "
+                "Reply with the number of your preferred time, or choose online: "
+                f"{self._public_app_url}/appointments/action?token={action_token}"
             ),
         )
 
@@ -115,17 +166,106 @@ class SchedulingService:
         business_id: str,
         contact_id: str,
         contact_timezone: str | None,
+        now: datetime | None = None,
+        appointment_id=None,
+        selection_text: str | None = None,
     ) -> SchedulingResult | None:
-        proposed = uow.appointments.latest_proposed(
-            tenant_id=tenant_id, business_id=business_id, contact_id=contact_id
-        )
-        if proposed is None:
+        proposed = (uow.appointments.get_for_tenant(
+            tenant_id=tenant_id, business_id=business_id, appointment_id=appointment_id,
+        ) if appointment_id is not None else uow.appointments.latest_proposed(
+            tenant_id=tenant_id, business_id=business_id, contact_id=contact_id,
+        ))
+        if proposed is None or proposed.status != "proposed" or proposed.contact_id != contact_id:
             return None
+        selection = self.selection_index(selection_text or "")
+        selection_conflict = False
+        if selection_text and selection is not None:
+            offered = proposed.proposal_slot_ids or []
+            if selection >= len(offered):
+                selection_conflict = True
+            elif proposed.slot_id is None or str(proposed.slot_id) != offered[selection]:
+                selected = uow.appointments.select_proposed_slot(
+                    tenant_id=tenant_id, business_id=business_id,
+                    appointment_id=proposed.id, slot_id=offered[selection],
+                )
+                if selected is None:
+                    selection_conflict = True
+                else:
+                    proposed = selected
+        calendar_conflict = selection_conflict
+        if self._calendar is not None and not calendar_conflict:
+            events = self._calendar.availability(
+                tenant_id=tenant_id, business_id=business_id,
+                time_min=self._as_utc(proposed.starts_at).isoformat(),
+                time_max=self._as_utc(proposed.ends_at).isoformat(),
+            )
+            calendar_conflict = any(
+                self._as_utc(proposed.starts_at) < self._event_time(event, "end")
+                and self._as_utc(proposed.ends_at) > self._event_time(event, "start")
+                for event in events
+            )
+        if calendar_conflict:
+            old_id, old_slot = proposed.id, proposed.slot_id
+            service = next((item for item in uow.services.list_active(
+                tenant_id=tenant_id, business_id=business_id,
+            ) if item.id == proposed.service_id), None)
+            if old_slot is not None:
+                uow.appointment_slots.release_reservation(
+                    tenant_id=tenant_id, slot_id=old_slot,
+                )
+            uow.appointments.mark_conflict(tenant_id=tenant_id, appointment_id=old_id)
+            alternative = self.propose(
+                uow=uow, tenant_id=tenant_id, business_id=business_id,
+                contact_id=contact_id, conversation_id=proposed.conversation_id,
+                text=service.name if service else "",
+                now=self._as_utc(now or datetime.now(timezone.utc)),
+                contact_timezone=contact_timezone,
+                source=proposed.source, campaign_id=proposed.campaign_id,
+                campaign_enrollment_id=proposed.campaign_enrollment_id,
+            )
+            if alternative is None:
+                return None
+            return SchedulingResult(
+                appointment=alternative.appointment,
+                response=("That time is no longer available. " + alternative.response),
+                reproposed=True,
+            )
         confirmed = uow.appointments.confirm(
             tenant_id=tenant_id, appointment_id=proposed.id
         )
         if confirmed is None:
             return None
+        confirmed.correlation_id = confirmed.correlation_id or str(
+            confirmed.conversation_id or confirmed.id
+        )
+        self._reminders.schedule(uow, appointment=confirmed)
+        self._crm.enqueue_appointment_activity(
+            uow, appointment=confirmed,
+            activity_type=f"{confirmed.source}_appointment",
+        )
+        if confirmed.campaign_id and confirmed.campaign_enrollment_id:
+            enrollment = uow.campaign_enrollments.get(
+                tenant_id=tenant_id, business_id=business_id,
+                campaign_id=confirmed.campaign_id,
+                enrollment_id=confirmed.campaign_enrollment_id,
+            )
+            uow.campaign_events.add(
+                tenant_id=tenant_id, business_id=business_id,
+                campaign_id=confirmed.campaign_id,
+                enrollment_id=confirmed.campaign_enrollment_id,
+                event_type="campaign.appointment.booked",
+                payload={"appointment_id": str(confirmed.id)},
+            )
+            lead = (uow.leads.get(
+                tenant_id=tenant_id, business_id=business_id, lead_id=enrollment.lead_id,
+            ) if enrollment is not None else None)
+            if lead is not None and lead.status == "responded":
+                uow.lead_transitions.transition(
+                    tenant_id=tenant_id, business_id=business_id, lead_id=lead.id,
+                    expected_state="responded", new_state="booked",
+                    context={"source": "appointment_confirmation",
+                             "appointment_id": str(confirmed.id)},
+                )
         local_time = self._routing.format_local_time(
             confirmed.starts_at, contact_timezone or "UTC"
         )
@@ -133,6 +273,21 @@ class SchedulingService:
             appointment=confirmed,
             response=f"Your appointment is confirmed for {local_time}.",
         )
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @classmethod
+    def _event_time(cls, event, edge: str) -> datetime:
+        raw = event.get(edge) if isinstance(event, dict) else None
+        value = raw.get("dateTime") or raw.get("date") if isinstance(raw, dict) else None
+        if not value:
+            raise ValueError("calendar returned an event without a valid time")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return cls._as_utc(parsed)
 
 
 __all__ = ["SchedulingResult", "SchedulingService"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from app.persistence.models import Business, Contact, Tenant
 from app.persistence.repositories import EntityNotFoundError
@@ -15,6 +16,10 @@ from app.schemas import InboundRequest
 from app.services.escalation_service import EscalationService
 from app.services.routing_service import RoutingService
 from app.services.scheduling_service import SchedulingService
+from app.services.outbound_delivery_service import OutboundDeliveryService
+from app.services.contact_preference_service import ContactPreferenceService
+from app.services.faq_service import FAQService
+from app.services.receptionist_intake_service import ReceptionistIntakeService
 
 
 class InboundTenantMismatchError(Exception):
@@ -46,7 +51,10 @@ class IntakeService:
         routing_service: RoutingService | None = None,
         scheduling_service: SchedulingService | None = None,
         escalation_service: EscalationService | None = None,
+        calendar_provider=None,
         now_provider: Callable[[], datetime] | None = None,
+        faq_service: FAQService | None = None,
+        public_app_url: str = "http://localhost:3000",
     ) -> None:
         if not trusted_tenant_id.strip():
             raise ValueError("trusted_tenant_id must not be blank")
@@ -55,22 +63,20 @@ class IntakeService:
         self._policy = policy_checker or PolicyChecker()
         self._policy_service = policy_service or PolicyService()
         self._routing = routing_service or RoutingService()
-        self._scheduling = scheduling_service or SchedulingService(self._routing)
+        self._scheduling = scheduling_service or SchedulingService(
+            self._routing, calendar_provider=calendar_provider, public_app_url=public_app_url,
+        )
         self._escalation = escalation_service or EscalationService()
+        self._outbound_delivery = OutboundDeliveryService(policy_service=self._policy_service)
+        self._preferences = ContactPreferenceService()
+        self._faq = faq_service or FAQService()
+        self._receptionist = ReceptionistIntakeService()
         self._now = now_provider or (lambda: datetime.now(UTC))
 
     @staticmethod
     def _classify(text: str) -> tuple[str, str]:
-        normalized = text.casefold()
-        if any(term in normalized for term in URGENT_TERMS):
-            return "urgent", "urgent"
-        if SchedulingService.is_confirmation(text):
-            return "appointment_confirmation", "routine"
-        if any(term in normalized for term in APPOINTMENT_TERMS):
-            return "appointment", "routine"
-        if any(term in normalized for term in ("business hours", "opening hours", "open", "close")):
-            return "business_hours", "routine"
-        return "unknown", "routine"
+        result = ReceptionistIntakeService().classify(text)
+        return result.intent, result.priority
 
     @staticmethod
     def _event(
@@ -90,7 +96,11 @@ class IntakeService:
             event_type=event_type,
             payload=payload,
             source=source,
-            correlation_id=str(conversation_id),
+            correlation_id=(
+                getattr(uow.conversations.get(
+                    tenant_id=tenant_id, conversation_id=conversation_id,
+                ), "correlation_id", None) or str(conversation_id)
+            ),
         )
 
     def _transition(
@@ -118,25 +128,35 @@ class IntakeService:
             payload={"state": state},
         )
 
-    @staticmethod
     def _outbound(
+        self,
         uow: Any,
         *,
         tenant_id: str,
+        tenant: Tenant,
+        business: Business,
+        contact: Contact,
         conversation_id,
         channel: str,
         content: str,
     ) -> None:
-        uow.messages.add(
-            tenant_id=tenant_id,
-            conversation_id=conversation_id,
-            sender="agent",
-            channel=channel,
-            content=content,
-            direction="outbound",
+        conversation = uow.conversations.get(
+            tenant_id=tenant_id, conversation_id=conversation_id,
+        )
+        if conversation is None:
+            raise InboundProvisioningError("conversation is not available for response delivery")
+        delivery_channel = channel
+        if channel != "chat" and contact.preferred_channel:
+            delivery_channel = self._preferences.choose_channel(
+                contact=contact, fallback=channel,
+            ) or contact.preferred_channel
+        self._outbound_delivery.queue(
+            uow, tenant=tenant, business=business, contact=contact,
+            conversation=conversation, channel=delivery_channel, content=content,
         )
 
-    def handle(self, request: InboundRequest) -> dict[str, Any]:
+    def handle(self, request: InboundRequest, *, correlation_id: str | None = None,
+               receptionist_enabled: bool = True) -> dict[str, Any]:
         if request.tenant_id != self._trusted_tenant_id:
             raise InboundTenantMismatchError("request tenant does not match trusted tenant")
 
@@ -145,6 +165,9 @@ class IntakeService:
         if now.tzinfo is None:
             now = now.replace(tzinfo=UTC)
         now = now.astimezone(UTC)
+        correlation_id = correlation_id or uuid4().hex
+        if len(correlation_id) > 100:
+            raise ValueError("correlation_id exceeds 100 characters")
 
         with self._uow_factory() as uow:
             tenant: Tenant | None = uow.tenants.get(tenant_id=tenant_id)
@@ -159,11 +182,23 @@ class IntakeService:
             if contact.business_id != business.id:
                 raise InboundProvisioningError("contact is not provisioned for this business")
 
+            existing = uow.conversations.get_by_correlation_id(
+                tenant_id=tenant_id, business_id=business.id,
+                correlation_id=correlation_id,
+            )
+            if existing is not None:
+                if existing.contact_id != contact.id or existing.channel != request.channel:
+                    raise InboundProvisioningError("correlation ID is already bound to another conversation")
+                return {"success": True, "status": "duplicate",
+                        "workflow_state": existing.workflow_state, "agent_response": None,
+                        "conversation_id": str(existing.id)}
+
             conversation = uow.conversations.create(
                 tenant_id=tenant_id,
                 business_id=business.id,
                 contact_id=contact.id,
                 channel=request.channel,
+                correlation_id=correlation_id,
             )
             self._transition(
                 uow,
@@ -220,7 +255,29 @@ class IntakeService:
                     "reason": reason,
                 }
 
-            intent, priority = self._classify(request.text or "")
+            if not receptionist_enabled:
+                self._transition(
+                    uow, tenant_id=tenant_id, business_id=business.id,
+                    conversation_id=conversation.id, state="campaign_reply_received",
+                    context={"channel": request.channel},
+                )
+                self._event(
+                    uow, tenant_id=tenant_id, business_id=business.id,
+                    conversation_id=conversation.id, event_type="outreach.reply.received",
+                    payload={"channel": request.channel},
+                )
+                return {"success": True, "status": "ok",
+                        "workflow_state": "campaign_reply_received", "agent_response": "",
+                        "conversation_id": str(conversation.id)}
+
+            text = request.text or ""
+            active_services = uow.services.list_active(
+                tenant_id=tenant_id, business_id=business.id,
+            )
+            classification = self._receptionist.classify(
+                text, service_names=tuple(item.name for item in active_services),
+            )
+            intent, priority = classification.intent, classification.priority
             if request.channel not in SUPPORTED_CHANNELS:
                 intent = "unknown"
             self._transition(
@@ -229,7 +286,8 @@ class IntakeService:
                 business_id=business.id,
                 conversation_id=conversation.id,
                 state="intent_classified",
-                context={"intent": intent, "priority": priority},
+                context={"intent": intent, "priority": priority,
+                         "entities": classification.entities},
             )
 
             rules = uow.routing_rules.list_for_business(
@@ -288,7 +346,8 @@ class IntakeService:
                     context={"after_hours_action": action},
                 )
                 self._outbound(
-                    uow, tenant_id=tenant_id, conversation_id=conversation.id,
+                    uow, tenant_id=tenant_id, tenant=tenant, business=business,
+                    contact=contact, conversation_id=conversation.id,
                     channel=request.channel, content=response,
                 )
                 self._event(
@@ -306,12 +365,34 @@ class IntakeService:
                 scheduled = self._scheduling.confirm(
                     uow=uow, tenant_id=tenant_id, business_id=business.id,
                     contact_id=contact.id, contact_timezone=routing.contact_timezone,
+                    now=now, selection_text=request.text or "",
                 )
                 if scheduled is None:
                     return self._escalate(
                         uow, tenant_id, business, contact, conversation,
                         request.channel, "appointment confirmation could not be matched", "normal",
                     )
+                if scheduled.reproposed:
+                    self._transition(
+                        uow, tenant_id=tenant_id, business_id=business.id,
+                        conversation_id=conversation.id, state="appointment_reproposed",
+                        context={"appointment_id": str(scheduled.appointment.id)},
+                    )
+                    self._event(
+                        uow, tenant_id=tenant_id, business_id=business.id,
+                        conversation_id=conversation.id, event_type="appointment.reproposed",
+                        payload={"appointment_id": str(scheduled.appointment.id)},
+                    )
+                    self._outbound(
+                        uow, tenant_id=tenant_id, tenant=tenant, business=business,
+                        contact=contact, conversation_id=conversation.id,
+                        channel=request.channel, content=scheduled.response,
+                    )
+                    return {
+                        "success": True, "status": "ok",
+                        "workflow_state": "appointment_reproposed",
+                        "agent_response": scheduled.response,
+                    }
                 self._transition(
                     uow, tenant_id=tenant_id, business_id=business.id,
                     conversation_id=conversation.id, state="appointment_confirmed",
@@ -333,7 +414,8 @@ class IntakeService:
                     payload={"appointment_id": str(scheduled.appointment.id)},
                 )
                 self._outbound(
-                    uow, tenant_id=tenant_id, conversation_id=conversation.id,
+                    uow, tenant_id=tenant_id, tenant=tenant, business=business,
+                    contact=contact, conversation_id=conversation.id,
                     channel=request.channel, content=scheduled.response,
                 )
                 return {
@@ -348,6 +430,9 @@ class IntakeService:
                     contact_id=contact.id, conversation_id=conversation.id,
                     text=request.text or "", now=now,
                     contact_timezone=routing.contact_timezone,
+                    preferred_date=classification.entities.get("date_preference"),
+                    preferred_weekday=classification.entities.get("weekday_preference"),
+                    preferred_time=classification.entities.get("time_preference"),
                 )
                 if scheduled is None:
                     return self._escalate(
@@ -365,7 +450,8 @@ class IntakeService:
                     payload={"appointment_id": str(scheduled.appointment.id)},
                 )
                 self._outbound(
-                    uow, tenant_id=tenant_id, conversation_id=conversation.id,
+                    uow, tenant_id=tenant_id, tenant=tenant, business=business,
+                    contact=contact, conversation_id=conversation.id,
                     channel=request.channel, content=scheduled.response,
                 )
                 return {
@@ -389,13 +475,39 @@ class IntakeService:
                     f"({routing.business_timezone})."
                 )
                 self._outbound(
-                    uow, tenant_id=tenant_id, conversation_id=conversation.id,
+                    uow, tenant_id=tenant_id, tenant=tenant, business=business,
+                    contact=contact, conversation_id=conversation.id,
                     channel=request.channel, content=response,
                 )
                 return {
                     "success": True, "status": "ok",
                     "workflow_state": "business_hours_checked",
                     "agent_response": response,
+                }
+
+            if intent == "question":
+                answer = self._faq.answer(
+                    tenant_id=tenant_id, business_id=business.id,
+                    question=request.text or "",
+                )
+                self._transition(
+                    uow, tenant_id=tenant_id, business_id=business.id,
+                    conversation_id=conversation.id, state="faq_answered",
+                    context={"source": answer.source},
+                )
+                self._event(
+                    uow, tenant_id=tenant_id, business_id=business.id,
+                    conversation_id=conversation.id, event_type="faq.answer.generated",
+                    payload={"source": answer.source},
+                )
+                self._outbound(
+                    uow, tenant_id=tenant_id, tenant=tenant, business=business,
+                    contact=contact, conversation_id=conversation.id,
+                    channel=request.channel, content=answer.text,
+                )
+                return {
+                    "success": True, "status": "ok", "workflow_state": "faq_answered",
+                    "agent_response": answer.text,
                 }
 
             return self._escalate(
@@ -422,8 +534,10 @@ class IntakeService:
             context={"reason": reason, "priority": priority},
         )
         response = "I've sent this to our team so a person can help you."
+        tenant = uow.tenants.get(tenant_id=tenant_id)
         self._outbound(
-            uow, tenant_id=tenant_id, conversation_id=conversation.id,
+            uow, tenant_id=tenant_id, tenant=tenant, business=business,
+            contact=contact, conversation_id=conversation.id,
             channel=channel, content=response,
         )
         return {

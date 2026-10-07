@@ -9,6 +9,7 @@ from app.auth.principal_resolver import AuthorizationError
 from app.routes.conversations import router as conversation_router
 from app.routes.provider_webhooks import router as provider_webhook_router
 from app.routes.provider_ingress import router as provider_ingress_router
+from app.routes.workflows import router as workflow_router
 from app.services.conversation_service import ConversationConflictError
 from app.services.outreach_execution import (
     OutreachConflict, OutreachNotEligible, OutreachNotFound, RateLimitExceeded,
@@ -55,6 +56,7 @@ app.include_router(campaign_router)
 app.include_router(conversation_router)
 app.include_router(provider_webhook_router)
 app.include_router(provider_ingress_router)
+app.include_router(workflow_router)
 
 
 @app.exception_handler(AuthorizationError)
@@ -97,6 +99,7 @@ def get_inbound_service(principal: AuthenticatedPrincipal = Depends(get_authenti
     return InboundService(
         trusted_tenant_id=principal.tenant_id,
         uow_factory=lambda: UnitOfWork(session_factory),
+        public_app_url=settings.public_app_url,
     )
 
 

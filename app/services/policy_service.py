@@ -38,7 +38,7 @@ DEFAULT_COUNTRY_POLICIES = {
             "inbound": {"chat": _channel_rule(False), "email": _channel_rule(),
                         "sms": _channel_rule(), "call": _channel_rule(),
                         "phone": _channel_rule(), "voicemail": _channel_rule()},
-            "outbound": {"email": _channel_rule(), "sms": _channel_rule(),
+            "outbound": {"chat": _channel_rule(False), "email": _channel_rule(), "sms": _channel_rule(),
                          "whatsapp": _channel_rule(), "call": _channel_rule()},
         },
     },
@@ -47,7 +47,7 @@ DEFAULT_COUNTRY_POLICIES = {
         "rules": {
             "inbound": {"email": _channel_rule(), "sms": _channel_rule(),
                         "chat": _channel_rule(False), "call": _channel_rule()},
-            "outbound": {"email": _channel_rule(), "sms": _channel_rule(),
+            "outbound": {"chat": _channel_rule(False), "email": _channel_rule(), "sms": _channel_rule(),
                          "whatsapp": _channel_rule()},
         },
     },
@@ -56,7 +56,7 @@ DEFAULT_COUNTRY_POLICIES = {
         "rules": {
             "inbound": {"email": _channel_rule(), "sms": _channel_rule(),
                         "chat": _channel_rule(), "call": _channel_rule()},
-            "outbound": {"email": _channel_rule(), "sms": _channel_rule(),
+            "outbound": {"chat": _channel_rule(False), "email": _channel_rule(), "sms": _channel_rule(),
                          "whatsapp": _channel_rule()},
         },
     },

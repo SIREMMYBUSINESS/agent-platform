@@ -8,8 +8,8 @@ from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app.persistence.models import (
-    Campaign, CampaignEnrollment, CampaignEventLog, CampaignReply, CampaignSequence,
-    CampaignStepRun, ContactChannelConsent,
+    Appointment, Business, Campaign, CampaignEnrollment, CampaignEventLog, CampaignReply,
+    CampaignSequence, CampaignStepRun, ContactChannelConsent, Lead, LeadStateTransition,
 )
 from app.persistence.repositories import _database_call, _require_tenant
 
@@ -164,7 +164,9 @@ class SQLCampaignAnalyticsRepository:
             ).where(CampaignEventLog.tenant_id == tenant_id,
                     CampaignEventLog.business_id == business_id,
                     CampaignEventLog.campaign_id == campaign_id,
-                    CampaignEventLog.event_type.in_(["step.opened", "campaign.appointment.booked"])
+                    CampaignEventLog.event_type.in_(
+                        ["step.opened", "campaign.appointment.booked", "campaign.appointment.completed"]
+                    )
             ).group_by(CampaignEventLog.event_type)).all()
             counts = {event_type: count for event_type, count in event_counts}
             sent = self._session.exec(runs_stmt).one()
@@ -173,12 +175,69 @@ class SQLCampaignAnalyticsRepository:
             return {
                 "campaign_id": campaign_id,
                 "sent_count": int(sent or 0),
+                "contacted_count": len(sent_enrollments),
                 "opened_count": int(counts.get("step.opened", 0)),
                 "reply_count": total,
                 "positive_reply_rate": (positive / total) if total else 0.0,
                 "opt_out_count": sum(reply.classification == "opt_out" for reply in replies),
                 "booked_appointments": int(counts.get("campaign.appointment.booked", 0)),
+                "completed_appointments": int(counts.get("campaign.appointment.completed", 0)),
                 "variant_metrics": variant_metrics,
+            }
+        return _database_call(read)
+
+    def aggregate_business_funnel(self, *, tenant_id: str, business_id: str) -> dict | None:
+        _require_tenant(tenant_id)
+        def read():
+            business = self._session.exec(select(Business.id).where(
+                Business.tenant_id == tenant_id, Business.id == business_id,
+            )).first()
+            if business is None:
+                return None
+            lead_count = self._session.exec(select(func.count(Lead.id)).where(
+                Lead.tenant_id == tenant_id, Lead.business_id == business_id,
+            )).one()
+            def transitioned_leads(state: str) -> set:
+                rows = self._session.exec(select(LeadStateTransition.lead_id).where(
+                    LeadStateTransition.tenant_id == tenant_id,
+                    LeadStateTransition.business_id == business_id,
+                    LeadStateTransition.to_state == state,
+                )).all()
+                return set(rows)
+            sent_leads = set(self._session.exec(select(CampaignEnrollment.lead_id).join(
+                CampaignStepRun,
+                (CampaignStepRun.tenant_id == CampaignEnrollment.tenant_id)
+                & (CampaignStepRun.business_id == CampaignEnrollment.business_id)
+                & (CampaignStepRun.enrollment_id == CampaignEnrollment.id),
+            ).where(
+                CampaignEnrollment.tenant_id == tenant_id,
+                CampaignEnrollment.business_id == business_id,
+                CampaignStepRun.status == "sent",
+            )).all())
+            replied_leads = set(self._session.exec(select(CampaignReply.lead_id).where(
+                CampaignReply.tenant_id == tenant_id,
+                CampaignReply.business_id == business_id,
+            )).all())
+            def transition_count(state: str) -> int:
+                return len(transitioned_leads(state))
+            booked = self._session.exec(select(func.count(Appointment.id)).where(
+                Appointment.tenant_id == tenant_id,
+                Appointment.business_id == business_id,
+                Appointment.status.in_(("confirmed", "completed")),
+            )).one()
+            completed = self._session.exec(select(func.count(Appointment.id)).where(
+                Appointment.tenant_id == tenant_id,
+                Appointment.business_id == business_id,
+                Appointment.status == "completed",
+            )).one()
+            return {
+                "business_id": business_id,
+                "lead_count": int(lead_count or 0),
+                "contacted_count": len(sent_leads | transitioned_leads("contacted")),
+                "replied_count": len(replied_leads | transitioned_leads("responded")),
+                "booked_count": int(booked or 0),
+                "completed_count": int(completed or 0),
+                "converted_count": transition_count("converted"),
             }
         return _database_call(read)
 

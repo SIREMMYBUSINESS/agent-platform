@@ -134,6 +134,8 @@ class Contact(SQLModel, table=True):
     whatsapp: Optional[str] = None
     consent_status: str = "unknown"
     timezone: Optional[str] = None
+    preferred_channel: Optional[str] = None
+    language: Optional[str] = None
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -357,6 +359,7 @@ class Message(SQLModel, table=True):
             name="fk_messages_tenant_conversation",
         ),
         Index("ix_messages_tenant_conversation_created", "tenant_id", "conversation_id", "created_at"),
+        CheckConstraint("delivery_status IN ('not_applicable', 'pending', 'sent', 'failed', 'blocked', 'dry_run')", name="ck_messages_delivery_status"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -365,7 +368,11 @@ class Message(SQLModel, table=True):
     sender: str
     channel: str
     content: str
+    subject: str | None = None
     direction: str
+    delivery_status: str = "not_applicable"
+    provider_message_id: Optional[str] = None
+    delivery_error_code: Optional[str] = None
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -503,6 +510,7 @@ class Appointment(SQLModel, table=True):
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_appointments"),
         CheckConstraint("ends_at > starts_at", name="ck_appointments_end_after_start"),
+        CheckConstraint("source IN ('inbound', 'outreach')", name="ck_appointments_source"),
         UniqueConstraint("tenant_id", "slot_id", name="uq_appointments_tenant_slot"),
         ForeignKeyConstraint(
             ["tenant_id"], ["tenants.id"], name="fk_appointments_tenant_id_tenants"
@@ -533,12 +541,23 @@ class Appointment(SQLModel, table=True):
             name="fk_appointments_tenant_business_service",
         ),
         ForeignKeyConstraint(
+            ["tenant_id", "business_id", "campaign_id"],
+            ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"],
+            name="fk_appointments_campaign",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "business_id", "campaign_enrollment_id"],
+            ["campaign_enrollments.tenant_id", "campaign_enrollments.business_id", "campaign_enrollments.id"],
+            name="fk_appointments_campaign_enrollment",
+        ),
+        ForeignKeyConstraint(
             ["tenant_id", "business_id", "slot_id"],
             ["appointment_slots.tenant_id", "appointment_slots.business_id", "appointment_slots.id"],
             name="fk_appointments_tenant_business_slot",
         ),
         Index("ix_appointments_tenant_business_start", "tenant_id", "business_id", "starts_at"),
         Index("ix_appointments_tenant_contact_status", "tenant_id", "contact_id", "status"),
+        Index("uq_appointments_contact_action_token_hash", "contact_action_token_hash", unique=True),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -552,6 +571,16 @@ class Appointment(SQLModel, table=True):
     starts_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     ends_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     status: str = "requested"
+    source: str = "inbound"
+    campaign_id: UUID | None = None
+    campaign_enrollment_id: UUID | None = None
+    proposal_slot_ids: list[str] = Field(
+        default_factory=list, sa_column=Column(json_storage_type(), nullable=False, default=list)
+    )
+    contact_action_token_hash: str | None = None
+    calendar_event_id: Optional[str] = None
+    crm_record_id: Optional[str] = None
+    correlation_id: Optional[str] = None
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -580,6 +609,7 @@ class Staff(SQLModel, table=True):
     tenant_id: str
     business_id: str
     display_name: str
+    email: Optional[str] = None
     active: bool = True
     created_at: datetime = Field(
         default_factory=utc_now,
@@ -692,6 +722,8 @@ class EscalationTicket(SQLModel, table=True):
     reason: str
     priority: str = "urgent"
     status: str = "open"
+    resolved_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    resolution: Optional[str] = None
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -950,7 +982,8 @@ class CampaignStepRun(SQLModel, table=True):
     __tablename__ = "campaign_step_runs"
     __table_args__ = (
         PrimaryKeyConstraint("id", name="pk_campaign_step_runs"),
-        CheckConstraint("status IN ('sent', 'skipped')", name="ck_campaign_step_runs_status"),
+        CheckConstraint("status IN ('queued', 'sent', 'dry_run', 'blocked', 'failed', 'skipped')", name="ck_campaign_step_runs_status"),
+        UniqueConstraint("tenant_id", "id", name="uq_campaign_step_runs_tenant_id"),
         UniqueConstraint("tenant_id", "business_id", "enrollment_id", "step_id", name="uq_campaign_step_runs_enrollment_step"),
         ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_campaign_step_runs_tenant_id_tenants"),
         ForeignKeyConstraint(["tenant_id", "business_id", "enrollment_id"], ["campaign_enrollments.tenant_id", "campaign_enrollments.business_id", "campaign_enrollments.id"], name="fk_campaign_step_runs_tenant_enrollment"),
@@ -964,6 +997,7 @@ class CampaignStepRun(SQLModel, table=True):
     step_id: UUID
     step_order: int
     status: str
+    message_id: UUID | None = None
     rendered_content: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
     skip_reason: Optional[str] = None
     generated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
@@ -1001,7 +1035,7 @@ class OutreachMessage(SQLModel, table=True):
         ForeignKeyConstraint(["tenant_id", "business_id", "campaign_id"], ["campaigns.tenant_id", "campaigns.business_id", "campaigns.id"], name="fk_outreach_messages_campaign"),
         ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"], ["contacts.tenant_id", "contacts.id", "contacts.business_id"], name="fk_outreach_messages_contact"),
         ForeignKeyConstraint(["tenant_id", "conversation_id", "business_id"], ["conversations.tenant_id", "conversations.id", "conversations.business_id"], name="fk_outreach_messages_conversation"),
-        CheckConstraint("status IN ('scheduled', 'sending', 'sent', 'delivered', 'failed')", name="ck_outreach_messages_status"),
+        CheckConstraint("status IN ('scheduled', 'sending', 'sent', 'delivered', 'failed', 'dry_run')", name="ck_outreach_messages_status"),
         CheckConstraint("attempts >= 0", name="ck_outreach_messages_attempts"),
         Index("ix_outreach_messages_tenant_due", "tenant_id", "status", "scheduled_at"),
         Index("ix_outreach_messages_campaign_due", "tenant_id", "business_id", "campaign_id", "status", "scheduled_at"),

@@ -15,7 +15,7 @@ from app.persistence.campaign_repositories import SQLCampaignEnrollmentRepositor
 from app.persistence.models import (
     Business, Campaign, CampaignEnrollment, CampaignEventLog,
     CampaignStepRun, ConsentRecord, Contact, Lead, LeadScore, LeadSource,
-    PolicyDecisionLog, Tenant,
+    PolicyDecisionLog, QueueTaskRecord, Tenant,
 )
 from app.persistence.unit_of_work import UnitOfWork
 from app.routes.campaigns import (get_campaign_service, get_enrollment_service,
@@ -45,7 +45,7 @@ def campaign_client():
         session.flush()
         session.add(Contact(
             id="contact-a", tenant_id="tenant-a", business_id="business-a",
-            full_name="Jordan", consent_status="granted",
+            full_name="Jordan", email="jordan@example.test", consent_status="granted",
         ))
         session.flush()
         session.add(ConsentRecord(
@@ -214,18 +214,19 @@ def test_sequence_generation_and_step_progression_completes_campaign(campaign_cl
     )
 
     assert first.status_code == second.status_code == 200
-    assert first.json()["sent"] == second.json()["sent"] == 1
+    assert first.json()["queued"] == second.json()["queued"] == 1
+    assert first.json()["sent"] == second.json()["sent"] == 0
     assert first.json()["status"] == "active"
     assert second.json()["status"] == "completed"
     with Session(engine) as session:
         runs = session.exec(select(CampaignStepRun).order_by(CampaignStepRun.step_order)).all()
-        assert [run.status for run in runs] == ["sent", "sent"]
+        assert [run.status for run in runs] == ["queued", "queued"]
         assert runs[0].rendered_content["subject"] == "Hello Jordan"
         assert runs[0].rendered_content["body"] == "Example business would like to speak with Jordan."
         events = {row.event_type for row in session.exec(select(CampaignEventLog)).all()}
         assert {
             "campaign.created", "CampaignCreated", "campaign.enrolled", "campaign.state.changed",
-            "step.generated", "step.sent", "campaign.completed",
+            "step.generated", "step.queued", "campaign.completed",
         } <= events
 
     detail = client.get(f"/campaigns/{campaign['id']}")
@@ -259,10 +260,49 @@ def test_step_delay_defers_the_next_step_until_due(campaign_client):
         json={"tenant_id": "tenant-a", "enrollment_id": enrollment_id},
     )
 
-    assert first.json()["sent"] == 1
+    assert first.json()["queued"] == 1
     assert early.json()["processed"] == 0
-    assert due.json()["sent"] == 1
+    assert due.json()["queued"] == 1
     assert due.json()["status"] == "completed"
+
+
+def test_campaign_step_uses_durable_provider_queue_and_updates_step_status(campaign_client, monkeypatch):
+    client, engine, lead_id = campaign_client
+    campaign = create_campaign(client)
+    enroll(client, campaign["id"], lead_id)
+    triggered = client.post(f"/campaigns/{campaign['id']}/trigger",
+                            json={"tenant_id": "tenant-a"})
+    assert triggered.status_code == 200 and triggered.json()["queued"] == 1
+    with Session(engine) as session:
+        task = session.exec(select(QueueTaskRecord).where(
+            QueueTaskRecord.task_name == "communication.deliver_message",
+        )).one()
+        task_id = task.id
+
+    from app.queue.runtime import QueueTaskRunner
+    from app.workers import handlers as worker_handlers
+    monkeypatch.setattr(worker_handlers, "session_factory", lambda: Session(engine))
+
+    class Sender:
+        def __init__(self): self.calls = []
+        def send(self, **kwargs):
+            self.calls.append(kwargs)
+            return "email-provider-id"
+
+    sender = Sender()
+    runner = QueueTaskRunner(
+        uow_factory=lambda: UnitOfWork(lambda: Session(engine)),
+        handlers=worker_handlers.build_default_handlers(message_sender=sender),
+    )
+    result = runner.execute(task_id, expected_domain="outreach")
+    assert result["status"] == "succeeded", result
+    assert sender.calls[0]["content"]["subject"] == "Hello Jordan"
+    assert sender.calls[0]["content"]["body"].startswith("Example business")
+    with Session(engine) as session:
+        run = session.exec(select(CampaignStepRun)).one()
+        lead = session.get(Lead, lead_id)
+    assert run.status == "sent" and run.message_id is not None and run.sent_at is not None
+    assert lead.status == "contacted"
 
 
 def test_step_is_skipped_when_contact_consent_is_revoked(campaign_client):

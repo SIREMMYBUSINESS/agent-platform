@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     redis_url_file: Path | None = None
     provider_secrets_dir: Path | None = None
     worker_bootstrap_module: str | None = None
+    workflow_dry_run: bool = False
+    public_app_url: str = "http://localhost:3000"
     redis_url: str = "redis://localhost:6379/0"
 
     @field_validator("app_name", "environment", "default_region", "inbound_tenant_id")
@@ -83,6 +85,14 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"redis", "rediss"} or not parsed.hostname:
             raise ValueError("must be a redis:// or rediss:// URL with a host")
         return value
+
+    @field_validator("public_app_url")
+    @classmethod
+    def validate_public_app_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.query or parsed.fragment:
+            raise ValueError("must be an HTTP(S) application URL without query or fragment")
+        return value.rstrip("/")
 
 def load_settings() -> Settings:
     """Load base dotenv, then environment-specific dotenv, then OS values."""

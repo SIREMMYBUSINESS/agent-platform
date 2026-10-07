@@ -20,10 +20,14 @@ class FakeRepositories:
         self.provisioned = provisioned
         self.consent_status = consent_status
         self.calls = []
-        self.conversation = SimpleNamespace(id=uuid4())
+        self.conversation = SimpleNamespace(
+            id=uuid4(), tenant_id="trusted-tenant", business_id="business-a",
+            contact_id="contact-a", correlation_id=None,
+        )
         self.tenants = self.businesses = self.contacts = self
         self.conversations = self.messages = self.workflows = self.events = self
         self.routing_rules = self
+        self.services = SimpleNamespace(list_active=lambda **kwargs: [])
         self.consent_records = SimpleNamespace(current=lambda **kwargs: None)
         self.contact_channel_consents = SimpleNamespace(get=lambda **kwargs: None)
         self.policy_profiles = SimpleNamespace(get=lambda **kwargs: None)
@@ -39,13 +43,19 @@ class FakeRepositories:
             return SimpleNamespace(id=kwargs["tenant_id"], default_timezone="UTC")
         if "business_id" in kwargs:
             return SimpleNamespace(
-                id=kwargs["business_id"], region="US", timezone="UTC"
+                id=kwargs["business_id"], tenant_id="trusted-tenant",
+                region="US", timezone="UTC"
             )
         if "contact_id" in kwargs:
             return SimpleNamespace(
-                id=kwargs["contact_id"], business_id="business-a",
+                id=kwargs["contact_id"], tenant_id="trusted-tenant", business_id="business-a",
                 consent_status=self.consent_status, timezone="UTC",
             )
+        if "conversation_id" in kwargs:
+            return self.conversation if kwargs["conversation_id"] == self.conversation.id else None
+
+    def get_by_correlation_id(self, **kwargs):
+        return None
 
     def list_for_business(self, **kwargs):
         return [SimpleNamespace(
@@ -58,10 +68,17 @@ class FakeRepositories:
 
     def create(self, **kwargs):
         self.calls.append(("conversation.create", kwargs))
+        self.conversation.correlation_id = kwargs.get("correlation_id")
         return self.conversation
 
     def add(self, **kwargs):
         self.calls.append(("add", kwargs))
+        if kwargs.get("direction") == "outbound":
+            return SimpleNamespace(id=uuid4())
+
+    def set_delivery(self, **kwargs):
+        self.calls.append(("message.delivery", kwargs))
+        return SimpleNamespace(id=kwargs["message_id"], delivery_status=kwargs["status"])
 
     def append(self, **kwargs):
         self.calls.append(("workflow.append", kwargs))
