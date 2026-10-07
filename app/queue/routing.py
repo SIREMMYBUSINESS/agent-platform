@@ -22,7 +22,8 @@ _ROUTES = {
 }
 
 
-def route_for(domain: QueueDomain | str, *, tenant_id: str, business_id: str) -> QueueRoute:
+def route_for(domain: QueueDomain | str, *, tenant_id: str, business_id: str,
+              region_id: str | None = None) -> QueueRoute:
     """Validate task scope and route to a bounded domain pool, not tenant-named queues."""
     try:
         normalized = QueueDomain(domain)
@@ -30,7 +31,13 @@ def route_for(domain: QueueDomain | str, *, tenant_id: str, business_id: str) ->
         raise ValueError("unsupported queue domain") from None
     if not tenant_id.strip() or not business_id.strip():
         raise ValueError("tenant and business scope are required for task routing")
-    return _ROUTES[normalized]
+    route = _ROUTES[normalized]
+    if region_id is None:
+        return route
+    from app.regions.catalog import get_region
+    get_region(region_id)
+    return QueueRoute(route.domain, f"agent.{region_id}.{normalized.value}",
+                      route.task_name, route.concurrency)
 
 
 def worker_pool_assumptions() -> dict[str, int]:

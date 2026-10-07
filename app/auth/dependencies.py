@@ -10,6 +10,8 @@ from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 from app.observability.request_context import current_request_context
 from dataclasses import replace
+from app.config import settings
+from app.regions.service import RegionAccessDenied, RegionService
 
 
 bearer = HTTPBearer(auto_error=False, scheme_name="ApiKey", description="Provisioned API key")
@@ -32,6 +34,11 @@ def get_authenticated_principal(
                 credentials=ApiKeyVerifier(uow.api_keys),
                 tenants=uow.tenants, grants=uow.api_key_grants,
             ).resolve(credential.credentials)
+            RegionService(uow_factory=uow_factory).assert_runtime_data_access(
+                uow=uow, tenant_id=principal.tenant_id,
+                runtime_region=settings.database_region_id or settings.deployment_region_id,
+                actor_id=principal.principal_id,
+            )
         context = current_request_context.get()
         if context is not None:
             current_request_context.set(replace(context, tenant_id=principal.tenant_id))
@@ -41,6 +48,8 @@ def get_authenticated_principal(
         raise HTTPException(401, "Invalid credential", headers={"WWW-Authenticate": "Bearer"}) from None
     except AuthorizationError:
         raise HTTPException(403, "Tenant access denied") from None
+    except RegionAccessDenied:
+        raise HTTPException(403, "Tenant data residency access denied") from None
 
 
 def get_optional_authenticated_principal(

@@ -15,6 +15,7 @@ _ALLOWED_LABELS = {
     "method", "route", "status", "component", "operation", "outcome", "queue_domain",
     "channel", "provider", "tenant_bucket", "business_bucket", "campaign_bucket",
     "direction", "classification", "source", "task_status",
+    "region_id",
 }
 _ALLOWED_COMPONENTS = {"http", "outreach", "crm", "workflow", "test"}
 _ALLOWED_QUEUE_DOMAINS = {"inbound", "outreach", "scheduling", "escalation", "analytics"}
@@ -34,6 +35,7 @@ _ALLOWED_OPERATIONS = {
     "queue_execution", "queue_depth", "provider_latency", "worker_heartbeat",
     "booking_confirmation", "lead_conversion",
     "optimization_recommendation", "optimization_review", "optimization_rollout",
+    "policy_decision", "queue_dispatch", "provider_call", "residency_decision",
 }
 _ALLOWED_CHANNELS = {"sms", "email", "voice", "call", "chat", "voicemail", "whatsapp", "unknown"}
 _ALLOWED_PROVIDERS = {
@@ -43,6 +45,8 @@ _ALLOWED_DIRECTIONS = {"inbound", "outbound"}
 _ALLOWED_CLASSIFICATIONS = {"positive", "negative", "opt_out", "book_appointment", "callback", "unknown"}
 _ALLOWED_SOURCES = {"inbound", "outreach", "other"}
 _ALLOWED_TASK_STATUSES = {"pending", "retrying", "running", "dead_letter", "succeeded"}
+_ALLOWED_REGIONS = {"us-east-1", "us-west-2", "ca-central-1", "eu-west-1",
+                    "af-south-1", "af-east-1", "unknown"}
 _BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
 
 
@@ -66,6 +70,7 @@ class MetricsRegistry:
             "outreach_deliveries_total", "campaign_replies_total",
             "outreach_opt_outs_total", "lead_conversions_total",
             "policy_decisions_total", "provider_calls_total",
+            "regional_operations_total",
         }
         histogram_names = {
             "http_request_duration_seconds", "queue_task_wait_seconds",
@@ -110,6 +115,8 @@ class MetricsRegistry:
                 raise ValueError("metric source must be from the bounded set")
             if key == "task_status" and value not in _ALLOWED_TASK_STATUSES:
                 raise ValueError("metric task status must be from the bounded set")
+            if key == "region_id" and value not in _ALLOWED_REGIONS:
+                raise ValueError("metric region must be from the bounded deployment set")
             if key.endswith("_bucket") and (not value.isdigit() or int(value) >= 64):
                 raise ValueError("metric scope bucket is outside the bounded range")
             clean.append((key, value))
@@ -214,6 +221,12 @@ class MetricsRegistry:
     def event(self, component: str, operation: str, outcome: str) -> None:
         """Record bounded application outcomes such as sends, retries, and failures."""
         self.increment("platform_operations_total", component=component,
+                       operation=operation, outcome=outcome)
+
+    def region_event(self, *, region_id: str, operation: str, outcome: str) -> None:
+        """Record region outcomes using only the bounded deployment catalog."""
+        bounded_region = region_id if region_id in _ALLOWED_REGIONS else "unknown"
+        self.increment("regional_operations_total", region_id=bounded_region,
                        operation=operation, outcome=outcome)
 
     def queue_event(self, domain: str, operation: str, outcome: str) -> None:

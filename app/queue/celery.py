@@ -5,9 +5,14 @@ from kombu import Queue
 
 from app.config import settings
 from app.queue.routing import worker_pool_assumptions
+from app.regions.catalog import list_regions
 
 
-_queues = [Queue("agent.control")] + [Queue(f"agent.{domain}") for domain in worker_pool_assumptions()]
+_domains = tuple(worker_pool_assumptions())
+_queues = ([Queue("agent.control")]
+           + [Queue(f"agent.{domain}") for domain in _domains]
+           + [Queue(f"agent.{region.region_id}.{domain}")
+              for region in list_regions() for domain in _domains])
 celery_app = Celery(
     "agent_platform",
     broker=settings.redis_url,

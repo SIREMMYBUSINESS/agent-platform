@@ -38,8 +38,11 @@ class RoutingService:
         tenant: object,
         rules: Iterable[object],
         now: datetime,
+        region_timezone: str | None = None,
     ) -> RoutingDecision:
         business_zone = self._zone(getattr(business, "timezone", None))
+        if business_zone is None:
+            business_zone = self._zone(region_timezone)
         if business_zone is None:
             business_zone = self._zone(getattr(tenant, "default_timezone", None))
         if business_zone is None:

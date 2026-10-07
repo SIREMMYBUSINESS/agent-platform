@@ -348,12 +348,18 @@ class IntakeService:
             rules = uow.routing_rules.list_for_business(
                 tenant_id=tenant_id, business_id=business.id
             )
+            region_config = None
+            if getattr(uow, "regions", None) is not None:
+                region_id = getattr(business, "region_id", None) or getattr(tenant, "default_region_id", None)
+                if region_id:
+                    region_config = uow.regions.get(tenant_id=tenant_id, region_id=region_id)
             routing = self._routing.evaluate(
                 business=business,
                 contact=contact,
                 tenant=tenant,
                 rules=rules,
                 now=now,
+                region_timezone=getattr(region_config, "timezone", None),
             )
             self._transition(
                 uow,

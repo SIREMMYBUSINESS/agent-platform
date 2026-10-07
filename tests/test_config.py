@@ -9,6 +9,9 @@ SETTING_ENV_VARS = (
     "ENVIRONMENT",
     "LOG_LEVEL",
     "DEFAULT_REGION",
+    "DEPLOYMENT_REGION_ID",
+    "DATABASE_REGION_ID",
+    "REDIS_REGION_ID",
     "INBOUND_TENANT_ID",
     "DATABASE_URL",
     "DATABASE_URL_FILE",
@@ -93,6 +96,7 @@ def test_environment_specific_dotenv_overrides_base_dotenv(monkeypatch, tmp_path
     redis_url_file.chmod(0o400)
     (tmp_path / ".env").write_text(
         "ENVIRONMENT=production\nDATABASE_URL=postgresql://localhost/base_db\n"
+        "DEPLOYMENT_REGION_ID=eu-west-1\nDATABASE_REGION_ID=eu-west-1\nREDIS_REGION_ID=eu-west-1\n"
         f"DATABASE_URL_FILE={database_url_file}\nREDIS_URL_FILE={redis_url_file}\n",
         encoding="utf-8",
     )

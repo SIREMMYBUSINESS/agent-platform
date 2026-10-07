@@ -10,6 +10,7 @@ from app.persistence.repositories import DuplicateEntityError
 from app.persistence.unit_of_work import UnitOfWork
 from app.queue.contracts import QueueTaskSubmission, QueueTaskView
 from app.security import AuthenticatedPrincipal
+from app.config import settings
 
 
 _REQUIRED_ROLE = {
@@ -51,8 +52,42 @@ class QueueTaskService:
         context = current_request_context.get()
         try:
             with self._uow_factory() as uow:
-                if uow.businesses.get(tenant_id=principal.tenant_id, business_id=task.business_id) is None:
+                business = uow.businesses.get(tenant_id=principal.tenant_id,
+                                              business_id=task.business_id)
+                tenant = uow.tenants.get(tenant_id=principal.tenant_id)
+                if business is None or tenant is None:
                     raise QueueAuthorizationError("queue operation denied")
+                region_id = None
+                if getattr(tenant, "supported_region_ids", None):
+                    region_id = getattr(business, "region_id", None) or tenant.default_region_id
+                    region = uow.regions.get(tenant_id=principal.tenant_id,
+                                             region_id=region_id)
+                    runtime_region = settings.database_region_id or settings.deployment_region_id
+                    if (region is None or region_id not in tenant.supported_region_ids
+                            or runtime_region not in region.allowed_storage_regions):
+                        uow.regions.add_audit(
+                            tenant_id=principal.tenant_id,
+                            region_id=region_id or tenant.default_region_id,
+                            action="regional_task_enqueue", decision="block",
+                            resource_type="queue_task", resource_id=task.idempotency_key,
+                            actor_id=principal.principal_id,
+                            details={"domain": task.domain.value,
+                                     "runtime_region": runtime_region},
+                        )
+                        uow.commit()
+                        raise QueueAuthorizationError("regional queue access denied")
+                    uow.regions.add_audit(
+                        tenant_id=principal.tenant_id, region_id=region_id,
+                        action="regional_task_enqueue", decision="allow",
+                        resource_type="queue_task", resource_id=task.idempotency_key,
+                        actor_id=principal.principal_id,
+                        details={"domain": task.domain.value,
+                                 "runtime_region": runtime_region},
+                    )
+                    metrics.region_event(region_id=region_id,
+                                         operation="queue_dispatch", outcome="queued")
+                elif getattr(business, "region_id", None):
+                    region_id = business.region_id
                 if task.aggregate_type == "contact":
                     contact = uow.contacts.get(
                         tenant_id=principal.tenant_id, contact_id=task.aggregate_id,
@@ -68,6 +103,7 @@ class QueueTaskService:
                         payload=task.payload, correlation_id=(context.request_id if context else task.correlation_id),
                         traceparent=(f"00-{context.trace_id}-{context.span_id}-01" if context else None),
                         available_at=task.available_at, max_attempts=task.max_attempts,
+                        region_id=region_id,
                     )
                 except ValueError as exc:
                     raise QueueTaskConflict("idempotency key conflicts with different queued work") from exc
@@ -80,7 +116,7 @@ class QueueTaskService:
                     tenant_id=principal.tenant_id, business_id=task.business_id,
                     idempotency_key=task.idempotency_key,
                 )
-                if row is None or not self._matches(row, task):
+                if row is None or not self._matches(row, task, region_id):
                     raise QueueTaskConflict("idempotency key conflicts with different queued work") from None
                 result = self._view(row)
             created = False
@@ -110,16 +146,18 @@ class QueueTaskService:
         return result
 
     @staticmethod
-    def _matches(row, task: QueueTaskSubmission) -> bool:
+    def _matches(row, task: QueueTaskSubmission, region_id: str | None = None) -> bool:
         return (row.domain == task.domain.value and row.task_name == task.task_name
                 and row.aggregate_type == task.aggregate_type
                 and row.aggregate_id == task.aggregate_id and row.payload == task.payload
-                and row.max_attempts == task.max_attempts)
+                and row.max_attempts == task.max_attempts
+                and row.region_id == region_id)
 
     @staticmethod
     def _view(row) -> QueueTaskView:
         return QueueTaskView(
             id=row.id, tenant_id=row.tenant_id, business_id=row.business_id,
+            region_id=getattr(row, "region_id", None),
             domain=row.domain, task_name=row.task_name,
             idempotency_key=row.idempotency_key, status=row.status,
             attempts=row.attempts, max_attempts=row.max_attempts,

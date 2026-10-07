@@ -57,6 +57,12 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
         "optimization_recommendations",
         "optimization_feature_flags",
         "optimization_audit_logs",
+        "tenant_region_configs",
+        "region_policy_overrides",
+        "region_audit_logs",
+        "region_feature_flags",
+        "business_vertical_profiles",
+        "vertical_intake_sessions",
     ):
         assert f"create table {table_name}" in sql
 
@@ -75,6 +81,9 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
     assert "fk_escalation_tickets_assigned_staff" in sql
     assert '"allowed":true' in sql
     assert '"allowed"%(true)s' not in sql
+    assert "add column default_region_id" in sql
+    assert "add column region_id" in sql
+    assert "add column last_visit_at" in sql
 
 
 def test_api_key_migration_downgrade_renders_in_dependency_order(capsys):

@@ -46,6 +46,7 @@ def build_faq_service():
 
 
 class _TenantScopedCalendarProvider:
+    regional_provider = True
     def __init__(self, factory):
         self._factory = factory
 
@@ -60,12 +61,15 @@ class _TenantScopedCalendarProvider:
 
     def _call(self, operation, **kwargs):
         tenant_id, business_id = kwargs["tenant_id"], kwargs["business_id"]
-        provider = self._factory.build("calendar", tenant_id=tenant_id, business_id=business_id)
+        region_id = kwargs.pop("region_id", None)
+        provider = self._factory.build("calendar", tenant_id=tenant_id,
+                                       business_id=business_id, region_id=region_id)
         return call_provider(kind="calendar", provider="google_calendar", operation=operation,
                              callback=getattr(provider, operation), **kwargs)
 
 
 class _TenantScopedCRMProvider:
+    regional_provider = True
     def __init__(self, factory):
         self._factory = factory
         self.provider_key = "tenant_scoped_crm"
@@ -77,6 +81,7 @@ class _TenantScopedCRMProvider:
         def call(*args, **kwargs):
             provider = self._factory.build(
                 "crm", tenant_id=kwargs["tenant_id"], business_id=kwargs["business_id"],
+                region_id=kwargs.pop("region_id", None),
             )
             method = getattr(provider, name)
             if args:

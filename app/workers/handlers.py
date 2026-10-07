@@ -29,6 +29,7 @@ from app.workflows.escalation import EscalationService
 from app.workflows.receptionist import ReceptionistActions, ReceptionistWorkflowEngine
 from app.optimization.feedback import FeedbackEventCapture
 from app.optimization.segments import segment_for_lead
+from app.regions.service import RegionService
 
 
 def _trusted_worker(task: QueueTaskEnvelope, *roles: str) -> AuthenticatedPrincipal:
@@ -36,6 +37,20 @@ def _trusted_worker(task: QueueTaskEnvelope, *roles: str) -> AuthenticatedPrinci
         principal_id=f"worker:{task.id}", tenant_id=task.tenant_id,
         roles=tuple(roles), auth_source="internal_worker", issued_at=datetime.now(UTC),
     )
+
+
+def _authorize_provider_region(task: QueueTaskEnvelope, provider_kind: str,
+                               resource_type: str, resource_id: str) -> str | None:
+    with UnitOfWork(session_factory) as uow:
+        business = uow.businesses.get(tenant_id=task.tenant_id,
+                                      business_id=task.business_id)
+        if business is None:
+            raise LookupError("regional business scope is unavailable")
+        return RegionService(uow_factory=lambda: UnitOfWork(session_factory)).authorize_provider_transfer(
+            uow=uow, tenant_id=task.tenant_id, business=business,
+            provider_kind=provider_kind, resource_type=resource_type,
+            resource_id=resource_id, actor_id=f"worker:{task.id}",
+        )
 
 
 def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_provider=None,
@@ -237,11 +252,16 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
                 try:
                     send_content = ({"subject": subject or "Message from your business",
                                      "body": content} if channel == "email" else {"text": content})
+                    provider_region = _authorize_provider_region(
+                        task, "email" if channel == "email" else "sms",
+                        "message", str(stored_message_id),
+                    )
                     provider_id = message_sender.send(
                         tenant_id=task.tenant_id, business_id=task.business_id,
                         channel=channel, recipient=destination, content=send_content,
                         idempotency_key=f"message:{stored_message_id}:delivery",
                         message_id=stored_message_id, attempt=task.attempts,
+                        **({"region_id": provider_region} if provider_region else {}),
                     )
                     error_code = None
                 except Exception as exc:
@@ -403,6 +423,9 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
             if message_sender is None:
                 raise RuntimeError("staff_notification_sender_not_configured")
             for staff_id, address in recipients:
+                provider_region = _authorize_provider_region(
+                    task, "email", "escalation_notification", str(ticket_id),
+                )
                 message_sender.send(
                     tenant_id=task.tenant_id, business_id=task.business_id,
                     channel="email", recipient=address,
@@ -415,6 +438,7 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
                     },
                     idempotency_key=f"escalation:{ticket_id}:staff:{staff_id}:email",
                     message_id=ticket_id, attempt=task.attempts,
+                    **({"region_id": provider_region} if provider_region else {}),
                 )
             with UnitOfWork(session_factory) as uow:
                 conversation = uow.conversations.get(
@@ -612,12 +636,19 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
                     "contact_name": contact.full_name or "Customer", "email": contact.email,
                     "status": appointment.status,
                 }
+            provider_region = _authorize_provider_region(
+                task, "calendar", "appointment", str(appointment_id),
+            )
+            calendar_region_kwargs = ({"region_id": provider_region}
+                                      if provider_region and getattr(
+                                          calendar_provider, "regional_provider", False,
+                                      ) else {})
             if operation == "cancel":
                 if appointment_snapshot["calendar_event_id"]:
                     calendar_provider.cancel_event(
                         tenant_id=task.tenant_id, business_id=task.business_id,
                         event_id=appointment_snapshot["calendar_event_id"],
-                        idempotency_key=task.idempotency_key,
+                        idempotency_key=task.idempotency_key, **calendar_region_kwargs,
                     )
                 return {"appointment_id": str(appointment_id), "status": "calendar_cancelled"}
             event = {
@@ -630,6 +661,7 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
             result = calendar_provider.create_event(
                 tenant_id=task.tenant_id, business_id=task.business_id,
                 event=event, idempotency_key=task.idempotency_key,
+                **calendar_region_kwargs,
             )
             event_id = result.get("id")
             if not event_id:

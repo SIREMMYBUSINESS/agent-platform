@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     environment: str = Field(default="development", min_length=1)
     log_level: str = "INFO"
     default_region: str = Field(default="US", min_length=1)
+    deployment_region_id: str = Field(default="us-east-1", min_length=3, max_length=64)
+    database_region_id: str | None = Field(default=None, max_length=64)
+    redis_region_id: str | None = Field(default=None, max_length=64)
     # Legacy dispatcher configuration; protected HTTP routes use the authenticated principal.
     inbound_tenant_id: str = Field(default="tenant-1", min_length=1)
     # Optional trusted business scope for the lead-management API.
@@ -61,6 +64,16 @@ class Settings(BaseSettings):
             return None
         if not re.fullmatch(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*", value):
             raise ValueError("must be a Python module path")
+        return value
+
+    @field_validator("deployment_region_id", "database_region_id", "redis_region_id")
+    @classmethod
+    def validate_region_ids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+){1,5}", value):
+            raise ValueError("must be a canonical deployment region ID")
         return value
 
     @field_validator("log_level")
@@ -142,6 +155,9 @@ def load_settings() -> Settings:
             raise RuntimeError("production DATABASE_URL must be supplied through DATABASE_URL_FILE")
         if base_settings.redis_url_file is None:
             raise RuntimeError("production REDIS_URL must be supplied through REDIS_URL_FILE")
+        if (base_settings.database_region_id != base_settings.deployment_region_id
+                or base_settings.redis_region_id != base_settings.deployment_region_id):
+            raise RuntimeError("production database and Redis regions must match DEPLOYMENT_REGION_ID")
     return base_settings
 
 

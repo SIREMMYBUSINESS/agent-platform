@@ -12,6 +12,7 @@ from app.integrations.crm.events import CRMEvent, CRMEventType
 from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 from app.observability.metrics import metrics
+from app.regions.service import RegionService
 
 
 class CRMSyncError(Exception):
@@ -178,7 +179,20 @@ class CRMSyncEngine:
             uow.crm_sync.increment_attempt(tenant_id=principal.tenant_id, record_id=record.id)
         metrics.event("crm", "sync_attempt", "attempted")
         try:
-            result = self._call_provider(principal.tenant_id, record)
+            with self._uow_factory() as uow:
+                business = uow.businesses.get(tenant_id=principal.tenant_id,
+                                              business_id=record.business_id)
+                if business is None:
+                    raise CRMNotFound("business not found in regional scope")
+                provider_region = RegionService(
+                    uow_factory=self._uow_factory,
+                ).authorize_provider_transfer(
+                    uow=uow, tenant_id=principal.tenant_id, business=business,
+                    provider_kind="crm", resource_type=record.entity_type,
+                    resource_id=record.entity_id, actor_id=principal.principal_id,
+                )
+            result = self._call_provider(principal.tenant_id, record,
+                                         provider_region=provider_region)
             if not isinstance(result, Mapping):
                 result = {}
             external_id = result.get("id") or record.external_id
@@ -209,14 +223,17 @@ class CRMSyncEngine:
             metrics.event("crm", "failure", "provider")
             return result
 
-    def _call_provider(self, tenant_id: str, record):
+    def _call_provider(self, tenant_id: str, record, *, provider_region: str | None = None):
         payload = record.payload
         key = record.idempotency_key
+        region_kwargs = ({"region_id": provider_region}
+                         if provider_region and getattr(self.provider, "regional_provider", False)
+                         else {})
         if record.entity_type == "contact":
             if record.external_id:
                 return self.provider.update_contact(
                     record.external_id, payload["contact"], tenant_id=tenant_id,
-                    business_id=record.business_id, idempotency_key=key,
+                    business_id=record.business_id, idempotency_key=key, **region_kwargs,
                 )
             with self._uow_factory() as uow:
                 link = uow.crm_sync.latest_contact_link(
@@ -227,11 +244,11 @@ class CRMSyncEngine:
             if linked_external_id is not None:
                 return self.provider.update_contact(
                     linked_external_id, payload["contact"], tenant_id=tenant_id,
-                    business_id=record.business_id, idempotency_key=key,
+                    business_id=record.business_id, idempotency_key=key, **region_kwargs,
                 )
             return self.provider.create_contact(
                 payload["contact"], tenant_id=tenant_id,
-                business_id=record.business_id, idempotency_key=key,
+                business_id=record.business_id, idempotency_key=key, **region_kwargs,
             )
         activity = payload["activity"]
         if record.entity_type == "conversation" and record.event_type in {
@@ -240,11 +257,11 @@ class CRMSyncEngine:
             contact_link = payload.get("external_contact_id")
             return self.provider.create_conversation_note(
                 contact_link, activity, tenant_id=tenant_id,
-                business_id=record.business_id, idempotency_key=key,
+                business_id=record.business_id, idempotency_key=key, **region_kwargs,
             )
         return self.provider.create_activity(
             activity, tenant_id=tenant_id, business_id=record.business_id,
-            idempotency_key=key,
+            idempotency_key=key, **region_kwargs,
         )
 
     def _build_outbound_payload(self, uow, tenant_id: str, entity_type: str,

@@ -65,6 +65,12 @@ EXPECTED_TABLES = {
     "optimization_recommendations",
     "optimization_feature_flags",
     "optimization_audit_logs",
+    "tenant_region_configs",
+    "region_policy_overrides",
+    "region_audit_logs",
+    "region_feature_flags",
+    "business_vertical_profiles",
+    "vertical_intake_sessions",
 }
 
 

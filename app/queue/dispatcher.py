@@ -28,14 +28,18 @@ class DurableQueueDispatcher:
                 now=now, stale_before=now - self._lease, limit=limit,
             )
             tasks = [(row.id, row.domain, row.tenant_id, row.business_id,
-                      row.correlation_id, row.traceparent) for row in rows]
+                      getattr(row, "region_id", None), row.correlation_id,
+                      row.traceparent) for row in rows]
         dispatched = 0
-        for task_id, domain, tenant_id, business_id, correlation_id, traceparent in tasks:
-            route = route_for(domain, tenant_id=tenant_id, business_id=business_id)
+        for task_id, domain, tenant_id, business_id, region_id, correlation_id, traceparent in tasks:
+            route = route_for(domain, tenant_id=tenant_id, business_id=business_id,
+                              region_id=region_id)
             headers = {
                 "tenant_id": tenant_id, "business_id": business_id,
                 "correlation_id": correlation_id,
             }
+            if region_id:
+                headers["region_id"] = region_id
             if traceparent:
                 headers["traceparent"] = traceparent
             try:

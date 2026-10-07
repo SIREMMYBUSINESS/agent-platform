@@ -29,8 +29,14 @@ class ProviderAdapterFactory:
                  transport=None):
         self.configs, self.audit_sink, self.transport = configs, audit_sink, transport
 
-    def build(self, kind: str, *, tenant_id: str, business_id: str) -> Any:
+    def build(self, kind: str, *, tenant_id: str, business_id: str,
+              region_id: str | None = None) -> Any:
         config = self.configs.resolve(tenant_id=tenant_id, business_id=business_id)
+        if region_id:
+            suffix = "__" + region_id.replace("-", "_").upper()
+            for key, value in tuple(config.items()):
+                if key.upper().endswith(suffix):
+                    config[key[:-len(suffix)]] = value
         selectors = {"sms": "sms_provider", "email": "email_provider",
                      "voice": "voice_provider", "calendar": "calendar_provider",
                      "crm": "crm_provider"}
@@ -68,11 +74,13 @@ class TenantScopedMessageSender:
 
     def send(self, *, tenant_id: str, business_id: str, channel: str,
              recipient: str, content: Mapping[str, str], idempotency_key: str,
-             message_id=None, attempt: int | None = None) -> str | None:
+             message_id=None, attempt: int | None = None,
+             region_id: str | None = None) -> str | None:
         kind = "email" if channel == "email" else "sms" if channel in {"sms", "whatsapp"} else None
         if kind is None:
             raise ValueError("unsupported outbound channel")
-        adapter = self._factory.build(kind, tenant_id=tenant_id, business_id=business_id)
+        adapter = self._factory.build(kind, tenant_id=tenant_id, business_id=business_id,
+                                      region_id=region_id)
         provider = getattr(adapter, "provider_key", "unknown")
         if provider not in {"twilio", "sendgrid", "smtp"}:
             provider = "unknown"

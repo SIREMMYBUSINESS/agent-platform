@@ -269,9 +269,17 @@ class EnrollmentService:
                     skipped += 1
                     continue
 
-                rendered = self._render(step.template_data, contact=contact,
-                                        business=uow.businesses.get(tenant_id=tenant_id, business_id=business_id),
-                                        enrichment=enrichment)
+                business = uow.businesses.get(tenant_id=tenant_id, business_id=business_id)
+                tenant = uow.tenants.get(tenant_id=tenant_id)
+                region_language = None
+                if getattr(uow, "regions", None) is not None and tenant is not None:
+                    region_id = getattr(business, "region_id", None) or tenant.default_region_id
+                    region = uow.regions.get(tenant_id=tenant_id, region_id=region_id)
+                    region_language = getattr(region, "language", None)
+                rendered = self._render(
+                    step.template_data, contact=contact, business=business,
+                    enrichment=enrichment, region_language=region_language,
+                )
                 step_correlation_id = (
                     f"campaign:{campaign.id}:enrollment:{enrollment.id}:step:{step.step_order}"
                 )
@@ -298,8 +306,8 @@ class EnrollmentService:
                 message_id = uuid5(NAMESPACE_URL, f"campaign-step-run:{run.id}")
                 body = rendered.get("body") or rendered.get("text") or ""
                 message = OutboundDeliveryService().queue(
-                    uow, tenant=uow.tenants.get(tenant_id=tenant_id),
-                    business=uow.businesses.get(tenant_id=tenant_id, business_id=business_id),
+                    uow, tenant=tenant,
+                    business=business,
                     contact=contact, conversation=conversation, channel=channel,
                     content=body, subject=rendered.get("subject"),
                     message_id=message_id, correlation_id=step_correlation_id,
@@ -430,7 +438,18 @@ class EnrollmentService:
         return True, "eligible", contact, enrichment
 
     @staticmethod
-    def _render(template: dict[str, Any], *, contact: Any, business: Any, enrichment: Any) -> dict[str, str]:
+    def _render(template: dict[str, Any], *, contact: Any, business: Any,
+                enrichment: Any, region_language: str | None = None) -> dict[str, str]:
+        locales = template.get("locales")
+        if isinstance(locales, dict):
+            preferred = (getattr(contact, "language", None)
+                         or region_language
+                         or getattr(business, "default_language", None)
+                         or "en")
+            language_base = preferred.split("-", 1)[0]
+            localized = locales.get(preferred) or locales.get(language_base) or locales.get("default")
+            if isinstance(localized, dict):
+                template = {**template, **localized}
         company_info = enrichment.company_info if enrichment is not None else {}
         replacements = {
             "contact_name": contact.full_name or "there",

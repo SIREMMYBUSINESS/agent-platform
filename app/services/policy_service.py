@@ -10,6 +10,7 @@ from app.services.consent_service import ConsentService
 from app.services.suppression_service import SuppressionService
 from app.observability.metrics import metrics
 from app.observability.telemetry import start_span
+from app.config import settings
 from opentelemetry import trace
 import logging
 
@@ -107,7 +108,15 @@ class PolicyService:
                   override_actor: str | None = None,
                   override_reason: str | None = None) -> PolicyDecision:
         tenant_id, business_id = tenant.id, business.id
+        region_id = (getattr(business, "region_id", None)
+                     or getattr(tenant, "default_region_id", None))
+        supported_region_ids = set(getattr(tenant, "supported_region_ids", None) or [])
+        tenant_region = None
+        region_config_required = bool(supported_region_ids or getattr(business, "region_id", None))
+        if region_id and hasattr(uow, "regions"):
+            tenant_region = uow.regions.get(tenant_id=tenant_id, region_id=region_id)
         country_code = (getattr(business, "country_code", None)
+                        or getattr(tenant_region, "country_code", None)
                         or business.region or tenant.region or "").strip().upper()
         now = self._now()
         if now.tzinfo is None:
@@ -123,7 +132,8 @@ class PolicyService:
         )
 
         country_policy = uow.country_policies.get(country_code=country_code)
-        region_group = (business.region or tenant.region or "").strip().upper()
+        region_group = (getattr(tenant_region, "compliance_profile", {}).get("region_group")
+                        or business.region or tenant.region or "").strip().upper()
         business_country = getattr(business, "country_code", None)
         may_use_group_default = not business_country or country_code == region_group
         if (country_policy is None and may_use_group_default
@@ -152,11 +162,22 @@ class PolicyService:
         reason = "unknown_region"
         hard_compliance_block = False
         custom_block = False
+        region_missing = (region_config_required and
+                          (tenant_region is None or region_id not in supported_region_ids))
+        runtime_region = settings.database_region_id or settings.deployment_region_id
+        residency_block = bool(tenant_region and runtime_region not in
+                               set(tenant_region.allowed_storage_regions or []))
         if suppression is not None:
             reason = "suppressed"
             hard_compliance_block = True
         elif consent_status in {"revoked", "expired"}:
             reason = f"consent_{consent_status}"
+            hard_compliance_block = True
+        elif region_missing:
+            reason = "tenant_region_not_configured"
+            hard_compliance_block = True
+        elif residency_block:
+            reason = "data_residency_region_mismatch"
             hard_compliance_block = True
         elif country_policy_inactive:
             reason = "country_policy_inactive"
@@ -188,6 +209,27 @@ class PolicyService:
                     hard_compliance_block = True
                 else:
                     allowed, reason = True, "policy_allowed"
+
+                if allowed and tenant_region is not None and channel not in tenant_region.allowed_channels:
+                    allowed, reason, hard_compliance_block = False, "region_channel_block", True
+                if allowed and tenant_region is not None:
+                    for regional_override in uow.regions.policy_overrides(
+                        tenant_id=tenant_id, region_id=region_id,
+                    ):
+                        direction_override = regional_override.override_rules.get(direction, {})
+                        channel_override = direction_override.get(channel, {})
+                        if channel_override.get("allowed") is False:
+                            allowed, reason, hard_compliance_block = False, "region_policy_override_block", True
+                            break
+
+                # Optional country-policy state rules only tighten the national
+                # baseline; business jurisdiction comes from trusted provisioning.
+                state_code = (getattr(business, "jurisdiction_code", None) or "").upper()
+                state_rules = country_rules.get("state_rules", {}) if isinstance(country_rules, dict) else {}
+                state_channel = (((state_rules.get(state_code) or {}).get(direction) or {}).get(channel)
+                                 if isinstance(state_rules, dict) else None)
+                if allowed and isinstance(state_channel, dict) and state_channel.get("allowed") is False:
+                    allowed, reason, hard_compliance_block = False, "state_policy_block", True
 
                 # Business profiles can only add restrictions. Their blocks
                 # can be overridden only where trusted configuration permits;
@@ -221,6 +263,21 @@ class PolicyService:
             "sms", "email", "voice", "call", "chat", "voicemail", "whatsapp", "unknown",
         } else "unknown", direction=direction, allowed=allowed,
             tenant_id=str(tenant_id), business_id=str(business_id))
+        if tenant_region is not None:
+            metrics.region_event(region_id=tenant_region.region_id,
+                                 operation="policy_decision",
+                                 outcome="allowed" if allowed else "blocked")
+            uow.regions.add_audit(
+                tenant_id=tenant_id, region_id=tenant_region.region_id,
+                action="regional_policy_decision", decision="allow" if allowed else "block",
+                resource_type="lead" if lead_id is not None else "contact",
+                resource_id=str(lead_id or contact.id), actor_id="policy_engine",
+                details={"country_code": country_code, "channel": channel,
+                         "direction": direction, "reason_code": reason,
+                         "policy_source": source,
+                         "residency_region": tenant_region.data_residency_region,
+                         "runtime_region": runtime_region},
+            )
         uow.policy_decisions.add(
             tenant_id=tenant_id, business_id=business_id,
             direction=direction, channel=channel, country_code=country_code or "UNKNOWN",

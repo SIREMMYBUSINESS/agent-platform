@@ -39,6 +39,7 @@ class QueueTaskEnvelope:
     traceparent: str | None
     attempts: int
     max_attempts: int
+    region_id: str | None = None
 
 
 TaskHandler = Callable[[QueueTaskEnvelope], dict[str, Any] | None]
@@ -89,6 +90,7 @@ class QueueTaskRunner:
                 return {"status": "not_found"}
             task = QueueTaskEnvelope(
                 id=row.id, tenant_id=row.tenant_id, business_id=row.business_id,
+                region_id=getattr(row, "region_id", None),
                 domain=row.domain, task_name=row.task_name,
                 idempotency_key=row.idempotency_key,
                 aggregate_type=row.aggregate_type, aggregate_id=row.aggregate_id,
@@ -112,10 +114,14 @@ class QueueTaskRunner:
         started = time.perf_counter()
         parent = extract_context({"traceparent": task.traceparent or ""})
         try:
+            if (task.region_id is not None
+                    and task.region_id != settings.deployment_region_id):
+                raise RuntimeError("regional_worker_mismatch")
             with start_span("queue.task.execute", parent_context=parent, attributes={
                 "queue.domain": task.domain, "task.name": task.task_name,
                 "task.id": str(task.id), "tenant.id": task.tenant_id,
                 "business.id": task.business_id,
+                "region.id": task.region_id or "unknown",
             }) as span:
                 span_fields = span_context_fields(span)
                 if span_fields:

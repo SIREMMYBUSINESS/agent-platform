@@ -69,6 +69,8 @@ class Tenant(SQLModel, table=True):
     name: str
     region: str = "US"
     default_timezone: str = "UTC"
+    default_region_id: str = "us-east-1"
+    supported_region_ids: list[str] = Field(default_factory=list, sa_column=Column(json_storage_type(), nullable=False, default=list))
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -77,6 +79,99 @@ class Tenant(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+
+
+class TenantRegionConfig(SQLModel, table=True):
+    """Reviewed tenant-scoped deployment, residency, and localization settings."""
+    __tablename__ = "tenant_region_configs"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "region_id", name="pk_tenant_region_configs"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_tenant_region_configs_tenant"),
+        CheckConstraint("approval_status IN ('pending', 'approved', 'rejected')",
+                        name="ck_tenant_region_configs_approval"),
+        CheckConstraint("length(country_code) = 2", name="ck_tenant_region_configs_country"),
+        Index("ix_tenant_region_configs_scope_active", "tenant_id", "active"),
+    )
+    tenant_id: str
+    region_id: str = Field(max_length=64)
+    country_code: str = Field(max_length=2)
+    timezone: str = Field(max_length=80)
+    language: str = Field(max_length=16)
+    data_residency_region: str = Field(max_length=64)
+    retention_policy: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    allowed_storage_regions: list[str] = Field(default_factory=list, sa_column=Column(json_storage_type(), nullable=False, default=list))
+    provider_preferences: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    compliance_profile: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    allowed_channels: list[str] = Field(default_factory=list, sa_column=Column(json_storage_type(), nullable=False, default=list))
+    local_phone_route: str | None = Field(default=None, max_length=40, repr=False)
+    contact_preferences: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    active: bool = True
+    approval_status: str = "pending"
+    approved_by: str | None = None
+    approved_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class RegionPolicyOverride(SQLModel, table=True):
+    """Approved region-scoped policy additions. Rules may only add restrictions."""
+    __tablename__ = "region_policy_overrides"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_region_policy_overrides"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_region_policy_overrides_tenant"),
+        ForeignKeyConstraint(["tenant_id", "region_id"],
+                             ["tenant_region_configs.tenant_id", "tenant_region_configs.region_id"],
+                             name="fk_region_policy_overrides_region"),
+        Index("ix_region_policy_overrides_scope", "tenant_id", "region_id", "active"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    region_id: str
+    override_rules: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    reason: str = Field(max_length=1000)
+    active: bool = True
+    approved_by: str
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class RegionAuditLog(SQLModel, table=True):
+    """Auditable residency and region configuration decisions."""
+    __tablename__ = "region_audit_logs"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_region_audit_logs"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_region_audit_logs_tenant"),
+        Index("ix_region_audit_logs_scope_created", "tenant_id", "region_id", "created_at"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    region_id: str
+    action: str = Field(max_length=80)
+    decision: str = Field(max_length=16)
+    resource_type: str = Field(max_length=40)
+    resource_id: str | None = Field(default=None, max_length=160)
+    actor_id: str = Field(max_length=160)
+    details: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class RegionFeatureFlag(SQLModel, table=True):
+    """Feature rollout state scoped to a single tenant and deployment region."""
+    __tablename__ = "region_feature_flags"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "region_id", "flag_key", name="pk_region_feature_flags"),
+        ForeignKeyConstraint(["tenant_id", "region_id"],
+                             ["tenant_region_configs.tenant_id", "tenant_region_configs.region_id"],
+                             name="fk_region_feature_flags_region"),
+        CheckConstraint("rollout_percentage >= 0 AND rollout_percentage <= 100",
+                        name="ck_region_feature_flags_rollout"),
+    )
+    tenant_id: str
+    region_id: str
+    flag_key: str = Field(max_length=100)
+    enabled: bool = False
+    rollout_percentage: int = 0
+    config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
 
 
 class Business(SQLModel, table=True):
@@ -96,6 +191,8 @@ class Business(SQLModel, table=True):
     vertical: str
     region: str = "US"
     country_code: Optional[str] = None
+    region_id: str | None = None
+    jurisdiction_code: str | None = Field(default=None, max_length=8)
     timezone: str = "UTC"
     default_language: str = "en"
     created_at: datetime = Field(
@@ -106,6 +203,61 @@ class Business(SQLModel, table=True):
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
     )
+
+
+class BusinessVerticalProfile(SQLModel, table=True):
+    """Tenant-owned vertical configuration used by guided workflows."""
+    __tablename__ = "business_vertical_profiles"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "business_id", name="pk_business_vertical_profiles"),
+        ForeignKeyConstraint(["tenant_id", "business_id"],
+                             ["businesses.tenant_id", "businesses.id"],
+                             name="fk_business_vertical_profiles_business"),
+        CheckConstraint("status IN ('draft', 'ready', 'live')",
+                        name="ck_business_vertical_profiles_status"),
+    )
+    tenant_id: str
+    business_id: str
+    vertical_id: str = Field(max_length=64)
+    config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    status: str = "draft"
+    created_by: str = Field(max_length=160)
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class VerticalIntakeSession(SQLModel, table=True):
+    """Durable question-by-question intake tied to one conversation."""
+    __tablename__ = "vertical_intake_sessions"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_vertical_intake_sessions"),
+        UniqueConstraint("tenant_id", "business_id", "idempotency_key",
+                         name="uq_vertical_intake_session_idempotency"),
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"],
+                             name="fk_vertical_intake_sessions_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"],
+                             ["businesses.tenant_id", "businesses.id"],
+                             name="fk_vertical_intake_sessions_business"),
+        ForeignKeyConstraint(["tenant_id", "contact_id", "business_id"],
+                             ["contacts.tenant_id", "contacts.id", "contacts.business_id"],
+                             name="fk_vertical_intake_sessions_contact"),
+        ForeignKeyConstraint(["tenant_id", "conversation_id"],
+                             ["conversations.tenant_id", "conversations.id"],
+                             name="fk_vertical_intake_sessions_conversation"),
+        Index("ix_vertical_intake_sessions_scope_status",
+              "tenant_id", "business_id", "status"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str
+    business_id: str
+    contact_id: str
+    conversation_id: UUID
+    idempotency_key: str = Field(max_length=160)
+    question_index: int = 0
+    answers: dict[str, Any] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    answer_idempotency: dict[str, str] = Field(default_factory=dict, sa_column=Column(json_storage_type(), nullable=False, default=dict))
+    status: str = "collecting"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
 
 
 class Contact(SQLModel, table=True):
@@ -136,6 +288,7 @@ class Contact(SQLModel, table=True):
     timezone: Optional[str] = None
     preferred_channel: Optional[str] = None
     language: Optional[str] = None
+    last_visit_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
@@ -1154,6 +1307,7 @@ class QueueTaskRecord(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: str
     business_id: str
+    region_id: str | None = None
     domain: str
     task_name: str
     idempotency_key: str
@@ -1334,6 +1488,7 @@ __all__ = [
     "Appointment",
     "AppointmentSlot",
     "Business",
+    "BusinessVerticalProfile",
     "Campaign",
     "CampaignEnrollment",
     "CampaignEventLog",
@@ -1366,6 +1521,10 @@ __all__ = [
     "Message",
     "PolicyDecisionLog",
     "PolicyProfile",
+    "RegionAuditLog",
+    "RegionFeatureFlag",
+    "RegionPolicyOverride",
+    "TenantRegionConfig",
     "OptimizationAuditLog",
     "OptimizationMetric",
     "OptimizationRecommendation",
@@ -1376,4 +1535,5 @@ __all__ = [
     "Tenant",
     "WorkflowState",
     "WorkflowStateRecord",
+    "VerticalIntakeSession",
 ]

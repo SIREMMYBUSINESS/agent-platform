@@ -53,7 +53,7 @@ class SQLQueueTaskRepository:
                 domain: str, idempotency_key: str, aggregate_type: str,
                 aggregate_id: str, payload: dict, correlation_id: str,
                 traceparent: str | None, available_at: datetime,
-                max_attempts: int) -> tuple[QueueTaskRecord, bool]:
+                max_attempts: int, region_id: str | None = None) -> tuple[QueueTaskRecord, bool]:
         _require_tenant(tenant_id)
         def persist():
             existing = self._session.exec(select(QueueTaskRecord).where(
@@ -65,12 +65,14 @@ class SQLQueueTaskRepository:
                 same = (existing.domain == domain and existing.task_name == task_name
                         and existing.aggregate_type == aggregate_type
                         and existing.aggregate_id == aggregate_id and existing.payload == payload
-                        and existing.max_attempts == max_attempts)
+                        and existing.max_attempts == max_attempts
+                        and existing.region_id == region_id)
                 if not same:
                     raise ValueError("idempotency key conflicts with different queued work")
                 return existing, False
             row = QueueTaskRecord(
                 tenant_id=tenant_id, business_id=business_id, domain=domain,
+                region_id=region_id,
                 task_name=task_name, idempotency_key=idempotency_key,
                 aggregate_type=aggregate_type, aggregate_id=aggregate_id,
                 payload=payload, correlation_id=correlation_id,

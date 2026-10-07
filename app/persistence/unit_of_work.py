@@ -56,6 +56,8 @@ from app.persistence.policy_repositories import (
     SQLSuppressionRepository,
 )
 from app.persistence.optimization_repositories import SQLOptimizationRepository
+from app.persistence.region_repositories import SQLRegionRepository
+from app.persistence.vertical_repositories import SQLVerticalRepository
 
 
 class UnitOfWork:
@@ -118,6 +120,8 @@ class UnitOfWork:
         self.suppressions: SQLSuppressionRepository | None = None
         self.policy_decisions: SQLPolicyDecisionRepository | None = None
         self.optimization: SQLOptimizationRepository | None = None
+        self.regions: SQLRegionRepository | None = None
+        self.verticals: SQLVerticalRepository | None = None
 
     @property
     def session(self) -> Session:
@@ -178,6 +182,8 @@ class UnitOfWork:
             self.suppressions = SQLSuppressionRepository(self._session)
             self.policy_decisions = SQLPolicyDecisionRepository(self._session)
             self.optimization = SQLOptimizationRepository(self._session)
+            self.regions = SQLRegionRepository(self._session)
+            self.verticals = SQLVerticalRepository(self._session)
         except BaseException:
             self.close()
             raise

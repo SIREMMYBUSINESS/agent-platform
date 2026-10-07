@@ -65,6 +65,7 @@ class QueueTaskView(BaseModel):
     id: UUID
     tenant_id: str
     business_id: str
+    region_id: str | None = None
     domain: QueueDomain
     task_name: str
     idempotency_key: str

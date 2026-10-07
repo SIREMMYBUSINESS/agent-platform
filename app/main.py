@@ -11,6 +11,8 @@ from app.routes.provider_webhooks import router as provider_webhook_router
 from app.routes.provider_ingress import router as provider_ingress_router
 from app.routes.workflows import router as workflow_router
 from app.routes.optimization import router as optimization_router
+from app.routes.regions import router as region_router
+from app.routes.verticals import router as vertical_router
 from app.services.conversation_service import ConversationConflictError
 from app.services.outreach_execution import (
     OutreachConflict, OutreachNotEligible, OutreachNotFound, RateLimitExceeded,
@@ -61,6 +63,8 @@ app.include_router(provider_webhook_router)
 app.include_router(provider_ingress_router)
 app.include_router(workflow_router)
 app.include_router(optimization_router)
+app.include_router(region_router)
+app.include_router(vertical_router)
 
 
 @app.exception_handler(AuthorizationError)

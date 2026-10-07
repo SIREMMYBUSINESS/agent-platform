@@ -221,6 +221,18 @@ class SQLTenantRepository:
     def list_ids(self) -> list[str]:
         return list(_database_call(lambda: self._session.exec(select(Tenant.id).order_by(Tenant.id)).all()))
 
+    def set_region_configuration(self, *, tenant_id: str, default_region_id: str,
+                                 supported_region_ids: list[str]) -> Tenant | None:
+        _require_tenant(tenant_id)
+        row = self._session.get(Tenant, tenant_id)
+        if row is None:
+            return None
+        row.default_region_id = default_region_id
+        row.supported_region_ids = sorted(set(supported_region_ids))
+        row.updated_at = datetime.now(UTC)
+        self._session.flush()
+        return row
+
 
 class SQLBusinessRepository:
     def __init__(self, session: Session) -> None:
@@ -232,6 +244,12 @@ class SQLBusinessRepository:
             Business.tenant_id == tenant_id, Business.id == business_id
         )
         return _database_call(lambda: self._session.exec(statement).first())
+
+    def add(self, business: Business) -> Business:
+        _require_tenant(business.tenant_id)
+        self._session.add(business)
+        self._session.flush()
+        return business
 
     def list_for_tenant(self, *, tenant_id: str) -> list[Business]:
         _require_tenant(tenant_id)
@@ -256,6 +274,17 @@ class SQLContactRepository:
         statement = (select(Contact).where(
             Contact.tenant_id == tenant_id, Contact.business_id == business_id,
         ).order_by(Contact.id).limit(limit))
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def list_overdue_visits(self, *, tenant_id: str, business_id: str,
+                            cutoff: datetime, limit: int = 500) -> list[Contact]:
+        _require_tenant(tenant_id)
+        if not 1 <= limit <= 2000:
+            raise ValueError("limit must be between 1 and 2000")
+        statement = select(Contact).where(
+            Contact.tenant_id == tenant_id, Contact.business_id == business_id,
+            Contact.last_visit_at.is_not(None), Contact.last_visit_at <= cutoff,
+        ).order_by(Contact.last_visit_at, Contact.id).limit(limit)
         return _database_call(lambda: list(self._session.exec(statement).all()))
 
     def get_by_destination(self, *, tenant_id: str, business_id: str,
@@ -543,6 +572,12 @@ class SQLRoutingRuleRepository:
         )
         return _database_call(lambda: list(self._session.exec(statement).all()))
 
+    def add(self, rule: RoutingRule) -> RoutingRule:
+        _require_tenant(rule.tenant_id)
+        self._session.add(rule)
+        self._session.flush()
+        return rule
+
 
 class SQLStaffRepository:
     def __init__(self, session: Session) -> None:
@@ -554,6 +589,12 @@ class SQLStaffRepository:
             Staff.tenant_id == tenant_id, Staff.business_id == business_id, Staff.active.is_(True)
         ).order_by(Staff.display_name, Staff.id)
         return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def add(self, staff: Staff) -> Staff:
+        _require_tenant(staff.tenant_id)
+        self._session.add(staff)
+        self._session.flush()
+        return staff
 
 
 class SQLServiceRepository:
@@ -568,6 +609,12 @@ class SQLServiceRepository:
             Service.active.is_(True),
         ).order_by(Service.name, Service.id)
         return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def add(self, service: Service) -> Service:
+        _require_tenant(service.tenant_id)
+        self._session.add(service)
+        self._session.flush()
+        return service
 
 
 class SQLAppointmentSlotRepository:
