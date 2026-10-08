@@ -2,7 +2,8 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "RAILPACK",
-    "buildEnvironment": "V3"
+    "buildEnvironment": "V3",
+    "buildCommand": "python -m pip install -r requirements.txt"
   },
   "deploy": {
     "runtime": "V2",
