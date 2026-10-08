@@ -9,6 +9,7 @@ from app.auth.principal_resolver import AuthorizationError
 from app.routes.conversations import router as conversation_router
 from app.routes.provider_webhooks import router as provider_webhook_router
 from app.routes.provider_ingress import router as provider_ingress_router
+from app.routes.voice import router as voice_router
 from app.routes.workflows import router as workflow_router
 from app.routes.optimization import router as optimization_router
 from app.routes.regions import router as region_router
@@ -61,6 +62,7 @@ app.include_router(campaign_router)
 app.include_router(conversation_router)
 app.include_router(provider_webhook_router)
 app.include_router(provider_ingress_router)
+app.include_router(voice_router)
 app.include_router(workflow_router)
 app.include_router(optimization_router)
 app.include_router(region_router)

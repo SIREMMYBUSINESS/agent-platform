@@ -8,6 +8,7 @@ import json
 from datetime import UTC, datetime
 from email.utils import parseaddr
 from urllib.parse import parse_qsl
+from xml.sax.saxutils import escape
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -382,6 +383,34 @@ async def inbound_email_events(request: Request):
 @router.post("/call", status_code=202)
 async def inbound_call_events(request: Request):
     return await _authenticated_event(request, "call")
+
+
+@router.post("/call/twiml")
+async def outbound_call_twiml(request: Request):
+    """Return configured business TwiML only to a valid signed Twilio request."""
+    tenant_id = request.query_params.get("tenant_id", "")
+    business_id = request.query_params.get("business_id", "")
+    if not tenant_id or not business_id:
+        raise HTTPException(400, "Provider scope is required")
+    config = _scoped_config(tenant_id, business_id)
+    callback_url = config.get("outbound_call_twiml_url", "")
+    message = config.get("outbound_call_message", "").strip()
+    if not callback_url.startswith("https://") or not message:
+        raise HTTPException(503, "Outbound voice instructions are not configured")
+    raw = await _body(request)
+    try:
+        params = dict(parse_qsl(raw.decode("utf-8"), keep_blank_values=True, max_num_fields=100))
+    except (UnicodeDecodeError, ValueError):
+        raise HTTPException(400, "Invalid provider callback") from None
+    if not validate_twilio_signature(
+        callback_url=callback_url, parameters=params,
+        signature=request.headers.get("x-twilio-signature", ""),
+        auth_token=config.get("auth_token", ""),
+    ):
+        raise HTTPException(403, "Provider callback authentication failed")
+    xml = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+           f"<Response><Say>{escape(message)}</Say><Hangup /></Response>")
+    return Response(content=xml, media_type="application/xml", status_code=200)
 
 
 @router.post("/crm", status_code=202)

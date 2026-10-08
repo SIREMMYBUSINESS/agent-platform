@@ -54,7 +54,8 @@ def _authorize_provider_region(task: QueueTaskEnvelope, provider_kind: str,
 
 
 def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_provider=None,
-                           faq_service: FAQService | None = None) -> TaskHandlerRegistry:
+                           faq_service: FAQService | None = None,
+                           voice_provider=None) -> TaskHandlerRegistry:
     handlers = TaskHandlerRegistry()
 
     def mark_campaign_lead_contacted(uow, task, message) -> None:
@@ -777,10 +778,27 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
         ).get(UUID(str(task.payload["campaign_id"])))
         return result
 
+    def initiate_voice_call(task: QueueTaskEnvelope):
+        if voice_provider is None:
+            raise RuntimeError("voice_provider_not_configured")
+        from app.services.voice_delivery_service import VoiceDeliveryService
+        provider_region = _authorize_provider_region(
+            task, "voice", "call", task.idempotency_key,
+        )
+        call_id = VoiceDeliveryService(
+            uow_factory=lambda: UnitOfWork(session_factory), provider=voice_provider,
+        ).initiate(
+            _trusted_worker(task, "campaign_writer"), business_id=task.business_id,
+            contact_id=str(task.payload["contact_id"]), idempotency_key=task.idempotency_key,
+            provider_region=provider_region,
+        )
+        return {"status": "initiated", "provider_call_id": call_id}
+
     handlers.register("inbound", "inbound.process", inbound)
     handlers.register("outreach", "outreach.execute_send", outreach)
     handlers.register("outreach", "outreach.trigger_enrollment", outreach)
     handlers.register("outreach", "communication.deliver_message", outreach)
+    handlers.register("outreach", "voice.initiate_call", initiate_voice_call)
     handlers.register("scheduling", "scheduling.confirm_appointment", scheduling)
     handlers.register("scheduling", "scheduling.propose_for_lead", scheduling)
     handlers.register("scheduling", "appointment.reminder.prepare", scheduling)

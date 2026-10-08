@@ -20,7 +20,8 @@ class TwilioVoiceProvider:
         self._transport, self._timeout = transport or UrllibJSONTransport(), timeout
 
     def initiate_call(self, *, tenant_id: str, business_id: str, recipient: str,
-                       callback_url: str, idempotency_key: str) -> str:
+                       callback_url: str, idempotency_key: str,
+                       status_callback_url: str | None = None) -> str:
         config = self._configs.resolve(tenant_id=tenant_id, business_id=business_id)
         account = config.get("account_sid", "").strip()
         token = config.get("auth_token", "").strip()
@@ -29,13 +30,20 @@ class TwilioVoiceProvider:
             raise ProviderConfigurationError("Twilio voice credentials and caller ID are required")
         if not recipient.strip() or not callback_url.startswith("https://"):
             raise ValueError("valid recipient and HTTPS callback URL are required")
+        if status_callback_url is not None and not status_callback_url.startswith("https://"):
+            raise ValueError("status callback URL must use HTTPS")
         auth = base64.b64encode(f"{account}:{token}".encode()).decode("ascii")
         status, response = self._transport.request(
             "POST", self.endpoint.format(account_sid=account),
             headers={"Authorization": f"Basic {auth}",
                      "Content-Type": "application/x-www-form-urlencoded",
                      "Idempotency-Key": idempotency_key},
-            body=urlencode({"To": recipient, "From": source, "Url": callback_url}).encode(),
+            body=urlencode({
+                "To": recipient, "From": source, "Url": callback_url,
+                **({"StatusCallback": status_callback_url,
+                   "StatusCallbackEvent": ["initiated", "ringing", "answered", "completed"]}
+                  if status_callback_url else {}),
+            }, doseq=True).encode(),
             timeout=self._timeout,
         )
         if not 200 <= status < 300:

@@ -21,6 +21,14 @@ def build_message_sender():
     return TenantScopedMessageSender(factory)
 
 
+def build_voice_provider():
+    if settings.provider_secrets_dir is None:
+        raise RuntimeError("PROVIDER_SECRETS_DIR is required for voice delivery")
+    resolver = DirectoryTenantConfigResolver(settings.provider_secrets_dir)
+    factory = ProviderAdapterFactory(configs=resolver, audit_sink=SQLProviderAuditSink())
+    return _TenantScopedVoiceProvider(factory, resolver)
+
+
 def build_calendar_provider():
     if settings.provider_secrets_dir is None:
         raise RuntimeError("PROVIDER_SECRETS_DIR is required for calendar delivery")
@@ -68,6 +76,28 @@ class _TenantScopedCalendarProvider:
                              callback=getattr(provider, operation), **kwargs)
 
 
+class _TenantScopedVoiceProvider:
+    """Resolve voice credentials and callback URLs only from business secrets."""
+    def __init__(self, factory, resolver):
+        self._factory, self._resolver = factory, resolver
+
+    def initiate_call(self, *, tenant_id, business_id, recipient, idempotency_key,
+                      region_id=None):
+        config = self._resolver.resolve(tenant_id=tenant_id, business_id=business_id)
+        twiml_url = config.get("outbound_call_twiml_url", "").strip()
+        status_callback_url = config.get("call_webhook_url", "").strip()
+        if (not twiml_url.startswith("https://")
+                or not status_callback_url.startswith("https://")):
+            raise ValueError("voice callback URLs are not configured")
+        provider = self._factory.build("voice", tenant_id=tenant_id,
+                                       business_id=business_id, region_id=region_id)
+        return provider.initiate_call(
+            tenant_id=tenant_id, business_id=business_id, recipient=recipient,
+            callback_url=twiml_url, status_callback_url=status_callback_url,
+            idempotency_key=idempotency_key,
+        )
+
+
 class _TenantScopedCRMProvider:
     regional_provider = True
     def __init__(self, factory):
@@ -97,5 +127,5 @@ def configure_worker_handlers(registry):
 
 
 __all__ = ["build_message_sender", "build_calendar_provider", "build_crm_provider",
-           "build_faq_service",
+           "build_faq_service", "build_voice_provider",
            "configure_worker_handlers"]

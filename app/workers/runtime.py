@@ -22,9 +22,11 @@ crm_provider_factory = getattr(bootstrap, "build_crm_provider", None) if bootstr
 crm_provider = crm_provider_factory() if callable(crm_provider_factory) else None
 faq_service_factory = getattr(bootstrap, "build_faq_service", None) if bootstrap else None
 faq_service = faq_service_factory() if callable(faq_service_factory) else None
+voice_provider_factory = getattr(bootstrap, "build_voice_provider", None) if bootstrap else None
+voice_provider = voice_provider_factory() if callable(voice_provider_factory) else None
 handlers = build_default_handlers(
     message_sender=message_sender, calendar_provider=calendar_provider,
-    crm_provider=crm_provider, faq_service=faq_service,
+    crm_provider=crm_provider, faq_service=faq_service, voice_provider=voice_provider,
 )
 
 

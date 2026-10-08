@@ -255,6 +255,6 @@ def test_voice_policy_block_happens_before_provider_call():
                                        "test", datetime.now(UTC))
     with pytest.raises(VoiceDeliveryBlocked, match="consent_unknown"):
         service.initiate(principal, business_id="business-call", contact_id="contact-call",
-                         callback_url="https://example.test/webhooks/call", idempotency_key="call-1")
+                         idempotency_key="call-1")
     assert provider.calls == []
     engine.dispose()
