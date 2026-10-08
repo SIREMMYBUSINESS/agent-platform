@@ -4,7 +4,20 @@ The worker image is `Dockerfile.worker`; it runs Celery without exposing an HTTP
 port. Keep the API, worker, and Celery Beat as separate Railway services. Do
 not assign a public domain to the worker or Beat service.
 
-## Railway project setup
+## Deploying the Remix UI
+
+Create a separate Railway service from the same repository and set its root
+directory to `web`. Use `npm install && npm run build` as the build command and
+`npm run start` as the start command. Generate a public domain for the UI, then
+set `VITE_PLATFORM_API_URL=https://<api-domain>` on the UI service and
+`CORS_ALLOWED_ORIGINS=["https://<ui-domain>"]` on the API service. The CORS
+value is a JSON array of exact origins, with no trailing slash or wildcard.
+Redeploy both services after setting the variables; Vite embeds
+`VITE_PLATFORM_API_URL` during the UI build. The onboarding page takes an
+authorized API key in the browser; do not put that key in a Railway variable
+or any `VITE_` variable.
+
+## Railway worker project setup
 
 1. Connect the committed repository as a new Railway service named
    `agent-worker-inbound`. Set the service's `RAILWAY_DOCKERFILE_PATH`

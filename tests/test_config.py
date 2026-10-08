@@ -18,6 +18,7 @@ SETTING_ENV_VARS = (
     "REDIS_URL_FILE",
     "PROVIDER_SECRETS_DIR",
     "WORKER_BOOTSTRAP_MODULE",
+    "CORS_ALLOWED_ORIGINS",
     "REDIS_URL",
 )
 
@@ -39,6 +40,7 @@ def test_settings_have_safe_local_defaults(monkeypatch):
     assert settings.inbound_tenant_id == "tenant-1"
     assert settings.database_url == "postgresql://localhost:5432/agent_platform"
     assert settings.redis_url == "redis://localhost:6379/0"
+    assert settings.cors_allowed_origins == []
 
 
 def test_worker_bootstrap_must_be_an_importable_module_path(monkeypatch):
@@ -78,6 +80,26 @@ def test_postgresql_and_redis_environment_settings_load(monkeypatch):
     assert settings.database_url.startswith("postgresql+psycopg://")
     assert settings.redis_url == "rediss://cache.example:6380/2"
     assert settings.inbound_tenant_id == "tenant-production"
+
+
+def test_cors_allowed_origins_load_as_explicit_origin_list(monkeypatch):
+    clear_settings_environment(monkeypatch)
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", '["https://ui.example.com", "http://localhost:3000"]')
+
+    settings = Settings(_env_file=None)
+
+    assert settings.cors_allowed_origins == [
+        "https://ui.example.com", "http://localhost:3000",
+    ]
+
+
+@pytest.mark.parametrize("origin", [
+    "*", "https://ui.example.com/path", "https://user@ui.example.com",
+    "http://ui.example.com", "https://ui.example.com:invalid",
+])
+def test_cors_origins_reject_wildcards_paths_and_insecure_origins(origin):
+    with pytest.raises(ValidationError, match="CORS origins"):
+        Settings(_env_file=None, cors_allowed_origins=[origin])
 
 
 def test_environment_specific_dotenv_overrides_base_dotenv(monkeypatch, tmp_path):

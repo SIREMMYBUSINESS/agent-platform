@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     redis_url_file: Path | None = None
     provider_secrets_dir: Path | None = None
     worker_bootstrap_module: str | None = None
+    cors_allowed_origins: list[str] = Field(default_factory=list)
     workflow_dry_run: bool = False
     optimization_min_sample_size: int = Field(default=30, ge=2, le=100000)
     optimization_confidence_threshold: float = Field(default=0.75, ge=0.5, le=1.0)
@@ -109,6 +110,30 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.query or parsed.fragment:
             raise ValueError("must be an HTTP(S) application URL without query or fragment")
         return value.rstrip("/")
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def validate_cors_allowed_origins(cls, values: list[str]) -> list[str]:
+        origins: list[str] = []
+        for value in values:
+            origin = value.strip()
+            parsed = urlsplit(origin)
+            try:
+                parsed.port
+            except ValueError:
+                raise ValueError("CORS origins must be valid HTTP(S) origins") from None
+            if (not origin or origin == "*" or parsed.scheme not in {"http", "https"}
+                    or not parsed.hostname or parsed.username or parsed.password
+                    or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+                raise ValueError("CORS origins must be exact HTTP(S) origins without paths or credentials")
+            if parsed.scheme == "http" and parsed.hostname.lower() not in {
+                "localhost", "127.0.0.1", "::1",
+            }:
+                raise ValueError("non-local CORS origins must use HTTPS")
+            normalized = f"{parsed.scheme.lower()}://{parsed.netloc}".rstrip("/")
+            if normalized not in origins:
+                origins.append(normalized)
+        return origins
 
 def load_settings() -> Settings:
     """Load base dotenv, then environment-specific dotenv, then OS values."""

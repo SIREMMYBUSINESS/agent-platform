@@ -1,4 +1,5 @@
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
@@ -57,6 +58,21 @@ from uuid import uuid4
 configure_structured_logging(settings.log_level)
 app = FastAPI(title=settings.app_name)
 app.add_middleware(ObservabilityMiddleware)
+
+
+def install_cors_middleware(application: FastAPI, allowed_origins: list[str]) -> None:
+    """Allow browser access only from explicitly configured UI origins."""
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        max_age=600,
+    )
+
+
+install_cors_middleware(app, settings.cors_allowed_origins)
 app.include_router(lead_router)
 app.include_router(campaign_router)
 app.include_router(conversation_router)

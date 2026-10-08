@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from app.persistence.models import Appointment
+from app.queue.contracts import QueueDomain
 from app.services.routing_service import RoutingService
 from app.services.scheduling_optimization import SchedulingOptimizationService
 from app.services.appointment_reminder_service import AppointmentReminderService
@@ -276,6 +277,15 @@ class SchedulingService:
         )
         confirmed.correlation_id = confirmed.correlation_id or str(
             confirmed.conversation_id or confirmed.id
+        )
+        uow.queue_tasks.enqueue(
+            tenant_id=tenant_id, business_id=business_id,
+            domain=QueueDomain.SCHEDULING.value, task_name="scheduling.calendar_sync",
+            idempotency_key=f"appointment:{confirmed.id}:calendar:create",
+            aggregate_type="appointment", aggregate_id=str(confirmed.id),
+            payload={"appointment_id": str(confirmed.id), "operation": "create"},
+            correlation_id=confirmed.correlation_id, traceparent=None,
+            available_at=self._as_utc(now or datetime.now(timezone.utc)), max_attempts=8,
         )
         lead = None
         lead_score = None

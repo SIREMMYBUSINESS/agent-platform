@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.persistence.unit_of_work import UnitOfWork
-from app.queue.contracts import QueueDomain
 from app.security import AuthenticatedPrincipal
 from app.services.scheduling_service import SchedulingService
 from app.services.outbound_delivery_service import OutboundDeliveryService
@@ -78,15 +77,6 @@ class AppointmentWorkflowService:
                     context={"appointment_id": str(appointment.id)},
                 )
                 return appointment
-            uow.queue_tasks.enqueue(
-                tenant_id=self._tenant_id, business_id=appointment.business_id,
-                domain=QueueDomain.SCHEDULING.value, task_name="scheduling.calendar_sync",
-                idempotency_key=f"appointment:{appointment.id}:calendar:create",
-                aggregate_type="appointment", aggregate_id=str(appointment.id),
-                payload={"appointment_id": str(appointment.id), "operation": "create"},
-                correlation_id=appointment.correlation_id, traceparent=None,
-                available_at=datetime.now(UTC), max_attempts=8,
-            )
             conversation = uow.conversations.get(
                 tenant_id=self._tenant_id, conversation_id=appointment.conversation_id,
             )
