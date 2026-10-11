@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     optimization_confidence_threshold: float = Field(default=0.75, ge=0.5, le=1.0)
     optimization_dry_run: bool = False
     public_app_url: str = "http://localhost:3000"
+    # Deprecated local compatibility setting. The production worker no longer uses Redis.
     redis_url: str = "redis://localhost:6379/0"
 
     @field_validator("app_name", "environment", "default_region", "inbound_tenant_id")
@@ -150,6 +151,8 @@ def load_settings() -> Settings:
     if environment_file.is_file():
         base_settings = Settings(_env_file=(Path(".env"), environment_file))
     secret_values = {}
+    # Redis file loading remains for rolling back older images; current runtime
+    # paths never read or connect to this setting.
     for env_name, field_name in (("DATABASE_URL_FILE", "database_url"),
                                  ("REDIS_URL_FILE", "redis_url")):
         secret_file = os.environ.get(env_name) or getattr(base_settings, env_name.lower())
@@ -181,15 +184,10 @@ def load_settings() -> Settings:
         sslmode = parse_qs(database.query).get("sslmode", [""])[-1]
         if sslmode not in {"verify-full", "verify-ca"}:
             raise RuntimeError("production DATABASE_URL must require TLS certificate verification")
-        if urlsplit(base_settings.redis_url).scheme != "rediss":
-            raise RuntimeError("production REDIS_URL must use rediss://")
         if base_settings.database_url_file is None:
             raise RuntimeError("production DATABASE_URL must be supplied through DATABASE_URL_FILE")
-        if base_settings.redis_url_file is None:
-            raise RuntimeError("production REDIS_URL must be supplied through REDIS_URL_FILE")
-        if (base_settings.database_region_id != base_settings.deployment_region_id
-                or base_settings.redis_region_id != base_settings.deployment_region_id):
-            raise RuntimeError("production database and Redis regions must match DEPLOYMENT_REGION_ID")
+        if base_settings.database_region_id != base_settings.deployment_region_id:
+            raise RuntimeError("production database region must match DEPLOYMENT_REGION_ID")
     return base_settings
 
 

@@ -1,4 +1,4 @@
-"""Celery transport configuration; Redis remains a broker, never the source of truth."""
+"""Deprecated Celery/Redis compatibility module; production uses PostgreSQL polling."""
 
 import ssl
 from urllib.parse import urlsplit

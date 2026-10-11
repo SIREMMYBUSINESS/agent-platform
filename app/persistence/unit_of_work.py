@@ -7,6 +7,7 @@ from typing import Self
 from sqlmodel import Session
 from app.persistence.auth_repositories import SQLApiKeyRepository, SQLApiKeyGrantRepository
 from app.persistence.queue_repositories import SQLQueueTaskRepository
+from app.persistence.worker_repositories import SQLWorkerHeartbeatRepository
 from app.persistence.conversation_repositories import SQLConversationAssignmentRepository
 from app.persistence.workflow_repositories import SQLWorkflowExecutionRepository, SQLFollowUpRepository
 from app.persistence.crm_repositories import SQLCRMContactRepository, SQLCRMSyncRepository
@@ -77,6 +78,7 @@ class UnitOfWork:
         self.api_keys: SQLApiKeyRepository | None = None
         self.api_key_grants: SQLApiKeyGrantRepository | None = None
         self.queue_tasks: SQLQueueTaskRepository | None = None
+        self.worker_heartbeats: SQLWorkerHeartbeatRepository | None = None
         self.conversation_assignments: SQLConversationAssignmentRepository | None = None
         self.workflow_executions: SQLWorkflowExecutionRepository | None = None
         self.follow_ups: SQLFollowUpRepository | None = None
@@ -139,6 +141,7 @@ class UnitOfWork:
             self.api_keys = SQLApiKeyRepository(self._session)
             self.api_key_grants = SQLApiKeyGrantRepository(self._session)
             self.queue_tasks = SQLQueueTaskRepository(self._session)
+            self.worker_heartbeats = SQLWorkerHeartbeatRepository(self._session)
             self.conversation_assignments = SQLConversationAssignmentRepository(self._session)
             self.workflow_executions = SQLWorkflowExecutionRepository(self._session)
             self.follow_ups = SQLFollowUpRepository(self._session)

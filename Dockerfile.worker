@@ -13,4 +13,4 @@ COPY migrations ./migrations
 RUN python -m pip install --no-cache-dir .
 
 USER 10001:10001
-CMD ["python", "-m", "app.workers.railway_entry", "worker"]
+CMD ["python", "-m", "app.workers.railway_entry"]

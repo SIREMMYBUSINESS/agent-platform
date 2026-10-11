@@ -28,10 +28,10 @@ This repository is a modular, multi-tenant receptionist and outreach agent platf
 - `app/events.py` — event envelope and in-memory event bus.
 - `app/agents.py` — base agent and deterministic receptionist response implementation.
 - `app/policies.py` — region/channel consent policy checks.
-- `app/config.py` — application settings, including database and Redis URLs.
+- `app/config.py` — application settings, including verified PostgreSQL configuration.
 - `app/app_db_models_Version2.py` — SQLModel table definitions for tenants, businesses, contacts, conversations, messages, appointments, workflow states, and event logs.
 - `app/app_db_Version2.py` — SQLModel engine setup and database initialization/session helpers. The current inbound route does not yet use this persistence path.
-- `app/app_celery_app_Version2.py` — Celery app configured with Redis as broker and result backend. The current inbound route does not yet enqueue Celery work.
+- `app/queue/poller.py` and `app/workers/scheduler.py` — PostgreSQL-backed durable task polling and the single APScheduler worker process.
 - `tests/test_inbound.py` — current API smoke tests for health and a successful inbound request.
 
 The `Version2` module names are existing filenames; do not rename them as incidental cleanup or break existing imports without a deliberate, tested change.

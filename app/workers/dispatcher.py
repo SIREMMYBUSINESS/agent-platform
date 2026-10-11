@@ -1,14 +1,13 @@
-"""Celery Beat entry point that drains the durable database outbox."""
+"""Directly drain due durable work from PostgreSQL."""
 
 from app.persistence.session import session_factory
 from app.persistence.unit_of_work import UnitOfWork
-from app.queue.celery import celery_app
-from app.queue.dispatcher import DurableQueueDispatcher
+from app.queue.poller import DatabaseQueuePoller
+from app.workers.runtime import runner
 
 
-@celery_app.task(name="agent_platform.queue.dispatch_due", acks_late=True)
 def dispatch_due() -> dict[str, int]:
-    dispatcher = DurableQueueDispatcher(
-        uow_factory=lambda: UnitOfWork(session_factory), publisher=celery_app,
+    poller = DatabaseQueuePoller(
+        uow_factory=lambda: UnitOfWork(session_factory), runner=runner,
     )
-    return {"dispatched": dispatcher.dispatch_due()}
+    return {"processed": poller.run_once()}

@@ -15,7 +15,7 @@ raw tenant, business, campaign, contact, and lead IDs are never metric labels.
 The protected endpoint refreshes queue-depth gauges at scrape time.
 
 `/health` is a liveness response. `/ready` checks the database. The internal
-`/health/components` response checks database, Redis, and Celery worker queues;
+`/health/components` response checks database and the PostgreSQL worker heartbeat;
 provider APIs are reported as `not_probed` because active checks can incur cost
 or mutate provider state. It returns only component status, never connection
 strings or exception details.

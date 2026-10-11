@@ -21,7 +21,7 @@ Production configuration rejects database URLs without `sslmode=verify-full` or 
 
 ## Secrets provisioning and rotation
 
-Set `DATABASE_URL_FILE` and `REDIS_URL_FILE` to mounted secret files. In production, files must be regular files, non-symlinks, non-writable, and readable only by the service owner or its configured group. Database URLs must use certificate-verified PostgreSQL TLS; Redis URLs must use `rediss://`.
+Set `DATABASE_URL_FILE` to a mounted secret file. In production, it must be a regular file, not a symlink, non-writable, and readable only by the service owner or its configured group. Database URLs must use certificate-verified PostgreSQL TLS.
 
 Provider configuration is JSON in a read-only mounted directory. The filename is lowercase SHA-256 of `tenant_id + NUL + business_id`, followed by `.json`. Files contain string values required by the provider adapters, for example:
 
@@ -44,15 +44,15 @@ Confirm each sent SMS/WhatsApp record gets a provider SID, then check delivery t
 
 ## Deployment and smoke checks
 
-Build the image from the repository root. The container runs as UID/GID `10001`, has a read-only root filesystem, and checks database readiness at `/ready`. The example Compose file expects external PostgreSQL and Redis services, mounted secret files, and a provider-secret directory. Put it behind a TLS-terminating proxy; the published app port binds to loopback.
+Build the images from the repository root. The API and the single Python worker run as UID/GID `10001` with read-only root filesystems. The API checks PostgreSQL readiness at `/ready`; the worker polls the durable PostgreSQL queue every five seconds and records a database heartbeat. The example Compose file expects PostgreSQL, a mounted database secret, and a protected provider-secret directory. Put the API behind a TLS-terminating proxy; the published app port binds to loopback.
 
 ```powershell
 docker compose -f ops/compose.production.yml.example config
 docker compose -f ops/compose.production.yml.example build
 docker compose -f ops/compose.production.yml.example run --rm migrate
-docker compose -f ops/compose.production.yml.example up -d app
+docker compose -f ops/compose.production.yml.example up -d app worker
 Invoke-RestMethod http://127.0.0.1:8000/health
 Invoke-RestMethod http://127.0.0.1:8000/ready
 ```
 
-`/health` is liveness only. `/ready` runs `SELECT 1` and returns a generic 503 while PostgreSQL is unavailable. `/metrics` requires an authenticated `metrics_reader` principal. Verify metrics scraping, callback ingress over HTTPS, image health, and alert/dashboard connectivity before directing customer traffic. On rollback, prefer the last known-good image; use `alembic downgrade` only after reviewing the migration and a tested restore plan.
+`/health` is liveness only. `/ready` runs `SELECT 1` and returns a generic 503 while PostgreSQL is unavailable. `/health/components` also requires a recent worker heartbeat. `/metrics` requires an authenticated `metrics_reader` principal. Verify metrics scraping, callback ingress over HTTPS, image health, and alert/dashboard connectivity before directing customer traffic. On rollback, prefer the last known-good image; use `alembic downgrade` only after reviewing the migration and a tested restore plan.

@@ -3,17 +3,14 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
-    command: ["python", "-m", "alembic", "upgrade", "head"]
+    command: ["python", "-m", "app.runtime_entry", "migrate"]
     environment:
       ENVIRONMENT: production
       DEPLOYMENT_REGION_ID: ${DEPLOYMENT_REGION_ID:?Set DEPLOYMENT_REGION_ID to the local deployment region}
       DATABASE_REGION_ID: ${DATABASE_REGION_ID:?Set DATABASE_REGION_ID to the colocated database region}
-      REDIS_REGION_ID: ${REDIS_REGION_ID:?Set REDIS_REGION_ID to the colocated Redis region}
       DATABASE_URL_FILE: /run/secrets/database_url
-      REDIS_URL_FILE: /run/secrets/redis_url
     secrets:
       - database_url
-      - redis_url
     restart: "no"
 
   app:
@@ -27,13 +24,10 @@ services:
       ENVIRONMENT: production
       DEPLOYMENT_REGION_ID: ${DEPLOYMENT_REGION_ID:?Set DEPLOYMENT_REGION_ID to the local deployment region}
       DATABASE_REGION_ID: ${DATABASE_REGION_ID:?Set DATABASE_REGION_ID to the colocated database region}
-      REDIS_REGION_ID: ${REDIS_REGION_ID:?Set REDIS_REGION_ID to the colocated Redis region}
       DATABASE_URL_FILE: /run/secrets/database_url
-      REDIS_URL_FILE: /run/secrets/redis_url
       PROVIDER_SECRETS_DIR: /run/provider-secrets
     secrets:
       - database_url
-      - redis_url
     volumes:
       - type: bind
         source: ${PROVIDER_SECRETS_DIR:?Set PROVIDER_SECRETS_DIR to a protected mounted secret directory}
@@ -54,8 +48,33 @@ services:
       start_period: 30s
       retries: 3
 
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile.worker
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      ENVIRONMENT: production
+      DEPLOYMENT_REGION_ID: ${DEPLOYMENT_REGION_ID:?Set DEPLOYMENT_REGION_ID to the local deployment region}
+      DATABASE_REGION_ID: ${DATABASE_REGION_ID:?Set DATABASE_REGION_ID to the colocated database region}
+      DATABASE_URL_FILE: /run/secrets/database_url
+      PROVIDER_SECRETS_DIR: /run/provider-secrets
+    secrets:
+      - database_url
+    volumes:
+      - type: bind
+        source: ${PROVIDER_SECRETS_DIR:?Set PROVIDER_SECRETS_DIR to a protected mounted secret directory}
+        target: /run/provider-secrets
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
 secrets:
   database_url:
     file: ${DATABASE_URL_SECRET_FILE:?Set DATABASE_URL_SECRET_FILE to a read-only secret file}
-  redis_url:
-    file: ${REDIS_URL_SECRET_FILE:?Set REDIS_URL_SECRET_FILE to a read-only secret file}

@@ -11,7 +11,6 @@ from app.config import settings
 from app.optimization.orchestrator import FeedbackLoopOrchestrator
 from app.persistence.session import session_factory
 from app.persistence.unit_of_work import UnitOfWork
-from app.queue.celery import celery_app
 
 
 def build_orchestrator() -> FeedbackLoopOrchestrator:
@@ -23,7 +22,6 @@ def build_orchestrator() -> FeedbackLoopOrchestrator:
     )
 
 
-@celery_app.task(name="agent_platform.optimization.run_daily")
 def run_daily_optimization() -> dict:
     results = build_orchestrator().run_daily()
     return {"businesses_processed": len(results),

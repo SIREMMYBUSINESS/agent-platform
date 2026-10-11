@@ -1,40 +1,19 @@
-"""Railway process entry point for region-scoped Celery workers and Beat."""
+"""Railway entry point for the single PostgreSQL-backed worker process."""
 from __future__ import annotations
 
 import os
-from pathlib import Path
-import stat
 import sys
-import tempfile
+
+from app.runtime_entry import materialize_database_url
 
 
 def _materialize_railway_secrets() -> None:
-    """Move Railway's injected DB URLs into private read-only files for settings."""
-    for variable in ("DATABASE_URL", "REDIS_URL"):
-        file_variable = f"{variable}_FILE"
-        value = os.environ.pop(variable, None)
-        if not value or os.environ.get(file_variable):
-            continue
-        fd, path = tempfile.mkstemp(prefix="agent-platform-", suffix=".secret",
-                                    dir=os.environ.get("TMPDIR", "/tmp"))
-        try:
-            os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-            with os.fdopen(fd, "w", encoding="utf-8") as secret_file:
-                secret_file.write(value)
-                secret_file.flush()
-                os.fsync(secret_file.fileno())
-            os.chmod(path, stat.S_IRUSR)
-        except Exception:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            Path(path).unlink(missing_ok=True)
-            raise
-        os.environ[file_variable] = path
+    """Move Railway's injected database URL into a private read-only file."""
+    materialize_database_url()
 
 
 def _worker_args(environ: dict[str, str] | None = None) -> list[str]:
+    """Legacy Celery argument builder retained for older local tooling only."""
     env = os.environ if environ is None else environ
     from app.queue.routing import worker_pool_assumptions
     from app.config import settings
@@ -68,13 +47,10 @@ def _worker_args(environ: dict[str, str] | None = None) -> list[str]:
 def main() -> None:
     _materialize_railway_secrets()
     process_type = sys.argv[1] if len(sys.argv) > 1 else "worker"
-    if process_type not in {"worker", "beat"}:
-        raise SystemExit("usage: python -m app.workers.railway_entry [worker|beat]")
-    if process_type == "worker":
-        args = _worker_args()
-    else:
-        args = ["-A", "app.queue.celery:celery_app", "beat", "--loglevel=INFO"]
-    os.execv(sys.executable, [sys.executable, "-m", "celery", *args])
+    if process_type != "worker":
+        raise SystemExit("usage: python -m app.workers.railway_entry [worker]")
+    from app.workers.scheduler import run_worker
+    run_worker()
 
 
 if __name__ == "__main__":

@@ -12,8 +12,7 @@ dependencies = [
   "alembic>=1.13.1",
   "sqlmodel>=0.0.22",
   "psycopg[binary]>=3.1.18",
-  "redis>=5.0.4",
-  "celery>=5.3.6",
+  "APScheduler>=3.10,<4",
   "twilio>=9.0.0",
   "opentelemetry-api>=1.30.0",
   "opentelemetry-sdk>=1.30.0",
@@ -24,6 +23,8 @@ dependencies = [
 test = [
   "pytest>=8.0",
   "httpx>=0.27",
+  "redis>=5.0.4",
+  "celery>=5.3.6",
 ]
 
 [tool.pytest.ini_options]

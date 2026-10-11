@@ -205,9 +205,7 @@ def health():
 @app.get("/health/components", include_in_schema=False)
 def component_health():
     """Report dependency and worker health without exposing host or error details."""
-    from app.queue.celery import celery_app
-    result = check_components(session_factory=session_factory,
-                              redis_url=settings.redis_url, celery_app=celery_app)
+    result = check_components(session_factory=session_factory)
     return JSONResponse(status_code=200 if result["status"] == "healthy" else 503,
                         content=result)
 

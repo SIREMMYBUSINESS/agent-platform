@@ -88,7 +88,7 @@ class SQLQueueTaskRepository:
                  limit: int) -> list[QueueTaskRecord]:
         statement = select(QueueTaskRecord).where(
             (
-                QueueTaskRecord.status.in_(("pending", "retrying"))
+                QueueTaskRecord.status.in_(("pending", "queued", "retrying"))
                 & (QueueTaskRecord.available_at <= now)
             )
             | (

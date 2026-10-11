@@ -1329,6 +1329,22 @@ class QueueTaskRecord(SQLModel, table=True):
     result: dict[str, Any] | None = Field(default=None, sa_column=Column(json_storage_type()))
 
 
+class WorkerHeartbeat(SQLModel, table=True):
+    """Last-seen marker for the single PostgreSQL-backed background worker."""
+    __tablename__ = "worker_heartbeats"
+    __table_args__ = (
+        PrimaryKeyConstraint("worker_id", name="pk_worker_heartbeats"),
+        CheckConstraint("status IN ('running', 'stopped')", name="ck_worker_heartbeats_status"),
+        Index("ix_worker_heartbeats_seen", "status", "heartbeat_at"),
+    )
+
+    worker_id: str = Field(max_length=120, primary_key=True)
+    region_id: str = Field(max_length=64)
+    status: str = Field(default="running", max_length=16)
+    started_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    heartbeat_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
 class ProviderWebhookEvent(SQLModel, table=True):
     """Idempotent, tenant-scoped record of a verified provider callback."""
     __tablename__ = "provider_webhook_events"
@@ -1496,6 +1512,7 @@ __all__ = [
     "CRMSyncRecord",
     "CampaignReply",
     "QueueTaskRecord",
+    "WorkerHeartbeat",
     "ProviderWebhookEvent",
     "ProviderInteractionLog",
     "CampaignSequence",
