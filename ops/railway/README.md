@@ -84,6 +84,75 @@ URL must also satisfy the required `rediss://` transport. If Railway's managed
 database or broker does not provide the required TLS verification, use a
 TLS-capable managed service in the same approved region.
 
+### Redis TLS connection requirements
+
+`rediss://` selects a TLS connection; changing the URL scheme does not enable
+TLS on a Redis server. The standard Redis start command shown by Railway
+(`redis-server --requirepass ...`) does not configure a TLS listener. Before
+changing the application's URL, provision a TLS-capable Redis endpoint or
+configure Redis with a server certificate, private key, and TLS listener.
+For native Redis TLS, disable the plaintext port with `--port 0`, configure
+`--tls-port`, `--tls-cert-file`, `--tls-key-file`, and `--tls-ca-cert-file`,
+and manage certificate renewal and protected key storage separately.
+
+Set the API, worker, and Beat services' `REDIS_URL` to that endpoint's
+`rediss://` URL. Reference the intended Redis service's uppercase `REDIS_URL`
+variable and remove conflicting differently cased aliases after confirming
+their consumers. Keep credentials in Railway variables or protected secret
+files, never in the repository. Use `ssl_cert_reqs=required` if specifying
+verification in the URL; never use `none`, `optional`, or disable hostname
+verification. Celery explicitly requires certificate and hostname verification
+for both its broker and result backend. If using a private certificate authority,
+provide its public CA certificate to every client using the URL's
+`ssl_ca_certs` option pointing to a readable mounted PEM file.
+
+Verify a certificate-checked Redis `PING` from the deployment environment,
+then recheck `/health/components` for `redis: healthy`. A local client cannot
+resolve Railway private hostnames. A healthy broker alone does not establish
+worker readiness; check worker heartbeat separately.
+
+#### Enabling TLS on an existing Railway Redis service
+
+Run `ops/railway/enable-redis-tls.ps1` from PowerShell 7.4+ with Railway CLI
+authenticated and the repository Python virtual environment installed. Pass
+the exact project, environment, Redis service, and client service IDs:
+
+```powershell
+.\ops\railway\enable-redis-tls.ps1 -ProjectId "project-id" -EnvironmentId "environment-id" -RedisServiceId "redis-service-id" -ClientServiceIds "api-service-id" -Plan
+```
+
+Review the plan, then repeat without `-Plan` to apply. Include worker and Beat
+IDs in `-ClientServiceIds` when those services exist. The operation generates a
+private CA and a 90-day server certificate in memory. Its signing key is
+discarded; the server private key is stored only in Redis service variables and
+owner-only temporary files inside its container. Restrict variable access to
+authorized operators. Neither private keys nor connection credentials are
+written to this checkout. The existing Redis image and data volume are retained.
+This script requires a single-environment project because Railway's service
+update API may also affect other non-fork environments. Clients already using
+`REDIS_URL_FILE` need their protected secret mount updated separately.
+
+The Redis process runs as its image's `redis` user. Its plaintext listener is
+disabled. The operation verifies an encrypted, certificate-checked `PING` via
+the existing TCP proxy before changing client references and redeploying clients
+using their existing images, without rebuilding source. The Free plan's sleeping
+setting is preserved. URLs include the public CA PEM as an encoded
+`ssl_ca_data` query parameter, plus `ssl_cert_reqs=required` and
+`ssl_check_hostname=true`; Redis, Kombu, and Celery use that trust without a
+separate client certificate mount. Existing differently cased aliases receive
+the same value to preserve old references without conflicting client settings.
+Clients use the private endpoint by default. If private networking is unavailable,
+`-ClientUsePublicEndpoint` uses the already-existing TCP proxy with the same
+certificate and hostname verification; it does not create a new public endpoint.
+
+Schedule rotation **before** `REDIS_TLS_CERT_EXPIRES_AT`. Run the same command
+with `-Rotate` to issue a new CA/certificate and update client trust together;
+this involves a Redis restart and a short connection interruption. Keep the
+CA query parameter when adding new clients. Do not print complete URLs or pass
+them as command arguments. `ops/railway/verify-redis-tls.py` accepts the public
+URL on stdin and verifies `PING`, hostname and CA rejection, and plaintext
+listener rejection without printing credentials.
+
 ## Region and data residency
 
 Set the Railway service's physical region as well as the application's

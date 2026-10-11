@@ -1,11 +1,22 @@
 """Celery transport configuration; Redis remains a broker, never the source of truth."""
 
+import ssl
+from urllib.parse import urlsplit
+
 from celery import Celery
 from kombu import Queue
 
 from app.config import settings
 from app.queue.routing import worker_pool_assumptions
 from app.regions.catalog import list_regions
+
+
+def redis_transport_security(redis_url: str) -> dict[str, object]:
+    """Require verified TLS for both Celery Redis connections when using rediss."""
+    if urlsplit(redis_url).scheme != "rediss":
+        return {}
+    tls = {"ssl_cert_reqs": ssl.CERT_REQUIRED, "ssl_check_hostname": True}
+    return {"broker_use_ssl": dict(tls), "redis_backend_use_ssl": dict(tls)}
 
 
 _domains = tuple(worker_pool_assumptions())
@@ -24,6 +35,7 @@ celery_app = Celery(
     ],
 )
 celery_app.conf.update(
+    **redis_transport_security(settings.redis_url),
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],

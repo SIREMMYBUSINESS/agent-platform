@@ -101,6 +101,13 @@ class Settings(BaseSettings):
         parsed = urlsplit(value)
         if parsed.scheme not in {"redis", "rediss"} or not parsed.hostname:
             raise ValueError("must be a redis:// or rediss:// URL with a host")
+        if parsed.scheme == "rediss":
+            query = parse_qs(parsed.query, keep_blank_values=True)
+            if any(item != "required" for item in query.get("ssl_cert_reqs", [])):
+                raise ValueError("Redis TLS must require certificate verification")
+            if any(item.lower() not in {"true", "1", "yes"}
+                   for item in query.get("ssl_check_hostname", [])):
+                raise ValueError("Redis TLS must verify the server hostname")
         return value
 
     @field_validator("public_app_url")
