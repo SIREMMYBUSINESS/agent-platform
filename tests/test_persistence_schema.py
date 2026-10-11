@@ -71,6 +71,7 @@ EXPECTED_TABLES = {
     "region_feature_flags",
     "business_vertical_profiles",
     "vertical_intake_sessions",
+    "worker_heartbeats",
 }
 
 
@@ -81,7 +82,7 @@ def test_all_persistence_models_share_one_metadata_registry():
 
 
 def test_every_tenant_owned_table_carries_tenant_id():
-    for table_name in EXPECTED_TABLES - {"tenants", "country_policies"}:
+    for table_name in EXPECTED_TABLES - {"tenants", "country_policies", "worker_heartbeats"}:
         assert "tenant_id" in SQLModel.metadata.tables[table_name].columns
 
 
