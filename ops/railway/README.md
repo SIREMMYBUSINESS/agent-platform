@@ -32,12 +32,16 @@ needed.
      the SQLAlchemy `psycopg` driver and `sslmode=verify-full`
    - `DATABASE_REGION_ID` and `DEPLOYMENT_REGION_ID` to the same supported
      application region ID, matching the physical Railway region
+   - `DATABASE_SSL_ROOT_CERT_B64` to the base64-encoded PEM root CA from the
+     PostgreSQL service's `/var/lib/postgresql/data/certs/root.crt`
 
    Keep `DATABASE_URL` in Railway variables. The API and worker entry points
    move an injected URL into a private, read-only temporary file before loading
-   production settings. Do not print the URL or commit it to the repository. If the managed
-   database endpoint cannot meet the certificate and hostname verification
-   requirement, use a TLS-capable PostgreSQL provider in the same region.
+   production settings. They also materialize the CA into a private file and
+   set `PGSSLROOTCERT` for libpq certificate verification. Do not print the URL
+   or CA value or commit either to the repository. If the managed database
+   endpoint cannot meet the certificate and hostname verification requirement,
+   use a TLS-capable PostgreSQL provider in the same region.
 
 5. Run `python -m app.runtime_entry migrate` once as a controlled one-off job
    after the database is ready and before starting the worker. This entry point

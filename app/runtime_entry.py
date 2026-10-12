@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 from pathlib import Path
 import stat
@@ -35,8 +37,43 @@ def materialize_database_url() -> None:
     os.environ["DATABASE_URL_FILE"] = path
 
 
+def materialize_database_ssl_root_cert() -> None:
+    """Write the Railway PostgreSQL CA certificate for libpq verification."""
+    encoded = os.environ.pop("DATABASE_SSL_ROOT_CERT_B64", None)
+    if not encoded:
+        return
+    try:
+        certificate = base64.b64decode(encoded, validate=True)
+        text = certificate.decode("ascii")
+        if "-----BEGIN CERTIFICATE-----" not in text or "-----END CERTIFICATE-----" not in text:
+            raise ValueError
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        raise RuntimeError("DATABASE_SSL_ROOT_CERT_B64 is invalid") from None
+
+    fd, path = tempfile.mkstemp(
+        prefix="agent-platform-db-ca-", suffix=".crt",
+        dir=os.environ.get("TMPDIR", "/tmp"),
+    )
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "wb") as certificate_file:
+            certificate_file.write(certificate)
+            certificate_file.flush()
+            os.fsync(certificate_file.fileno())
+        os.chmod(path, stat.S_IRUSR)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        Path(path).unlink(missing_ok=True)
+        raise
+    os.environ["PGSSLROOTCERT"] = path
+
+
 def main() -> None:
     materialize_database_url()
+    materialize_database_ssl_root_cert()
     process_type = sys.argv[1] if len(sys.argv) > 1 else "api"
     if process_type == "api":
         import uvicorn
