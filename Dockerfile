@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.13.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -8,10 +8,10 @@ WORKDIR /app
 RUN groupadd --system --gid 10001 app && \
     useradd --system --uid 10001 --gid app --home-dir /app app
 
-COPY pyproject.toml alembic.ini ./
+COPY pyproject.toml requirements.txt alembic.ini ./
 COPY app ./app
 COPY migrations ./migrations
-RUN python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir -r requirements.txt .
 
 USER 10001:10001
 EXPOSE 8000
