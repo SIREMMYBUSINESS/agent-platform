@@ -7,7 +7,7 @@
   "deploy": {
     "runtime": "V2",
     "numReplicas": 1,
-    "startCommand": "python -m app.runtime_entry api",
+    "startCommand": "python -m pip install --no-cache-dir --target /tmp/railway-site -r requirements.txt . && PYTHONPATH=/tmp/railway-site python -m app.runtime_entry api",
     "sleepApplication": true,
     "useLegacyStacker": false,
     "ipv6EgressEnabled": false,
