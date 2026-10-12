@@ -42,6 +42,7 @@ def materialize_database_ssl_root_cert() -> None:
     encoded = os.environ.pop("DATABASE_SSL_ROOT_CERT_B64", None)
     if not encoded:
         return
+    encoded = encoded.strip()
     try:
         certificate = base64.b64decode(encoded, validate=True)
         text = certificate.decode("ascii")

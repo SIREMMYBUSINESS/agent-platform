@@ -11,7 +11,7 @@ def test_materialize_database_ca_for_libpq(monkeypatch, tmp_path):
     certificate = b"-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"
     monkeypatch.setenv(
         "DATABASE_SSL_ROOT_CERT_B64",
-        base64.b64encode(certificate).decode("ascii"),
+        base64.b64encode(certificate).decode("ascii") + "\n",
     )
     monkeypatch.delenv("PGSSLROOTCERT", raising=False)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
