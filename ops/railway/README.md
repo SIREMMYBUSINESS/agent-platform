@@ -2,11 +2,13 @@
 
 ## Runtime layout
 
-Run the API and one Python worker as separate services. Both connect to the
-same PostgreSQL database in the approved region. The Remix application on
-Cloudflare Workers calls the API; it must not connect directly to PostgreSQL,
-so tenant authorization, policy checks, transactions, and provider adapters
-remain behind the application service boundary.
+The target layout runs the API and one Python worker as separate services.
+Both connect to the same PostgreSQL database in the approved region. The
+current free-plan Railway deployment runs the API and worker processes through
+the `agent-platform` service. The Remix application on Cloudflare Workers calls
+the API; it must not connect directly to PostgreSQL, so tenant authorization,
+policy checks, transactions, and provider adapters remain behind the
+application service boundary.
 
 The API persists background work to `queue_task_records` in the same
 transaction as its domain changes. The Python worker polls that table every
@@ -31,10 +33,10 @@ deployment. Railway calls the physical region `europe-west4-drams3a`; do not put
 that provider-specific identifier into these application settings. These labels
 do not move data or independently verify the database's physical location.
 
-The current Railway deployment runs API and worker processes together in the
-`agent-platform` service, so one set of variables covers both processes. If they
-are separated later, copy these three settings to both services and keep their
-database credentials scoped to the same regional database.
+For the current Railway deployment, one set of variables covers both
+processes. If API and worker services are separated, copy these three settings
+to both services and keep their database credentials scoped to the same
+regional database.
 
 Startup rejects an explicitly configured `DATABASE_REGION_ID` that differs
 from `DEPLOYMENT_REGION_ID`, even with routing disabled. Development can omit
