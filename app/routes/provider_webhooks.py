@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from app.auth.dependencies import require_tenant_home_region
 from app.config import settings
 from app.integrations.provider_support import (
     DirectoryTenantConfigResolver, ProviderConfigurationError,
@@ -78,6 +79,8 @@ async def twilio_status_callback(
                 signature=signature, auth_token=token,
             ) for token in accepted_tokens)):
         raise HTTPException(403, "Provider callback authentication failed")
+
+    require_tenant_home_region(tenant_id)
 
     provider_message_id = single.get("MessageSid", "")
     status = single.get("MessageStatus", single.get("SmsStatus", ""))

@@ -168,6 +168,47 @@ def test_scheduled_tasks_wait_until_due_and_stale_worker_claims_are_recovered(qu
     assert publisher.calls == [str(task.id), str(task.id)]
 
 
+def test_regional_worker_only_lists_and_claims_tasks_for_its_region(queue_store):
+    engine, factory = queue_store
+    with factory() as uow:
+        eu_task, _ = uow.queue_tasks.enqueue(
+            tenant_id="tenant-a", business_id="business-a", task_name="inbound.process",
+            domain="inbound", idempotency_key="eu", aggregate_type="contact",
+            aggregate_id="contact-a", payload={}, correlation_id="eu",
+            traceparent=None, available_at=NOW, max_attempts=2, region_id="eu-west-1",
+        )
+        us_task, _ = uow.queue_tasks.enqueue(
+            tenant_id="tenant-a", business_id="business-a", task_name="inbound.process",
+            domain="inbound", idempotency_key="us", aggregate_type="contact",
+            aggregate_id="contact-a", payload={}, correlation_id="us",
+            traceparent=None, available_at=NOW, max_attempts=2, region_id="us-east-1",
+        )
+        due = uow.queue_tasks.list_due(
+            now=NOW, stale_before=NOW - timedelta(hours=1), limit=20,
+            region_id="eu-west-1",
+        )
+        assert [row.id for row in due] == [eu_task.id]
+        assert uow.queue_tasks.claim(
+            task_id=us_task.id, now=NOW, lease=timedelta(hours=1),
+            region_id="eu-west-1",
+        ) is None
+        assert uow.queue_tasks.claim(
+            task_id=eu_task.id, now=NOW, lease=timedelta(hours=1),
+            region_id="eu-west-1",
+        ) is not None
+
+
+def test_public_contact_token_routes_fail_closed_when_regional_routing_is_enabled(monkeypatch):
+    from fastapi import HTTPException
+    from app.config import settings
+    from app.routes.workflows import _require_local_token_routing
+
+    monkeypatch.setattr(settings, "tenant_region_routing_enabled", True)
+    with pytest.raises(HTTPException) as error:
+        _require_local_token_routing()
+    assert error.value.status_code == 503
+
+
 def test_event_replay_queues_only_a_tenant_scoped_persisted_event(queue_store, monkeypatch):
     engine, factory = queue_store
     with Session(engine) as session:

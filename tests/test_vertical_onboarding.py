@@ -22,7 +22,12 @@ from app.verticals.templates import DENTAL_CLINIC, render_message
 
 
 @pytest.fixture
-def vertical_store():
+def vertical_store(monkeypatch):
+    from app.config import settings
+
+    # This fixture provisions a US-only tenant regardless of the CI deployment defaults.
+    monkeypatch.setattr(settings, "database_region_id", "us-east-1")
+    monkeypatch.setattr(settings, "deployment_region_id", "us-east-1")
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
                            poolclass=StaticPool)
     event.listen(engine, "connect", lambda conn, _: conn.execute("PRAGMA foreign_keys=ON"))

@@ -16,6 +16,68 @@ and dead letters remain in PostgreSQL. APScheduler also runs the daily feedback
 optimization at 03:00 UTC. No Redis, Celery broker, or separate Beat service is
 needed.
 
+## Single-region settings
+
+Keep these explicit on every Railway API/worker service and in CI:
+
+```dotenv
+TENANT_REGION_ROUTING_ENABLED=false
+DATABASE_REGION_ID=eu-west-1
+DEPLOYMENT_REGION_ID=eu-west-1
+```
+
+`eu-west-1` is this application's logical region label for the current Amsterdam
+deployment. Railway calls the physical region `europe-west4-drams3a`; do not put
+that provider-specific identifier into these application settings. These labels
+do not move data or independently verify the database's physical location.
+
+The current Railway deployment runs API and worker processes together in the
+`agent-platform` service, so one set of variables covers both processes. If they
+are separated later, copy these three settings to both services and keep their
+database credentials scoped to the same regional database.
+
+Startup rejects an explicitly configured `DATABASE_REGION_ID` that differs
+from `DEPLOYMENT_REGION_ID`, even with routing disabled. Development can omit
+the database region; production must provide a matching region and a protected,
+certificate-verified database URL. Enabling routing also requires a separate
+control database, but satisfying startup validation does not satisfy rollout
+gates or perform migrations. Keep the flag disabled until those gates pass.
+
+The `Regional safety` GitHub workflow uses the three defaults above and runs
+the suite with Python 3.12. Its PR guard checks literal routing enablement in
+configuration/deployment files and the Python settings default. Enablement
+requires both a non-deleted migration under `migrations/versions/` and an ops
+update under `ops/` in the same PR. This is a review tripwire; accompanying files
+do not prove the migration or operational plan is correct. Runtime overrides
+made directly in Railway are outside the PR guard. Make the workflow checks
+required in branch protection to prevent merging a failing PR.
+
+`GET /health/runtime` returns only `environment`, `deployment_region_id`,
+`database_region_id`, and `tenant_region_routing_enabled`. It reports the
+configuration loaded by that API process; it does not query the database or
+prove worker/provider health. Use `/ready` and `/health/components` for those
+dependency checks. Saved Railway variables take effect in a new deployment;
+editing them with `--skip-deploys` does not change an already running process.
+
+## Gated regional rollout plan
+
+Keep `TENANT_REGION_ROUTING_ENABLED=false` throughout preparation. Implement
+the following proposed flags separately; they are planning names and do not
+exist as settings yet. Each phase starts with a synthetic tenant and a disabled
+flag, and requires an explicit rollback procedure before broader activation.
+
+| Phase | Proposed flag | Enablement evidence | Stop or rollback |
+| --- | --- | --- | --- |
+| Control database split | `CONTROL_DIRECTORY_AUTH_ENABLED` | Dedicated minimal schema, copied key/grant metadata, tenant-assignment parity, revocation checks, independent readiness | Stop canary traffic and restore the previous authentication path only after revocation parity is confirmed |
+| Token routing and forwarding | `REGIONAL_TOKEN_FORWARDING_ENABLED` | Verified capability-to-home-region mapping, authenticated regional hop, bounded forwarding, replay/expiry tests, no fallback to another database | Disable forwarding; return an explicit unavailable response for affected token actions |
+| Tenant migration and recovery tooling | `TENANT_MIGRATION_ENABLED` | Audited state machine, pause/drain controls, tenant-scoped export/import, checksums, provider-free queue canary, rehearsed restore/rollback | Keep the tenant in migrating state; reconcile writes before restoring any source assignment |
+
+Only after all gates pass should the routing flag be enabled for an isolated
+canary deployment. Confirm regional API/worker/database isolation, schema head,
+directory behavior, and queue completion before expanding. Provider validation
+remains a separate release gate. See the [architecture decision](../architecture/tenant-regional-data-plane.md)
+and [migration/recovery runbook](../runbooks/regional-tenant-migration-recovery.md).
+
 ## Create the services
 
 1. Add PostgreSQL to the project and place it in the same approved region as
@@ -28,6 +90,7 @@ needed.
 4. Set the following variables on the API and worker:
 
    - `ENVIRONMENT=production`
+   - `TENANT_REGION_ROUTING_ENABLED=false`
    - `DATABASE_URL` to the PostgreSQL service's private connection URL, with
      the SQLAlchemy `psycopg` driver and `sslmode=verify-full`
    - `DATABASE_REGION_ID` and `DEPLOYMENT_REGION_ID` to the same supported
@@ -54,6 +117,7 @@ needed.
 ## Verify
 
 - `/health` confirms the API process is running.
+- `/health/runtime` confirms the API's loaded region settings and routing flag.
 - `/ready` confirms PostgreSQL can answer a query.
 - `/health/components` must report `database: healthy` and `worker: healthy`.
   The worker writes a heartbeat every ten seconds; the API treats heartbeats

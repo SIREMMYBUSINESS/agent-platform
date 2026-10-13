@@ -1,0 +1,41 @@
+name: Regional safety
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  TENANT_REGION_ROUTING_ENABLED: "false"
+  DATABASE_REGION_ID: eu-west-1
+  DEPLOYMENT_REGION_ID: eu-west-1
+  ENVIRONMENT: development
+
+jobs:
+  rollout-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Require migration and ops changes for routing enablement
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 scripts/check_regional_rollout.py --base-ref "$PR_BASE_SHA"
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install application and test dependencies
+        run: python3 -m pip install -r requirements.txt -e '.[test]'
+      - name: Run tests with single-region defaults
+        run: python3 -m pytest -q -p no:cacheprovider
