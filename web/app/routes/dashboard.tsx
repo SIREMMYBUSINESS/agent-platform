@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import type { MetaFunction } from "@remix-run/node";
 
 export const meta: MetaFunction = () => [
@@ -8,10 +8,10 @@ export const meta: MetaFunction = () => [
 
 type Lead = {
   id: string;
-  contact_id: string | null;
+  contact_id: string;
   status: string;
   created_at: string;
-  scores?: { overall_score?: number | null } | null;
+  scores?: { priority_score?: number | null } | null;
 };
 
 type Conversation = {
@@ -63,7 +63,7 @@ export default function DashboardRoute() {
     return payload as T;
   }
 
-  async function loadWorkspace(event?: React.FormEvent<HTMLFormElement>) {
+  async function loadWorkspace(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     if (!apiKey.trim()) {
       setNotice("Enter an API key provisioned for your tenant.");
@@ -140,11 +140,11 @@ export default function DashboardRoute() {
         <section className="card data-card">
           <div className="data-heading"><div><p className="eyebrow">Lead management</p><h2>Recent leads</h2></div><span className="data-count">{loaded ? leads.length : "—"}</span></div>
           {!loaded ? <p className="empty-state">Connect your API key to view lead records.</p> : leads.length === 0 ? <p className="empty-state">No leads are available for this tenant yet.</p> : (
-            <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Status</th><th>Score</th><th>Created</th></tr></thead>
+            <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Status</th><th>Priority</th><th>Created</th></tr></thead>
               <tbody>{leads.map((lead) => <tr key={lead.id}>
-                <td><strong>{shortId(lead.id)}</strong><small>Contact {lead.contact_id ? shortId(lead.contact_id) : "not linked"}</small></td>
+                <td><strong>{shortId(lead.id)}</strong><small>Contact {shortId(lead.contact_id)}</small></td>
                 <td><span className="status-chip">{lead.status.replaceAll("_", " ")}</span></td>
-                <td>{typeof lead.scores?.overall_score === "number" ? lead.scores.overall_score.toFixed(0) : "—"}</td>
+                <td>{typeof lead.scores?.priority_score === "number" ? lead.scores.priority_score : "—"}</td>
                 <td>{formatDate(lead.created_at)}</td>
               </tr>)}</tbody>
             </table></div>
