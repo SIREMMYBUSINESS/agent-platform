@@ -4,12 +4,13 @@ from __future__ import annotations
 import os
 import sys
 
-from app.runtime_entry import materialize_database_url
+from app.runtime_entry import materialize_control_database_url, materialize_database_url
 
 
 def _materialize_railway_secrets() -> None:
     """Move Railway's injected database URL into a private read-only file."""
     materialize_database_url()
+    materialize_control_database_url()
 
 
 def _worker_args(environ: dict[str, str] | None = None) -> list[str]:

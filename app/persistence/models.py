@@ -81,6 +81,33 @@ class Tenant(SQLModel, table=True):
     )
 
 
+class TenantDatabaseAssignment(SQLModel, table=True):
+    """Control-plane mapping from a tenant to its authoritative data region."""
+    __tablename__ = "tenant_database_assignments"
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", name="pk_tenant_database_assignments"),
+        CheckConstraint(
+            "status IN ('active', 'migrating', 'disabled')",
+            name="ck_tenant_database_assignments_status",
+        ),
+        Index("ix_tenant_database_assignments_region_status", "home_region_id", "status"),
+    )
+
+    # Deliberately no FK to tenants: the control directory can remain separate
+    # from regional customer databases, where the tenant row also lives.
+    tenant_id: str = Field(max_length=160)
+    home_region_id: str = Field(max_length=64)
+    status: str = Field(default="active", max_length=16)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
 class TenantRegionConfig(SQLModel, table=True):
     """Reviewed tenant-scoped deployment, residency, and localization settings."""
     __tablename__ = "tenant_region_configs"
