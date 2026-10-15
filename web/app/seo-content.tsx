@@ -236,7 +236,7 @@ export const seoPages: SeoPage[] = [
 ];
 
 export function seoMeta(page: SeoPage) {
-  const base = (import.meta.env.VITE_SITE_URL || "").replace(/\\/$/, "");
+  const base = (import.meta.env.VITE_SITE_URL || "").replace(/\/+$/, "");
   const canonical = base ? base + page.path : null;
   return [
     { title: page.title },
@@ -251,7 +251,7 @@ export function seoMeta(page: SeoPage) {
 
 export function SeoLandingPage({ page }: { page: SeoPage }) {
   const bookingUrl = import.meta.env.VITE_DEMO_BOOKING_URL || "";
-  const base = (import.meta.env.VITE_SITE_URL || "").replace(/\/$/, "");
+  const base = (import.meta.env.VITE_SITE_URL || "").replace(/\/+$/, "");
   const schema = {
     "@context": "https://schema.org",
     "@graph": [
@@ -272,7 +272,7 @@ export function SeoLandingPage({ page }: { page: SeoPage }) {
       },
     ],
   };
-  const structuredData = JSON.stringify(schema).replace(/</g, "\\\\u003c");
+  const structuredData = JSON.stringify(schema).replace(/</g, "\\u003c");
 
   return (
     <main className="marketing-page">
