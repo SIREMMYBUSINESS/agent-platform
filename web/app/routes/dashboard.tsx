@@ -1,12 +1,6 @@
-import { useState, type FormEvent } from "react";
+import { Form } from "react-router";
 import type { Route } from "./+types/dashboard";
-
-export function meta({}: Route.MetaArgs) {
-  return [
-    { title: "Workspace | Agent Platform" },
-    { name: "description", content: "Review tenant-scoped leads and receptionist conversations." },
-  ];
-}
+import { createSessionCookie, readSessionApiKey } from "../.server/session";
 
 type Lead = {
   id: string;
@@ -15,159 +9,206 @@ type Lead = {
   created_at: string;
   scores?: { priority_score?: number | null } | null;
 };
-
 type Conversation = {
   id: string;
-  business_id: string;
   contact_id: string;
   channel: string;
   status: string;
   workflow_state: string;
-  assigned_staff_id: string | null;
   updated_at: string;
 };
-
 type ListResponse<T> = { items: T[]; offset: number; limit: number };
 
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
 
+export function meta({}: Route.MetaArgs) {
+  return [
+    { title: "Workspace | Agent Platform" },
+    { name: "description", content: "Review tenant-scoped leads and receptionist conversations." },
+    { name: "robots", content: "noindex, nofollow" },
+  ];
+}
+
+export function headers() {
+  return { "Cache-Control": "private, no-store, max-age=0" };
+}
+
+async function fetchPlatform<T>(path: string, apiKey: string): Promise<T> {
+  if (!API_BASE) throw new Error("API is not configured.");
+  const response = await fetch(API_BASE + path, {
+    headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
+    redirect: "error",
+  });
+  if (!response.ok) throw new Error("Platform API returned " + response.status + ".");
+  return await response.json() as T;
+}
+
+function shortId(value: string) {
+  return value.length > 15 ? value.slice(0, 8) + "…" + value.slice(-4) : value;
+}
 function formatDate(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? "Date unavailable"
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
-
-function shortId(value: string) {
-  return value.length > 15 ? value.slice(0, 8) + "…" + value.slice(-4) : value;
+function originMatches(request: Request) {
+  const origin = request.headers.get("Origin");
+  return !!origin && origin === new URL(request.url).origin;
 }
 
-export default function DashboardRoute() {
-  const [apiKey, setApiKey] = useState("");
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [notice, setNotice] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [loaded, setLoaded] = useState(false);
+export async function loader({ request, context }: Route.LoaderArgs) {
+  const sessionSecret = context.cloudflare.env.SESSION_ENCRYPTION_KEY;
+  if (!API_BASE || !sessionSecret) {
+    return {
+      configured: false,
+      connected: false,
+      leads: [] as Lead[],
+      conversations: [] as Conversation[],
+      error: "Workspace authentication is not configured yet.",
+    };
+  }
+  const apiKey = await readSessionApiKey(request, sessionSecret);
+  if (!apiKey) {
+    return {
+      configured: true,
+      connected: false,
+      leads: [] as Lead[],
+      conversations: [] as Conversation[],
+      error: null as string | null,
+    };
+  }
+  try {
+    const [leadResult, conversationResult] = await Promise.all([
+      fetchPlatform<ListResponse<Lead>>("/leads?offset=0&limit=25", apiKey),
+      fetchPlatform<ListResponse<Conversation>>("/conversations?offset=0&limit=25", apiKey),
+    ]);
+    return {
+      configured: true,
+      connected: true,
+      leads: leadResult.items,
+      conversations: conversationResult.items,
+      error: null as string | null,
+    };
+  } catch {
+    return {
+      configured: true,
+      connected: false,
+      leads: [] as Lead[],
+      conversations: [] as Conversation[],
+      error: "Your session could not access the workspace. Sign in again or ask an administrator to check the key grants.",
+    };
+  }
+}
 
-  async function request<T>(path: string): Promise<T> {
-    if (!API_BASE) {
-      throw new Error("The frontend API address is not configured. Set VITE_PLATFORM_API_URL and rebuild the web app.");
-    }
-    const response = await fetch(API_BASE + path, {
-      headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
+export async function action({ request, context }: Route.ActionArgs) {
+  if (!originMatches(request)) return { error: "Request origin could not be verified." };
+  const form = await request.formData();
+  const intent = String(form.get("intent") || "");
+
+  if (intent === "logout") {
+    return new Response(null, {
+      status: 303,
+      headers: {
+        Location: "/dashboard",
+        "Set-Cookie": "__Host-agent_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
+        "Cache-Control": "private, no-store",
+      },
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = typeof payload.detail === "string" ? payload.detail : "Request failed (" + response.status + ").";
-      throw new Error(detail);
-    }
-    return payload as T;
   }
 
-  async function loadWorkspace(event?: FormEvent<HTMLFormElement>) {
-    event?.preventDefault();
-    if (!apiKey.trim()) {
-      setNotice("Enter an API key provisioned for your tenant.");
-      return;
-    }
-    setLoading(true);
-    setNotice("");
-    try {
-      const [leadResult, conversationResult] = await Promise.all([
-        request<ListResponse<Lead>>("/leads?offset=0&limit=25"),
-        request<ListResponse<Conversation>>("/conversations?offset=0&limit=25"),
-      ]);
-      setLeads(leadResult.items);
-      setConversations(conversationResult.items);
-      setLoaded(true);
-      setNotice("Workspace refreshed.");
-    } catch (error) {
-      setNotice(error instanceof Error
-        ? error.message
-        : "Could not load the workspace. Check the API address and your key permissions.");
-    } finally {
-      setLoading(false);
-    }
+  const apiKey = String(form.get("apiKey") || "").trim();
+  if (!/^ap_[A-Za-z0-9_-]{43}$/.test(apiKey)) {
+    return { error: "Enter a valid provisioned platform API key." };
   }
+  const sessionSecret = context.cloudflare.env.SESSION_ENCRYPTION_KEY;
+  if (!sessionSecret) return { error: "Workspace authentication is not configured yet." };
 
+  try {
+    await Promise.all([
+      fetchPlatform<ListResponse<Lead>>("/leads?offset=0&limit=1", apiKey),
+      fetchPlatform<ListResponse<Conversation>>("/conversations?offset=0&limit=1", apiKey),
+    ]);
+    return new Response(null, {
+      status: 303,
+      headers: {
+        Location: "/dashboard",
+        "Set-Cookie": await createSessionCookie(apiKey, sessionSecret),
+        "Cache-Control": "private, no-store",
+      },
+    });
+  } catch {
+    return { error: "The key could not read this tenant workspace. Check its grants and try again." };
+  }
+}
+
+export default function DashboardRoute({ loaderData, actionData }: Route.ComponentProps) {
   return (
     <main className="workspace-shell">
       <header className="workspace-heading">
         <div>
           <p className="eyebrow">Tenant workspace</p>
           <h1>Your receptionist activity</h1>
-          <p className="workspace-description">
-            Review recent leads and conversations. The API scopes every result to the tenant assigned to your key.
-          </p>
+          <p className="workspace-description">Review recent leads and conversations. The API scopes each result to the tenant assigned to your key.</p>
         </div>
-        {loaded && <button className="secondary-button refresh-button" type="button" disabled={loading} onClick={() => void loadWorkspace()}>
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>}
+        {loaderData.connected && <Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form>}
       </header>
 
-      <section className="card credentials-card workspace-credentials">
-        <div className="section-heading">
-          <span className="number">1</span>
-          <div><h2>Connect to your workspace</h2><p>Your API key is used only in this page session and is not saved in browser storage.</p></div>
-        </div>
-        <form className="key-form" onSubmit={(event) => void loadWorkspace(event)}>
-          <label htmlFor="workspace-api-key">Provisioned API key</label>
-          <div className="key-entry">
-            <input
-              id="workspace-api-key"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              placeholder="ap_…"
-            />
-            <button className="primary-button" type="submit" disabled={loading || !apiKey.trim()}>
-              {loading ? "Loading…" : loaded ? "Reconnect" : "Connect"}
-            </button>
+      {!loaderData.connected ? (
+        <section className="card workspace-credentials">
+          <div className="section-heading">
+            <span className="number">1</span>
+            <div><h2>Connect to your workspace</h2><p>Your key is sent to the Worker and kept in an encrypted, one-hour HttpOnly session.</p></div>
           </div>
-          <p className="helper">Keys must be provisioned by a trusted administrator with lead_reader and conversation access. Tenant identity comes from the verified key, never from a form field.</p>
-        </form>
-        {notice && <p className="notice" role="status">{notice}</p>}
-      </section>
-
-      <section className="workspace-stats" aria-label="Workspace summary">
-        <article className="stat-card"><span>Recent leads</span><strong>{loaded ? leads.length : "—"}</strong><small>{loaded ? "Up to 25 most recent" : "Connect to load"}</small></article>
-        <article className="stat-card"><span>Conversations</span><strong>{loaded ? conversations.length : "—"}</strong><small>{loaded ? "Up to 25 most recent" : "Connect to load"}</small></article>
-        <article className="stat-card"><span>Connection</span><strong className={loaded ? "connection-ready" : "connection-idle"}>{loaded ? "Connected" : "Not connected"}</strong><small>{loaded ? "API data loaded" : "No key stored"}</small></article>
-      </section>
-
-      <div className="workspace-grid">
-        <section className="card data-card">
-          <div className="data-heading"><div><p className="eyebrow">Lead management</p><h2>Recent leads</h2></div><span className="data-count">{loaded ? leads.length : "—"}</span></div>
-          {!loaded ? <p className="empty-state">Connect your API key to view lead records.</p> : leads.length === 0 ? <p className="empty-state">No leads are available for this tenant yet.</p> : (
-            <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Status</th><th>Priority</th><th>Created</th></tr></thead>
-              <tbody>{leads.map((lead) => <tr key={lead.id}>
-                <td><strong>{shortId(lead.id)}</strong><small>Contact {shortId(lead.contact_id)}</small></td>
-                <td><span className="status-chip">{lead.status.replaceAll("_", " ")}</span></td>
-                <td>{typeof lead.scores?.priority_score === "number" ? lead.scores.priority_score : "—"}</td>
-                <td>{formatDate(lead.created_at)}</td>
-              </tr>)}</tbody>
-            </table></div>
-          )}
+          {(actionData?.error || loaderData.error) && <p className="notice error-notice" role="alert">{actionData?.error || loaderData.error}</p>}
+          <Form method="post" className="key-form">
+            <input type="hidden" name="intent" value="login" />
+            <label htmlFor="workspace-api-key">Provisioned API key</label>
+            <div className="key-entry">
+              <input id="workspace-api-key" name="apiKey" type="password" autoComplete="off" spellCheck={false} required placeholder="ap_…" />
+              <button className="primary-button" type="submit">Connect</button>
+            </div>
+            <p className="helper">The browser never receives the key from the server. The key stays out of browser storage and is removed when the session expires or you sign out. Use a provisioned key with lead_reader access.</p>
+          </Form>
         </section>
+      ) : (
+        <>
+          <section className="workspace-stats" aria-label="Workspace summary">
+            <article className="stat-card"><span>Recent leads</span><strong>{loaderData.leads.length}</strong><small>Up to 25 most recent</small></article>
+            <article className="stat-card"><span>Conversations</span><strong>{loaderData.conversations.length}</strong><small>Up to 25 most recent</small></article>
+            <article className="stat-card"><span>Connection</span><strong className="connection-ready">Connected</strong><small>Railway API data loaded</small></article>
+          </section>
 
-        <section className="card data-card">
-          <div className="data-heading"><div><p className="eyebrow">Receptionist inbox</p><h2>Recent conversations</h2></div><span className="data-count">{loaded ? conversations.length : "—"}</span></div>
-          {!loaded ? <p className="empty-state">Connect your API key to view conversation records.</p> : conversations.length === 0 ? <p className="empty-state">No conversations are available for this tenant yet.</p> : (
-            <div className="table-scroll"><table><thead><tr><th>Conversation</th><th>Channel</th><th>Status</th><th>Updated</th></tr></thead>
-              <tbody>{conversations.map((conversation) => <tr key={conversation.id}>
-                <td><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></td>
-                <td>{conversation.channel}</td>
-                <td><span className="status-chip">{conversation.status.replaceAll("_", " ")}</span><small>{conversation.workflow_state.replaceAll("_", " ")}</small></td>
-                <td>{formatDate(conversation.updated_at)}</td>
-              </tr>)}</tbody>
-            </table></div>
-          )}
-        </section>
-      </div>
-      <footer className="workspace-footer">For setup and provider checks, use the onboarding flow. Sending and campaign controls are intentionally not exposed until their provider and permission gates are configured.</footer>
+          <section className="card data-card">
+            <div className="data-heading"><div><p className="eyebrow">Lead management</p><h2>Recent leads</h2></div><span className="data-count">{loaderData.leads.length}</span></div>
+            {loaderData.leads.length === 0 ? <p className="empty-state">No leads are available for this tenant yet.</p> : (
+              <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Status</th><th>Priority</th><th>Created</th></tr></thead>
+                <tbody>{loaderData.leads.map((lead) => <tr key={lead.id}>
+                  <td><strong>{shortId(lead.id)}</strong><small>Contact {shortId(lead.contact_id)}</small></td>
+                  <td><span className="status-chip">{lead.status.replaceAll("_", " ")}</span></td>
+                  <td>{typeof lead.scores?.priority_score === "number" ? lead.scores.priority_score : "—"}</td>
+                  <td>{formatDate(lead.created_at)}</td>
+                </tr>)}</tbody>
+              </table></div>
+            )}
+          </section>
+
+          <section className="card data-card">
+            <div className="data-heading"><div><p className="eyebrow">Receptionist inbox</p><h2>Recent conversations</h2></div><span className="data-count">{loaderData.conversations.length}</span></div>
+            {loaderData.conversations.length === 0 ? <p className="empty-state">No conversations are available for this tenant yet.</p> : (
+              <div className="table-scroll"><table><thead><tr><th>Conversation</th><th>Channel</th><th>Status</th><th>Updated</th></tr></thead>
+                <tbody>{loaderData.conversations.map((conversation) => <tr key={conversation.id}>
+                  <td><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></td>
+                  <td>{conversation.channel}</td>
+                  <td><span className="status-chip">{conversation.status.replaceAll("_", " ")}</span><small>{conversation.workflow_state.replaceAll("_", " ")}</small></td>
+                  <td>{formatDate(conversation.updated_at)}</td>
+                </tr>)}</tbody>
+              </table></div>
+            )}
+          </section>
+        </>
+      )}
+      <footer className="workspace-footer">For setup and provider checks, use onboarding. Outreach actions remain subject to provider readiness and tenant policy.</footer>
     </main>
   );
 }

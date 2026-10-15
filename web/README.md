@@ -1,34 +1,40 @@
-# Agent Platform web workspace
+# Agent Platform web app
 
-The frontend uses React Router with Cloudflare's Vite plugin and runs on Cloudflare Workers. The FastAPI API and PostgreSQL database stay on Railway.
+The public site and tenant workspace use React Router with Cloudflare's Vite plugin on Cloudflare Workers. FastAPI and PostgreSQL remain on Railway.
 
 ## Local development
 
-From this directory, create a local environment file and run the Workers-compatible dev server:
+Copy `.env.example` to `.env`, create `.dev.vars` with a random 32-byte base64 `SESSION_ENCRYPTION_KEY`, then run:
 
 ```powershell
-Copy-Item .env.example .env
 npm install
 npm run dev
 ```
 
-The example file points to the local API at `http://127.0.0.1:8000`. Set `VITE_PLATFORM_API_URL` to the API origin before building. This value is public and is embedded in the frontend bundle.
+Set `VITE_PLATFORM_API_URL` in `.env` to the Railway API's HTTPS origin. This API origin is public configuration. Never prefix secrets with `VITE_`.
 
-Open `http://localhost:5173/dashboard`. Enter an API key provisioned through a trusted administrative path. The UI keeps the key in page memory only; it is not written to localStorage, cookies, or logs.
+## Workspace session security
 
-## Railway API connection
+The dashboard posts a provisioned API key to a React Router server action. The Worker validates read access against the tenant-scoped Railway API, encrypts the key with AES-GCM, and returns it only in an HttpOnly, Secure, SameSite=Strict cookie that expires after one hour. Server loaders use the decrypted key for API calls; browser JavaScript never receives the key from a response and no API credential is written to localStorage.
 
-Set `VITE_PLATFORM_API_URL` to the Railway API's HTTPS origin in the Cloudflare Workers Builds environment for each deployment. Add each exact frontend HTTPS origin to Railway's `CORS_ALLOWED_ORIGINS` setting, including staging and production origins. The dashboard calls `GET /leads` and `GET /conversations`; FastAPI derives tenant scope from the verified principal. The browser never sends a tenant ID.
+Set `SESSION_ENCRYPTION_KEY` as a Cloudflare Worker secret (for example, with `npx wrangler secret put SESSION_ENCRYPTION_KEY`). Use a per-environment key. The current backend uses tenant-scoped `ap_` API keys and `lead_reader` grants; it does not expose the proposed `read:seo_pages` or `create:seo_lead_submissions` scopes.
 
-API keys must be provisioned out of band with `lead_reader` and conversation read access. The API currently has no browser login/session endpoint or key-recovery flow. This first workspace uses a manually provisioned key for authenticated access. Provider credentials belong in protected deployment configuration and must never be entered into this UI.
+Do not create or expose a `PLATFORM_SERVICE_TOKEN` in browser code or any `VITE_*` variable. This frontend does not use a shared service token. The existing backend has no public SEO-page read or anonymous lead-submission endpoints yet.
 
-## Cloudflare deployment
+## Public SEO routes
 
-The Workers runtime configuration is in `wrangler.json`. From this directory:
+The site includes:
+- `/ai-receptionist/`
+- `/ai-receptionist/real-estate/`
+- `/ai-receptionist/dental/`
+- `/ai-appointment-scheduling/`
+- `/ai-customer-service/`
+- `/ai-sales-outreach/`
 
-```powershell
-npm run check
-npm run deploy
-```
+Set `VITE_SITE_URL` and `VITE_DEMO_BOOKING_URL` in the Cloudflare build environment before publishing. Sitemap and robots responses use the incoming hostname if a canonical site URL is not configured. Industry pages use distinct copy and avoid unsupported compliance, provider, or outcome claims.
 
-Cloudflare hosts the React Router web app. Railway continues to host FastAPI, the worker process, and PostgreSQL. No database connection string or database credentials are sent to the frontend.
+No public lead form is enabled. The backend currently has no anonymous lead endpoint. Add that endpoint, server-side Turnstile verification, and rate limiting before collecting public submissions.
+
+## Cloudflare and Railway
+
+From this directory, `npm run check` typechecks, builds, and dry-runs the Worker; `npm run deploy` builds and deploys. Add the exact frontend origin to Railway CORS only if the browser calls Railway directly. This app proxies workspace API calls through the Worker, so browser requests are same-origin. The Worker never connects to PostgreSQL.
