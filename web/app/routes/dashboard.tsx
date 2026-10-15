@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from "react";
-import type { MetaFunction } from "@remix-run/node";
+import type { Route } from "./+types/dashboard";
 
-export const meta: MetaFunction = () => [
-  { title: "Workspace | Agent Platform" },
-  { name: "description", content: "Review tenant-scoped leads and receptionist conversations." },
-];
+export function meta({}: Route.MetaArgs) {
+  return [
+    { title: "Workspace | Agent Platform" },
+    { name: "description", content: "Review tenant-scoped leads and receptionist conversations." },
+  ];
+}
 
 type Lead = {
   id: string;
