@@ -1,5 +1,3 @@
-import type { ReactNode } from "react";
-
 export type SeoPage = {
   key: string; path: string; title: string; description: string; eyebrow: string;
   headline: string; intro: string; features: [string, string][];
@@ -253,20 +251,26 @@ export function seoMeta(page: SeoPage) {
 
 export function SeoLandingPage({ page }: { page: SeoPage }) {
   const bookingUrl = import.meta.env.VITE_DEMO_BOOKING_URL || "";
+  const base = (import.meta.env.VITE_SITE_URL || "").replace(/\/$/, "");
   const schema = {
     "@context": "https://schema.org",
-    "@type": "SoftwareApplication",
-    name: "Agent Platform",
-    applicationCategory: "BusinessApplication",
-    description: page.description,
-    ...(import.meta.env.VITE_SITE_URL ? { url: import.meta.env.VITE_SITE_URL + page.path } : {}),
-    mainEntity: {
-      "@type": "FAQPage",
-      mainEntity: page.faqs.map(([question, answer]) => ({
-        "@type": "Question", name: question,
-        acceptedAnswer: { "@type": "Answer", text: answer },
-      })),
-    },
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        name: "Agent Platform",
+        applicationCategory: "BusinessApplication",
+        description: page.description,
+        ...(base ? { url: base + page.path } : {}),
+      },
+      {
+        "@type": "FAQPage",
+        mainEntity: page.faqs.map(([question, answer]) => ({
+          "@type": "Question",
+          name: question,
+          acceptedAnswer: { "@type": "Answer", text: answer },
+        })),
+      },
+    ],
   };
   const structuredData = JSON.stringify(schema).replace(/</g, "\\\\u003c");
 
