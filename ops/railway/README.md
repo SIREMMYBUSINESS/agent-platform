@@ -4,8 +4,15 @@
 
 The target layout runs the API and one Python worker as separate services.
 Both connect to the same PostgreSQL database in the approved region. The
-current free-plan Railway deployment runs the API and worker processes through
-the `agent-platform` service. The Remix application on Cloudflare Workers calls
+currently inspected free-plan Railway deployment runs both processes in the
+`agent-platform` service: its start command backgrounds
+`python -m app.runtime_entry worker` and then starts the API. The API and worker
+service configurations are prepared separately in
+`ops/railway/api.railway.json` and `ops/railway/worker.railway.json`; selecting
+these config files for new Railway services is a dashboard/service setup step.
+The root `railway.json` remains the current combined-service deployment config
+until a staged cutover is ready. The Remix
+application on Cloudflare Workers calls
 the API; it must not connect directly to PostgreSQL, so tenant authorization,
 policy checks, transactions, and provider adapters remain behind the
 application service boundary.
@@ -33,10 +40,9 @@ deployment. Railway calls the physical region `europe-west4-drams3a`; do not put
 that provider-specific identifier into these application settings. These labels
 do not move data or independently verify the database's physical location.
 
-For the current Railway deployment, one set of variables covers both
-processes. If API and worker services are separated, copy these three settings
-to both services and keep their database credentials scoped to the same
-regional database.
+For the currently combined Railway service, one set of variables covers both
+processes. When split, copy these three settings to both API and worker
+services and give both credentials only for that region's database.
 
 Startup rejects an explicitly configured `DATABASE_REGION_ID` that differs
 from `DEPLOYMENT_REGION_ID`, even with routing disabled. Development can omit
@@ -60,6 +66,26 @@ configuration loaded by that API process; it does not query the database or
 prove worker/provider health. Use `/ready` and `/health/components` for those
 dependency checks. Saved Railway variables take effect in a new deployment;
 editing them with `--skip-deploys` does not change an already running process.
+
+## Separate API and worker services
+
+After the Regional safety checks pass and an isolated Railway staging
+environment is available, create a worker service from this repository. Set
+its Railway config file to `/ops/railway/worker.railway.json`; it builds
+`Dockerfile.worker`, whose command starts only the PostgreSQL-backed worker.
+Set the public API service config file to `/ops/railway/api.railway.json`; it
+builds `Dockerfile` and starts only the API. Do not add a public domain to the
+worker. Copy the
+staging database and matching logical region settings to both services, then
+remove the combined `worker & api` start command only after both new services
+pass the staging smoke checks. Railway Free sleep behavior remains enabled;
+this split does not guarantee an always-on worker on the free plan.
+
+This is a single-region deployment layout. Railway's multi-region replicas
+must not be enabled for this app until each regional process has a dedicated
+database, the global directory/auth schema is provisioned, tenant routing is
+implemented for every request path, and migration/recovery gates have passed.
+The current routing flag remains false.
 
 ## Gated regional rollout plan
 

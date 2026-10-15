@@ -20,9 +20,12 @@ if ($BaseUri.Scheme -ne "https") {
 
 $base = $BaseUri.AbsoluteUri.TrimEnd("/")
 $ready = $false
-for ($attempt = 1; $attempt -le 8; $attempt++) {
+$startupTimer = [System.Diagnostics.Stopwatch]::StartNew()
+while ($startupTimer.Elapsed.TotalSeconds -lt 120) {
+    $remainingSeconds = [Math]::Max(1, [int][Math]::Ceiling(120 - $startupTimer.Elapsed.TotalSeconds))
+    $requestTimeout = [Math]::Min(10, $remainingSeconds)
     try {
-        $readyResponse = Invoke-RestMethod -Method Get -Uri "$base/ready" -TimeoutSec 10
+        $readyResponse = Invoke-RestMethod -Method Get -Uri "$base/ready" -TimeoutSec $requestTimeout
         if ($readyResponse.status -eq "ready") {
             $ready = $true
             break
@@ -32,8 +35,9 @@ for ($attempt = 1; $attempt -le 8; $attempt++) {
         # Railway's free service may need time to wake. Do not print response bodies
         # or request headers while retrying.
     }
-    if ($attempt -lt 8) {
-        Start-Sleep -Seconds 5
+    $remainingSeconds = [int][Math]::Floor(120 - $startupTimer.Elapsed.TotalSeconds)
+    if ($remainingSeconds -gt 0) {
+        Start-Sleep -Seconds ([Math]::Min(5, $remainingSeconds))
     }
 }
 if (-not $ready) {
