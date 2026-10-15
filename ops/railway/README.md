@@ -67,3 +67,16 @@ The existing Railway Redis service is not part of this runtime. Leave it in
 place during migration; remove it only after the API and worker are deployed
 without Redis, queued work has been reconciled, and its credentials have been
 rotated.
+
+
+## Cloudflare frontend connectivity
+
+The Cloudflare app's build-time `VITE_PLATFORM_API_URL` must be set to the Railway API's public HTTPS origin (scheme and host only). The exact Cloudflare site origin belongs in Railway's `CORS_ALLOWED_ORIGINS` JSON list, for example:
+
+```text
+CORS_ALLOWED_ORIGINS=["https://<cloudflare-staging-site-host>"]
+```
+
+This is a JSON array, not a comma-separated string. Use the full origin with scheme and optional port, and no path or wildcard. The settings validator rejects public HTTP origins. Set a stable staging hostname in Cloudflare and restart the Railway API after changing this variable. The dashboard proxy is server-to-server; the onboarding flow currently calls Railway from the browser and requires the CORS entry.
+
+For staging commands and the preflight assertions, see [the web app staging smoke checks](../../web/README.md#staging-smoke-checks). Never put `PLATFORM_SERVICE_TOKEN` in a `VITE_*` variable. The API base URL is public configuration; service tokens, `SESSION_ENCRYPTION_KEY`, Railway URLs, and provider credentials remain secret.
