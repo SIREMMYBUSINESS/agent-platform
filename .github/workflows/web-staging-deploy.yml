@@ -11,6 +11,10 @@ on:
         description: HTTPS origin of the staging Worker, if already known
         required: false
         type: string
+      cloudflare_account_id:
+        description: Non-secret Cloudflare Account ID; optional if set in staging variables
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -25,7 +29,7 @@ jobs:
         working-directory: web
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id || vars.CLOUDFLARE_ACCOUNT_ID }}
       VITE_PLATFORM_API_URL: ${{ inputs.api_origin }}
       VITE_SITE_URL: ${{ inputs.site_origin }}
     steps:
@@ -48,9 +52,10 @@ jobs:
             if (site && (site.protocol !== "https:" || site.pathname !== "/" || site.search || site.hash)) {
               throw new Error("site_origin must be an HTTPS origin without a path");
             }
-            if (!process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ACCOUNT_ID) {
-              throw new Error("Configure CLOUDFLARE_API_TOKEN secret and CLOUDFLARE_ACCOUNT_ID variable");
-            }
+            const missing = [];
+            if (!process.env.CLOUDFLARE_API_TOKEN) missing.push("CLOUDFLARE_API_TOKEN secret");
+            if (!process.env.CLOUDFLARE_ACCOUNT_ID) missing.push("CLOUDFLARE_ACCOUNT_ID input or staging variable");
+            if (missing.length) throw new Error("Missing " + missing.join(" and "));
           '
       - name: Typecheck, build, and validate Worker dry run
         run: npm run check
