@@ -4,13 +4,19 @@ on:
   pull_request:
     paths:
       - "web/**"
+      - "render.yaml"
+      - "ops/staging/**"
       - ".github/workflows/web-check.yml"
+      - ".github/workflows/web-staging-deploy.yml"
   push:
     branches:
       - main
     paths:
       - "web/**"
+      - "render.yaml"
+      - "ops/staging/**"
       - ".github/workflows/web-check.yml"
+      - ".github/workflows/web-staging-deploy.yml"
   workflow_dispatch:
 
 permissions:

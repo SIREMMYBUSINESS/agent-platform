@@ -1,6 +1,10 @@
 # Agent Platform web app
 
-The public SEO site and tenant workspace use React Router with Cloudflare's Vite plugin on Cloudflare Workers. FastAPI and PostgreSQL remain on Railway.
+The public SEO site and tenant workspace use React Router with Cloudflare's Vite plugin on Cloudflare Workers. Production FastAPI and PostgreSQL remain on Railway.
+
+For the temporary free staging layout using Cloudflare Workers, Render, and Neon,
+see [the short-run staging runbook](../ops/staging/README.md). It is isolated from
+the live Railway deployment and does not provide an always-on queue worker.
 
 ## Local development
 
