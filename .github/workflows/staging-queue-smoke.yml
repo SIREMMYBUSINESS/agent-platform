@@ -31,6 +31,22 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements.txt
+      - name: Verify isolated Neon secret
+        run: |
+          python - <<'PY'
+          import os
+          from urllib.parse import urlsplit
+
+          database_url = os.environ.get("DATABASE_URL", "")
+          hostname = urlsplit(database_url).hostname or ""
+          if not hostname.lower().endswith(".neon.tech"):
+              raise SystemExit(
+                  "Missing or invalid STAGING_DATABASE_URL. Add it as a secret "
+                  "to the GitHub Actions environment named staging, using the "
+                  "isolated Neon connection string."
+              )
+          print("STAGING_DATABASE_URL is present and points to Neon.")
+          PY
       - name: Install runtime dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
       - name: Wake staging API and worker
