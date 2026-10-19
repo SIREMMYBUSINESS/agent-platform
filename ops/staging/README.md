@@ -76,7 +76,24 @@ foreach ($path in @("/", "/ai-receptionist/", "/dashboard", "/sitemap.xml", "/ro
 }
 ```
 
-For the queue smoke check, enqueue one idempotent, provider-free task for a
-synthetic tenant and verify that the same task reaches `succeeded` in the
-staging database. Do not use live provider credentials or production tenant
-data. Provider validation remains a separate gate.
+Render Free does not provide service shell access or one-off jobs, so run the
+queue smoke from GitHub Actions:
+
+1. In GitHub, open **Settings → Environments → staging** and add the
+   environment secret `STAGING_DATABASE_URL` using the isolated Neon staging
+   connection string. Do not use the Railway production URL.
+2. Open **Actions → Staging queue smoke → Run workflow** and select
+   `feat/agent-workspace-dashboard` (or the branch containing this workflow).
+3. The workflow wakes the Render service, verifies `/ready` and
+   `/health/components`, then creates one synthetic tenant, business, and
+   contact, enqueues an inbound `chat` task, and polls its durable queue record
+   until the Render worker marks it `succeeded` (up to three minutes).
+
+The command refuses to run outside `ENVIRONMENT=staging`, without the
+workflow's explicit opt-in, or unless the database hostname belongs to Neon.
+Synthetic records remain in the isolated staging database for audit. The task
+contains no phone number or email and does not invoke SMS, email, voice, or
+other external providers. Provider validation remains a separate gate.
+
+If it times out, check the Render service logs and rerun the workflow. The Free
+service may sleep again after inactivity.
