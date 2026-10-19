@@ -4,6 +4,12 @@ const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
 
 type Session = { apiKey: string; expiresAt: number };
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
 function decodeBase64(value: string): Uint8Array {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
@@ -18,7 +24,7 @@ function encodeBase64Url(value: Uint8Array): string {
 async function importSessionKey(secret: string): Promise<CryptoKey> {
   const bytes = decodeBase64(secret);
   if (bytes.byteLength !== 32) throw new Error("SESSION_ENCRYPTION_KEY must decode to 32 bytes.");
-  return crypto.subtle.importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  return crypto.subtle.importKey("raw", toArrayBuffer(bytes), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 function cookieValue(request: Request): string | null {
   const header = request.headers.get("Cookie");
@@ -35,7 +41,9 @@ export async function createSessionCookie(apiKey: string, secret: string): Promi
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const session: Session = { apiKey, expiresAt: Date.now() + SESSION_TTL_MS };
   const plaintext = new TextEncoder().encode(JSON.stringify(session));
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toArrayBuffer(iv) }, key, toArrayBuffer(plaintext),
+  ));
   const value = encodeBase64Url(iv) + "." + encodeBase64Url(ciphertext);
   return COOKIE_NAME + "=" + value + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + SESSION_TTL_SECONDS;
 }
@@ -50,9 +58,9 @@ export async function readSessionApiKey(request: Request, secret: string): Promi
     if (iv.byteLength !== 12) return null;
     const key = await importSessionKey(secret);
     const plaintext = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
+      { name: "AES-GCM", iv: toArrayBuffer(iv) },
       key,
-      decodeBase64(encodedCiphertext),
+      toArrayBuffer(decodeBase64(encodedCiphertext)),
     );
     const session = JSON.parse(new TextDecoder().decode(plaintext)) as Session;
     if (typeof session.apiKey !== "string"

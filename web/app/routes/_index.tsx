@@ -46,8 +46,11 @@ export default function OnboardingRoute() {
         ...init.headers,
       },
     });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || `Request failed (${response.status})`);
+    const payload = await response.json().catch(() => ({})) as { detail?: unknown };
+    if (!response.ok) {
+      const detail = typeof payload.detail === "string" ? payload.detail : `Request failed (${response.status})`;
+      throw new Error(detail);
+    }
     return payload as T;
   }
 
