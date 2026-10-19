@@ -7,10 +7,7 @@ services:
     branch: feat/agent-workspace-dashboard
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    dockerCommand: >-
-      sh -c 'python -m app.runtime_entry migrate || exit 1;
-      (python -m app.runtime_entry worker) &
-      exec python -m app.runtime_entry api'
+    dockerCommand: sh /app/ops/staging/start.sh
     healthCheckPath: /ready
     envVars:
       - key: ENVIRONMENT

@@ -11,6 +11,7 @@ RUN groupadd --system --gid 10001 app && \
 COPY pyproject.toml requirements.txt alembic.ini ./
 COPY app ./app
 COPY migrations ./migrations
+COPY ops/staging/start.sh ./ops/staging/start.sh
 RUN python -m pip install --no-cache-dir -r requirements.txt .
 
 USER 10001:10001
