@@ -1,0 +1,42 @@
+name: Web validation
+
+on:
+  pull_request:
+    paths:
+      - "web/**"
+      - "render.yaml"
+      - "ops/staging/**"
+      - ".github/workflows/web-check.yml"
+      - ".github/workflows/web-staging-deploy.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "web/**"
+      - "render.yaml"
+      - "ops/staging/**"
+      - ".github/workflows/web-check.yml"
+      - ".github/workflows/web-staging-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  web-check:
+    name: npm run check (web)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck, build, and validate Worker dry run
+        run: npm run check

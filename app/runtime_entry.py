@@ -95,7 +95,14 @@ def main() -> None:
 
         command.upgrade(Config("alembic.ini"), "head")
         return
-    raise SystemExit("usage: python -m app.runtime_entry [api|worker|migrate]")
+    if process_type == "staging-queue-smoke":
+        from app.staging_queue_smoke import run
+
+        run()
+        return
+    raise SystemExit(
+        "usage: python -m app.runtime_entry [api|worker|migrate|staging-queue-smoke]"
+    )
 
 
 if __name__ == "__main__":

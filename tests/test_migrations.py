@@ -115,3 +115,10 @@ def test_provider_receipt_migration_adds_and_drops_receipt_columns(capsys):
     downgrade_sql = capsys.readouterr().out.lower()
     assert "drop column provider_message_id" in downgrade_sql
     assert "drop column provider_status" in downgrade_sql
+
+
+def test_long_revision_migration_widens_alembic_version_column(capsys):
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    command.upgrade(config, "0020_appointment_proposal_options", sql=True)
+    sql = capsys.readouterr().out.lower()
+    assert "alter table alembic_version alter column version_num type varchar(128)" in sql

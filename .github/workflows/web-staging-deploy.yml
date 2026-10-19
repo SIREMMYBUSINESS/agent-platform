@@ -1,0 +1,58 @@
+name: Deploy web staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_origin:
+        description: HTTPS origin of the isolated Render staging API
+        required: true
+        type: string
+      site_origin:
+        description: HTTPS origin of the staging Worker, if already known
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Validate and deploy staging Worker
+    runs-on: ubuntu-24.04
+    environment: staging
+    defaults:
+      run:
+        working-directory: web
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      VITE_PLATFORM_API_URL: ${{ inputs.api_origin }}
+      VITE_SITE_URL: ${{ inputs.site_origin }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Validate staging-only deployment settings
+        run: |
+          node --input-type=module -e '
+            const api = new URL(process.env.VITE_PLATFORM_API_URL);
+            const site = process.env.VITE_SITE_URL ? new URL(process.env.VITE_SITE_URL) : null;
+            if (api.protocol !== "https:" || !api.hostname.endsWith(".onrender.com") || api.pathname !== "/" || api.search || api.hash) {
+              throw new Error("api_origin must be the HTTPS origin of the isolated Render staging service");
+            }
+            if (site && (site.protocol !== "https:" || site.pathname !== "/" || site.search || site.hash)) {
+              throw new Error("site_origin must be an HTTPS origin without a path");
+            }
+            if (!process.env.CLOUDFLARE_API_TOKEN || !process.env.CLOUDFLARE_ACCOUNT_ID) {
+              throw new Error("Configure CLOUDFLARE_API_TOKEN secret and CLOUDFLARE_ACCOUNT_ID variable");
+            }
+          '
+      - name: Typecheck, build, and validate Worker dry run
+        run: npm run check
+      - name: Deploy staging Worker
+        run: npx wrangler deploy --name siremmy-agent-platform-web-staging
