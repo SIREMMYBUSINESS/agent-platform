@@ -1,4 +1,5 @@
 import { Form } from "react-router";
+import { Link } from "react-router";
 import type { Route } from "./+types/dashboard";
 import { createSessionCookie, readSessionApiKey } from "../.server/session";
 
@@ -176,6 +177,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     });
   }
 
+  const returnTo = new URL(request.url).searchParams.get("returnTo");
+  const postLoginPath = returnTo === "/onboarding" ? returnTo : "/dashboard";
+
   const apiKey = String(form.get("apiKey") || "").trim();
   if (!/^ap_[A-Za-z0-9_-]{43}$/.test(apiKey)) {
     return { error: "Enter a valid provisioned platform API key." };
@@ -199,7 +203,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     return new Response(null, {
       status: 303,
       headers: {
-        Location: "/dashboard",
+        Location: postLoginPath,
         "Set-Cookie": await createSessionCookie(apiKey, sessionSecret),
         "Cache-Control": "private, no-store",
       },
@@ -218,7 +222,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
           <h1>Your receptionist activity</h1>
           <p className="workspace-description">Review recent leads and conversations. The API scopes each result to the tenant assigned to your key.</p>
         </div>
-        {loaderData.connected && <Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form>}
+        {loaderData.connected && <div className="workspace-actions"><Link className="secondary-button" to="/onboarding">Configure receptionist</Link><Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form></div>}
       </header>
 
       {!loaderData.connected ? (
@@ -243,7 +247,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
           <section className="workspace-stats" aria-label="Workspace summary">
             <article className="stat-card"><span>Recent leads</span><strong>{loaderData.leads.length}</strong><small>Up to 25 most recent</small></article>
             <article className="stat-card"><span>Conversations</span><strong>{loaderData.conversations.length}</strong><small>Up to 25 most recent</small></article>
-            <article className="stat-card"><span>Connection</span><strong className="connection-ready">Connected</strong><small>Railway API data loaded</small></article>
+            <article className="stat-card"><span>Connection</span><strong className="connection-ready">Connected</strong><small>Platform API data loaded</small></article>
           </section>
 
           <section className="card data-card">

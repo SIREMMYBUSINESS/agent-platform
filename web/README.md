@@ -17,35 +17,27 @@ npm run dev
 
 Set `VITE_PLATFORM_API_URL` in `.env` to the Railway API's HTTPS origin. Set `VITE_SITE_URL` to the canonical public site origin and `VITE_DEMO_BOOKING_URL` to the real walkthrough booking page before publishing. These are public build configuration. Never prefix secrets with `VITE_`.
 
-## Cloudflare and Railway staging configuration
+## Cloudflare and API configuration
 
-In Cloudflare's **build environment variables** for the staging Worker, set:
+In Cloudflare's **build environment variables**, set the staging Worker's values to:
 
 ```text
-VITE_PLATFORM_API_URL=https://<railway-staging-api-host>
+VITE_PLATFORM_API_URL=https://<render-staging-api-host>
 VITE_SITE_URL=https://<cloudflare-staging-site-host>
 VITE_DEMO_BOOKING_URL=
 ```
 
-Use origins only: no path and no trailing slash. `VITE_PLATFORM_API_URL` is a public API address compiled into the Worker bundle at build time; it is not a secret and must not contain credentials. Rebuild and deploy the Worker after changing it. Do not set `PLATFORM_SERVICE_TOKEN` as a `VITE_*` variable or expose it to the browser.
+Use origins only: no path and no trailing slash. `VITE_PLATFORM_API_URL` is a public API address compiled into the Worker bundle at build time; it is not a secret and must not contain credentials. Staging uses the Render API; production uses the Railway API in its own Worker configuration. Rebuild and deploy the Worker after changing it. Do not set `PLATFORM_SERVICE_TOKEN` as a `VITE_*` variable or expose it to the browser. Since the Worker proxies authenticated requests server-side, this web app does not need a browser CORS allowlist on the API.
 
-In Railway's API service variables, set `CORS_ALLOWED_ORIGINS` to a JSON array containing the exact Cloudflare site origin:
-
-```text
-CORS_ALLOWED_ORIGINS=["https://<cloudflare-staging-site-host>"]
-```
-
-The repo parses this as `list[str]` and rejects wildcards, paths, credentials, and non-HTTPS public origins. Do not use a comma-separated value. Restart/redeploy the API after changing it. Allow the Cloudflare **site origin**, not the Railway API URL. A stable staging hostname is preferable to short-lived preview URLs.
-
-The onboarding screen currently calls Railway directly from the browser, so it needs this CORS allowlist. Dashboard data reads go through React Router server loaders/actions on the Worker and do not need CORS. No `PLATFORM_SERVICE_TOKEN` is used. Onboarding currently accepts a tenant-scoped API key from the user; that is separate from a platform service token. If the requirement is that no API credential at all may enter browser memory, move onboarding requests behind the Worker proxy before customer staging.
+Dashboard and onboarding requests go through React Router server loaders/actions on the Worker and do not need browser CORS. No `PLATFORM_SERVICE_TOKEN` is used. Onboarding reuses the encrypted workspace session; the tenant key must also have the `business_onboarder` role. The browser never receives or stores the raw API key.
 
 Set `SESSION_ENCRYPTION_KEY` as a Cloudflare Worker secret (for example, from `web/`, run `npx wrangler secret put SESSION_ENCRYPTION_KEY`). Use a distinct key for staging and production. Do not use `VITE_SESSION_ENCRYPTION_KEY`.
 
 ## Workspace session security
 
-The dashboard posts a provisioned tenant API key to a React Router server action. The Worker validates tenant-scoped read access against the Railway API, encrypts the key with AES-GCM, and keeps it only in an HttpOnly, Secure, SameSite=Strict cookie that expires after one hour. Server loaders proxy dashboard reads; browser JavaScript never receives the stored key and no API credential is written to localStorage. The key is encrypted but remains a tenant credential, so use appropriately limited grants and rotate/revoke it when needed.
+The dashboard posts a provisioned tenant API key to a React Router server action. The Worker validates tenant-scoped read access against the configured API, encrypts the key with AES-GCM, and keeps it only in an HttpOnly, Secure, SameSite=Strict cookie that expires after one hour. Server loaders/actions proxy dashboard and onboarding requests; browser JavaScript never receives the stored key and no API credential is written to localStorage. Onboarding additionally requires the `business_onboarder` grant. The key is encrypted but remains a tenant credential, so use appropriately limited grants and rotate/revoke it when needed.
 
-The current backend uses tenant-scoped `ap_` API keys and `lead_reader` grants; it does not expose the proposed `read:seo_pages` or `create:seo_lead_submissions` scopes. The backend has no public SEO-page data endpoint or anonymous lead-submission endpoint yet.
+The current backend uses tenant-scoped `ap_` API keys. The dashboard requires both `lead_reader` and `conversation_reader` grants; the backend does not expose the proposed `read:seo_pages` or `create:seo_lead_submissions` scopes. The backend has no public SEO-page data endpoint or anonymous lead-submission endpoint yet.
 
 ## Public SEO routes
 
@@ -106,7 +98,7 @@ foreach ($path in @(
 "API, database, worker, CORS preflight, public routes, sitemap, and robots checks passed."
 ```
 
-Then open `$site/onboarding` in a browser and load the dental template with a staging-only tenant key. Confirm the browser Network panel shows requests to the configured Railway origin with the exact staging site as `Origin`; never use a production key. For `/dashboard`, verify its data requests are same-origin Worker requests and not direct browser-to-Railway requests. The API health checks do not validate third-party providers or a queue task; run those as separate staging checks.
+Then sign in to `$site/dashboard` with a staging-only tenant key that has `lead_reader`, `conversation_reader`, and `business_onboarder` grants. Open `$site/onboarding` and load the dental template using the same session; the browser Network panel should show same-origin Worker requests, not direct API requests. Never use a production key. The API health checks do not validate third-party providers or a queue task; run those as separate staging checks.
 
 ## Cloudflare and Railway
 

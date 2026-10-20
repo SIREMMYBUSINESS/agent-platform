@@ -71,6 +71,8 @@ button, input { font: inherit; }
 .nav-link:hover, .nav-link.active { background: #edf5f2; color: #147d72; }
 .workspace-shell { width: min(100% - 40px, 1080px); margin: 0 auto; padding: 54px 0 38px; }
 .workspace-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 30px; }
+.workspace-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.workspace-actions form { margin: 0; }
 .workspace-heading h1 { margin: 7px 0 10px; color: #18342f; font-size: clamp(30px, 5vw, 42px); line-height: 1.1; letter-spacing: -.04em; }
 .eyebrow { margin: 0; color: #24887b; font-size: 10px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
 .workspace-description { max-width: 680px; margin: 0; color: #697875; font-size: 14px; line-height: 1.7; }
