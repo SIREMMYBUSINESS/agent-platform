@@ -28,9 +28,22 @@ class PlatformApiError extends Error {
 }
 
 class PlatformRequestError extends Error {
-  constructor(readonly path: string, readonly kind: "not_configured" | "connection" | "invalid_response") {
+  constructor(readonly path: string, readonly kind: "not_configured" | "connection" | "invalid_response", readonly detail = "") {
     super(kind);
   }
+}
+
+function safeFetchErrorCode(error: unknown) {
+  if (error && typeof error === "object") {
+    const cause = "cause" in error ? error.cause : undefined;
+    if (cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(cause.code)) {
+      return cause.code;
+    }
+    if ("name" in error && typeof error.name === "string" && /^[A-Za-z]+$/.test(error.name)) {
+      return error.name;
+    }
+  }
+  return "unknown";
 }
 
 function accessFailure(path: string, error: unknown) {
@@ -42,7 +55,7 @@ function accessFailure(path: string, error: unknown) {
   if (error instanceof PlatformRequestError) {
     if (error.kind === "not_configured") return `The staging Worker has no API origin configured for ${path}. Redeploy it with the staging API URL.`;
     if (error.kind === "invalid_response") return `The staging API returned an invalid response for ${path}. Check the Render service logs.`;
-    return `The staging Worker could not complete a connection to ${API_BASE ? new URL(API_BASE).host : "the API"} for ${path}. Check the Render service logs and retry while the service is awake.`;
+    return `The staging Worker could not complete a connection to ${API_BASE ? new URL(API_BASE).host : "the API"} for ${path} (network error: ${error.detail || "unknown"}). Check the Render service logs and retry while the service is awake.`;
   }
   return `Could not reach ${path}. Check the staging API URL and availability.`;
 }
@@ -68,8 +81,10 @@ async function fetchPlatform<T>(path: string, apiKey: string): Promise<T> {
       headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
       redirect: "error",
     });
-  } catch {
-    throw new PlatformRequestError(endpoint, "connection");
+  } catch (error) {
+    const detail = safeFetchErrorCode(error);
+    console.warn("Dashboard API request failed", { path: endpoint, errorCode: detail });
+    throw new PlatformRequestError(endpoint, "connection", detail);
   }
   if (!response.ok) throw new PlatformApiError(path.split("?")[0], response.status);
   try {
