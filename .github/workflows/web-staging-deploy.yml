@@ -35,7 +35,7 @@ jobs:
         working-directory: web
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id || vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id || vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID || '9253289fc33ead6f56f6e19f26ee940b' }}
       VITE_PLATFORM_API_URL: ${{ inputs.api_origin || vars.STAGING_API_ORIGIN || 'https://agent-platform-staging.onrender.com' }}
       VITE_SITE_URL: ${{ inputs.site_origin || vars.STAGING_SITE_ORIGIN || 'https://agent-platform-web-staging.olaoluwaemmanuel6.workers.dev' }}
     steps:
@@ -60,7 +60,7 @@ jobs:
             }
             const missing = [];
             if (!process.env.CLOUDFLARE_API_TOKEN) missing.push("CLOUDFLARE_API_TOKEN secret");
-            if (!process.env.CLOUDFLARE_ACCOUNT_ID) missing.push("CLOUDFLARE_ACCOUNT_ID input or staging variable");
+            if (!process.env.CLOUDFLARE_ACCOUNT_ID) missing.push("CLOUDFLARE_ACCOUNT_ID workflow input, Actions variable, or Actions secret");
             if (missing.length) throw new Error("Missing " + missing.join(" and "));
           '
       - name: Typecheck, build, and validate Worker dry run
