@@ -28,7 +28,7 @@ class PlatformApiError extends Error {
 }
 
 class PlatformRequestError extends Error {
-  constructor(readonly path: string, readonly kind: "not_configured" | "connection" | "invalid_response", readonly detail = "") {
+  constructor(readonly path: string, readonly kind: "not_configured" | "connection" | "redirected" | "invalid_response", readonly detail = "") {
     super(kind);
   }
 }
@@ -54,6 +54,7 @@ function accessFailure(path: string, error: unknown) {
   }
   if (error instanceof PlatformRequestError) {
     if (error.kind === "not_configured") return `The staging Worker has no API origin configured for ${path}. Redeploy it with the staging API URL.`;
+    if (error.kind === "redirected") return `The staging API redirected ${path} to a different host (${error.detail}). Check the staging API origin.`;
     if (error.kind === "invalid_response") return `The staging API returned an invalid response for ${path}. Check the Render service logs.`;
     return `The staging Worker could not complete a connection to ${API_BASE ? new URL(API_BASE).host : "the API"} for ${path} (network error: ${error.detail || "unknown"}). Check the Render service logs and retry while the service is awake.`;
   }
@@ -79,12 +80,17 @@ async function fetchPlatform<T>(path: string, apiKey: string): Promise<T> {
   try {
     response = await fetch(API_BASE + path, {
       headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
-      redirect: "error",
+      // Render can issue canonical redirects. Fetch strips Authorization on
+      // cross-origin redirects; reject a final response from any other host.
+      redirect: "follow",
     });
   } catch (error) {
     const detail = safeFetchErrorCode(error);
     console.warn("Dashboard API request failed", { path: endpoint, errorCode: detail });
     throw new PlatformRequestError(endpoint, "connection", detail);
+  }
+  if (response.url && new URL(response.url).origin !== new URL(API_BASE).origin) {
+    throw new PlatformRequestError(endpoint, "redirected", new URL(response.url).host);
   }
   if (!response.ok) throw new PlatformApiError(path.split("?")[0], response.status);
   try {
