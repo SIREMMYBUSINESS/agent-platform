@@ -60,4 +60,4 @@ jobs:
       - name: Typecheck, build, and validate Worker dry run
         run: npm run check
       - name: Deploy staging Worker
-        run: npx wrangler deploy --name siremmy-agent-platform-web-staging
+        run: npx wrangler deploy --name agent-platform-web-staging
