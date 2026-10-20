@@ -21,6 +21,21 @@ type ListResponse<T> = { items: T[]; offset: number; limit: number };
 
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
 
+class PlatformApiError extends Error {
+  constructor(readonly path: string, readonly status: number) {
+    super("Platform API returned " + status + ".");
+  }
+}
+
+function accessFailure(path: string, error: unknown) {
+  if (error instanceof PlatformApiError) {
+    if (error.status === 401) return `${path} rejected the API key (HTTP 401). Check that this exact key was inserted in the staging database, and that it is unexpired and not revoked.`;
+    if (error.status === 403) return `${path} denied tenant access (HTTP 403). Check the enabled, unexpired grant for this key in the database used by the staging API.`;
+    return `${path} returned HTTP ${error.status}. Check the staging API deployment and its database connection.`;
+  }
+  return `Could not reach ${path}. Check the staging API URL and availability.`;
+}
+
 export function meta({}: Route.MetaArgs) {
   return [
     { title: "Workspace | Agent Platform" },
@@ -39,7 +54,7 @@ async function fetchPlatform<T>(path: string, apiKey: string): Promise<T> {
     headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
     redirect: "error",
   });
-  if (!response.ok) throw new Error("Platform API returned " + response.status + ".");
+  if (!response.ok) throw new PlatformApiError(path.split("?")[0], response.status);
   return await response.json() as T;
 }
 
@@ -90,13 +105,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       conversations: conversationResult.items,
       error: null as string | null,
     };
-  } catch {
+  } catch (error) {
     return {
       configured: true,
       connected: false,
       leads: [] as Lead[],
       conversations: [] as Conversation[],
-      error: "Your session could not access the workspace. Sign in again or ask an administrator to check the key grants.",
+      error: error instanceof PlatformApiError
+        ? accessFailure(error.path, error)
+        : "Your session could not access the workspace. Sign in again.",
     };
   }
 }
@@ -124,11 +141,19 @@ export async function action({ request, context }: Route.ActionArgs) {
   const sessionSecret = context.cloudflare.env.SESSION_ENCRYPTION_KEY;
   if (!sessionSecret) return { error: "Workspace authentication is not configured yet." };
 
-  try {
-    await Promise.all([
+  const checks = await Promise.allSettled([
       fetchPlatform<ListResponse<Lead>>("/leads?offset=0&limit=1", apiKey),
       fetchPlatform<ListResponse<Conversation>>("/conversations?offset=0&limit=1", apiKey),
-    ]);
+  ]);
+  const failures = checks.flatMap((check) => check.status === "rejected" ? [check.reason] : []);
+  if (failures.length) {
+    return {
+      error: failures.map((failure) => failure instanceof PlatformApiError
+        ? accessFailure(failure.path, failure)
+        : "Could not reach the staging API. Check its configured URL and availability.").join(" "),
+    };
+  }
+  try {
     return new Response(null, {
       status: 303,
       headers: {
@@ -138,7 +163,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       },
     });
   } catch {
-    return { error: "The key could not read this tenant workspace. Check its grants and try again." };
+    return { error: "Workspace session could not be created. Check the Worker session encryption configuration." };
   }
 }
 
@@ -168,7 +193,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
               <input id="workspace-api-key" name="apiKey" type="password" autoComplete="off" spellCheck={false} required placeholder="ap_…" />
               <button className="primary-button" type="submit">Connect</button>
             </div>
-            <p className="helper">The browser never receives the key from the server. The key stays out of browser storage and is removed when the session expires or you sign out. Use a provisioned key with lead_reader access.</p>
+            <p className="helper">The browser never receives the key from the server. The key stays out of browser storage and is removed when the session expires or you sign out. Use a provisioned key with lead_reader and conversation_reader access.</p>
           </Form>
         </section>
       ) : (
