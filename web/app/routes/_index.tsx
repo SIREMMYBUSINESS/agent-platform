@@ -23,6 +23,12 @@ type ProviderSelection = { sms: string; calendar: string; email?: string; crm?: 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
 
+class PlatformApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
 async function callPlatform(path: string, apiKey: string, method = "GET", body?: unknown) {
   if (!API_BASE) throw new Error("The platform API is not configured for this environment.");
   const response = await fetch(API_BASE + path, {
@@ -40,28 +46,37 @@ async function callPlatform(path: string, apiKey: string, method = "GET", body?:
   const payload = await response.json().catch(() => ({})) as { detail?: unknown };
   if (!response.ok) {
     const detail = typeof payload.detail === "string" ? payload.detail : `Request failed (${response.status})`;
-    throw new Error(detail);
+    throw new PlatformApiError(response.status, detail);
   }
   return payload;
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
   const apiKey = await readSessionApiKey(request, context.cloudflare.env.SESSION_ENCRYPTION_KEY);
-  if (!apiKey) return { authenticated: false, canOnboard: false, accessError: null as string | null };
+  if (!apiKey) return {
+    authenticated: false, canOnboard: false, requiresOnboardRole: false,
+    accessError: null as string | null,
+  };
   try {
     await callPlatform("/verticals", apiKey);
-    return { authenticated: true, canOnboard: true, accessError: null as string | null };
+    return { authenticated: true, canOnboard: true, requiresOnboardRole: false, accessError: null as string | null };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Could not check onboarding access.";
-    const lacksRole = message.toLowerCase().includes("business_onboarder")
-      || message.toLowerCase().includes("forbidden")
-      || message.toLowerCase().includes("403");
+    const missingRole = error instanceof PlatformApiError
+      && error.status === 403
+      && error.message === "Operation not permitted";
+    const unauthorized = error instanceof PlatformApiError && error.status === 401;
+    const denied = error instanceof PlatformApiError && error.status === 403;
     return {
       authenticated: true,
       canOnboard: false,
-      accessError: lacksRole
-        ? "You are signed in, but this key does not have the business_onboarder role required to configure a business. Ask an administrator to add that grant."
-        : "Your workspace session could not reach onboarding. Check the staging API and sign in again if the key has expired.",
+      requiresOnboardRole: missingRole,
+      accessError: missingRole
+        ? "You are signed in, but this key lacks the business_onboarder role required to configure a business. Ask an administrator to add that grant."
+        : unauthorized
+          ? "The staging API rejected the key in this session. Sign out and connect with the staging workspace key again."
+          : denied
+            ? "The staging API denied this request because of the tenant's access or region policy. Ask an administrator to review the staging grant and region configuration."
+            : "The staging API could not be reached for onboarding. Check that the API is available, then reload this page.",
     };
   }
 }
@@ -214,9 +229,9 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
       </section>
 
       {!loaderData.canOnboard ? <section className="card credentials-card">
-        <div className="section-heading"><span className="number">1</span><div><h3>{loaderData.authenticated ? "Onboarding access needed" : "Sign in to your workspace"}</h3><p>{loaderData.accessError || "Use your workspace session to continue onboarding."}</p></div></div>
+        <div className="section-heading"><span className="number">1</span><div><h3>{loaderData.authenticated ? loaderData.requiresOnboardRole ? "Onboarding permission needed" : "Onboarding unavailable" : "Sign in to your workspace"}</h3><p>{loaderData.accessError || "Use your workspace session to continue onboarding."}</p></div></div>
         {loaderData.authenticated
-          ? <p className="helper">Your active sign-in is recognized. The administrator can add the <code>business_onboarder</code> role to the same tenant key.</p>
+          ? loaderData.requiresOnboardRole && <p className="helper">Your active sign-in is recognized. The administrator can add the <code>business_onboarder</code> role to the same tenant key.</p>
           : <Link className="primary-button" to="/dashboard?returnTo=%2Fonboarding">Go to workspace sign in</Link>}
       </section> : <>
         <section className="card credentials-card">
