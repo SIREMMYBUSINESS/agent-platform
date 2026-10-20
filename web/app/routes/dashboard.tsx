@@ -27,11 +27,22 @@ class PlatformApiError extends Error {
   }
 }
 
+class PlatformRequestError extends Error {
+  constructor(readonly path: string, readonly kind: "not_configured" | "connection" | "invalid_response") {
+    super(kind);
+  }
+}
+
 function accessFailure(path: string, error: unknown) {
   if (error instanceof PlatformApiError) {
     if (error.status === 401) return `${path} rejected the API key (HTTP 401). Check that this exact key was inserted in the staging database, and that it is unexpired and not revoked.`;
     if (error.status === 403) return `${path} denied tenant access (HTTP 403). Check the enabled, unexpired grant for this key in the database used by the staging API.`;
     return `${path} returned HTTP ${error.status}. Check the staging API deployment and its database connection.`;
+  }
+  if (error instanceof PlatformRequestError) {
+    if (error.kind === "not_configured") return `The staging Worker has no API origin configured for ${path}. Redeploy it with the staging API URL.`;
+    if (error.kind === "invalid_response") return `The staging API returned an invalid response for ${path}. Check the Render service logs.`;
+    return `The staging Worker could not complete a connection to ${API_BASE ? new URL(API_BASE).host : "the API"} for ${path}. Check the Render service logs and retry while the service is awake.`;
   }
   return `Could not reach ${path}. Check the staging API URL and availability.`;
 }
@@ -49,13 +60,23 @@ export function headers() {
 }
 
 async function fetchPlatform<T>(path: string, apiKey: string): Promise<T> {
-  if (!API_BASE) throw new Error("API is not configured.");
-  const response = await fetch(API_BASE + path, {
-    headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
-    redirect: "error",
-  });
+  const endpoint = path.split("?")[0];
+  if (!API_BASE) throw new PlatformRequestError(endpoint, "not_configured");
+  let response: Response;
+  try {
+    response = await fetch(API_BASE + path, {
+      headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
+      redirect: "error",
+    });
+  } catch {
+    throw new PlatformRequestError(endpoint, "connection");
+  }
   if (!response.ok) throw new PlatformApiError(path.split("?")[0], response.status);
-  return await response.json() as T;
+  try {
+    return await response.json() as T;
+  } catch {
+    throw new PlatformRequestError(endpoint, "invalid_response");
+  }
 }
 
 function shortId(value: string) {
@@ -111,7 +132,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       connected: false,
       leads: [] as Lead[],
       conversations: [] as Conversation[],
-      error: error instanceof PlatformApiError
+      error: error instanceof PlatformApiError || error instanceof PlatformRequestError
         ? accessFailure(error.path, error)
         : "Your session could not access the workspace. Sign in again.",
     };
@@ -148,9 +169,9 @@ export async function action({ request, context }: Route.ActionArgs) {
   const failures = checks.flatMap((check) => check.status === "rejected" ? [check.reason] : []);
   if (failures.length) {
     return {
-      error: failures.map((failure) => failure instanceof PlatformApiError
+      error: [...new Set(failures.map((failure) => failure instanceof PlatformApiError || failure instanceof PlatformRequestError
         ? accessFailure(failure.path, failure)
-        : "Could not reach the staging API. Check its configured URL and availability.").join(" "),
+        : "Could not reach the staging API. Check its configured URL and availability."))].join(" "),
     };
   }
   try {
