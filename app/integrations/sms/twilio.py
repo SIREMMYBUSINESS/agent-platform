@@ -40,7 +40,20 @@ class TwilioMessageSender:
         try:
             config = self._configs.resolve(tenant_id=tenant_id, business_id=business_id)
             account_sid = self._required(config, "account_sid")
-            auth_token = self._required(config, "auth_token")
+            api_key_sid = config.get("api_key_sid", "").strip()
+            api_key_secret = config.get("api_key_secret", "").strip()
+            auth_token = config.get("auth_token", "").strip()
+            if bool(api_key_sid) != bool(api_key_secret):
+                raise ProviderConfigurationError("Twilio API key SID and secret must be configured together")
+            if api_key_sid:
+                auth_username, auth_password = api_key_sid, api_key_secret
+            elif auth_token:
+                # Backward compatible for existing configurations. Prefer an
+                # API key for application credentials because it can be revoked
+                # independently from the Twilio account Auth Token.
+                auth_username, auth_password = account_sid, auth_token
+            else:
+                raise ProviderConfigurationError("Twilio API key credentials are required")
             source_key = "from_whatsapp" if channel == "whatsapp" else "from_sms"
             source = config.get(source_key, "").strip()
             service_sid = config.get("messaging_service_sid", "").strip()
@@ -57,7 +70,8 @@ class TwilioMessageSender:
                 recipient = self._whatsapp_address(recipient)
             form = {"To": recipient, "Body": body}
             callback_base_url = config.get("status_callback_base_url", "").strip()
-            if callback_base_url and message_id is not None and attempt is not None:
+            if (callback_base_url and auth_token
+                    and message_id is not None and attempt is not None):
                 callback_url = build_status_callback_url(
                     callback_base_url, tenant_id=tenant_id, business_id=business_id,
                     message_id=message_id, attempt=attempt,
@@ -68,7 +82,7 @@ class TwilioMessageSender:
             else:
                 form["MessagingServiceSid"] = service_sid
             data = urlencode(form).encode("utf-8")
-            auth = base64.b64encode(f"{account_sid}:{auth_token}".encode()).decode("ascii")
+            auth = base64.b64encode(f"{auth_username}:{auth_password}".encode()).decode("ascii")
             status, response = self._transport.request(
                 "POST", self.endpoint.format(account_sid=account_sid),
                 headers={"Authorization": f"Basic {auth}",
