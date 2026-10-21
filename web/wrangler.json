@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "siremmy-agent-platform-web",
+  "name": "agent-platform-web-staging",
   "main": "./workers/app.ts",
   "compatibility_date": "2026-10-15",
   "compatibility_flags": [
