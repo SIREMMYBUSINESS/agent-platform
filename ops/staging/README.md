@@ -26,6 +26,39 @@ Because the queue poller shares that process, it stops while the service sleeps.
 Use this deployment only for a short enqueue-to-completion smoke check while
 the API is awake. Do not rely on it for continuous queue processing.
 
+## Configure isolated provider smoke tests
+
+Provider credentials belong only in Render's staging secret files. The
+Blueprint configures the read-only provider directory at `/etc/secrets` and
+loads the tenant-scoped provider bootstrap. The Docker image adds its service
+user to Render's secret-file group so the process can read those files without
+running as root.
+
+Each provider secret file must be named with the SHA-256 hex digest of the
+tenant ID, a NUL byte, and the business ID, followed by `.json`. Generate the
+filename locally (the IDs are not secrets):
+
+```powershell
+python -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+'\0'+sys.argv[2]).encode()).hexdigest()+'.json')" "<tenant-id>" "<business-id>"
+```
+
+In Render, open the staging service's **Environment → Secret Files** and add
+that filename. Use a JSON object with only the providers being tested. Expected
+keys are:
+
+- Twilio SMS: `sms_provider` (`twilio`), `account_sid`, `auth_token`, and
+  either `from_sms` or `messaging_service_sid`.
+- SendGrid email: `email_provider` (`sendgrid`), `api_key`, and `from_address`.
+- Google Calendar: `calendar_provider` (`google`), `access_token`, and
+  `calendar_id`.
+
+Do not put credentials in GitHub, the Worker, browser storage, or chat. Use a
+verified, owner-controlled test phone and inbox, and a dedicated staging
+calendar. Validate one SMS, one email, calendar availability, then one
+test-calendar booking/cancellation. Do not enroll or trigger a campaign against
+a customer audience. Provider health remains `not_probed` until provider
+operations have actually run; API and database health do not prove delivery.
+
 ## Deploy the staging Worker
 
 Create the GitHub Actions environment `staging`, then add these there before
