@@ -18,3 +18,7 @@ services:
         value: eu-west-1
       - key: DATABASE_URL
         sync: false
+      - key: PROVIDER_SECRETS_DIR
+        value: /etc/secrets
+      - key: WORKER_BOOTSTRAP_MODULE
+        value: app.integrations.bootstrap_example
