@@ -46,8 +46,11 @@ In Render, open the staging service's **Environment → Secret Files** and add
 that filename. Use a JSON object with only the providers being tested. Expected
 keys are:
 
-- Twilio SMS: `sms_provider` (`twilio`), `account_sid`, `auth_token`, and
-  either `from_sms` or `messaging_service_sid`.
+- Twilio SMS: `sms_provider` (`twilio`), `account_sid`, `api_key_sid`,
+  `api_key_secret`, and either `from_sms` or `messaging_service_sid`. The
+  adapter also accepts the legacy `auth_token` pair, but prefer a revocable
+  Standard API key for application sends. Add `auth_token` only if you enable
+  signed delivery-status callbacks; callbacks require the account Auth Token.
 - SendGrid email: `email_provider` (`sendgrid`), `api_key`, and `from_address`.
 - Google Calendar: `calendar_provider` (`google`), `access_token`, and
   `calendar_id`.
