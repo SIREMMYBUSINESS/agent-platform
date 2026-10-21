@@ -1,4 +1,5 @@
 import { Form } from "react-router";
+import { Link } from "react-router";
 import type { Route } from "./+types/dashboard";
 import { createSessionCookie, readSessionApiKey } from "../.server/session";
 
@@ -21,6 +22,46 @@ type ListResponse<T> = { items: T[]; offset: number; limit: number };
 
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
 
+class PlatformApiError extends Error {
+  constructor(readonly path: string, readonly status: number) {
+    super("Platform API returned " + status + ".");
+  }
+}
+
+class PlatformRequestError extends Error {
+  constructor(readonly path: string, readonly kind: "not_configured" | "connection" | "redirected" | "invalid_response", readonly detail = "") {
+    super(kind);
+  }
+}
+
+function safeFetchErrorCode(error: unknown) {
+  if (error && typeof error === "object") {
+    const cause = "cause" in error ? error.cause : undefined;
+    if (cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(cause.code)) {
+      return cause.code;
+    }
+    if ("name" in error && typeof error.name === "string" && /^[A-Za-z]+$/.test(error.name)) {
+      return error.name;
+    }
+  }
+  return "unknown";
+}
+
+function accessFailure(path: string, error: unknown) {
+  if (error instanceof PlatformApiError) {
+    if (error.status === 401) return `${path} rejected the API key (HTTP 401). Check that this exact key was inserted in the staging database, and that it is unexpired and not revoked.`;
+    if (error.status === 403) return `${path} denied tenant access (HTTP 403). Check the enabled, unexpired grant for this key in the database used by the staging API.`;
+    return `${path} returned HTTP ${error.status}. Check the staging API deployment and its database connection.`;
+  }
+  if (error instanceof PlatformRequestError) {
+    if (error.kind === "not_configured") return `The staging Worker has no API origin configured for ${path}. Redeploy it with the staging API URL.`;
+    if (error.kind === "redirected") return `The staging API redirected ${path} to a different host (${error.detail}). Check the staging API origin.`;
+    if (error.kind === "invalid_response") return `The staging API returned an invalid response for ${path}. Check the Render service logs.`;
+    return `The staging Worker could not complete a connection to ${API_BASE ? new URL(API_BASE).host : "the API"} for ${path} (network error: ${error.detail || "unknown"}). Check the Render service logs and retry while the service is awake.`;
+  }
+  return `Could not reach ${path}. Check the staging API URL and availability.`;
+}
+
 export function meta({}: Route.MetaArgs) {
   return [
     { title: "Workspace | Agent Platform" },
@@ -34,13 +75,30 @@ export function headers() {
 }
 
 async function fetchPlatform<T>(path: string, apiKey: string): Promise<T> {
-  if (!API_BASE) throw new Error("API is not configured.");
-  const response = await fetch(API_BASE + path, {
-    headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
-    redirect: "error",
-  });
-  if (!response.ok) throw new Error("Platform API returned " + response.status + ".");
-  return await response.json() as T;
+  const endpoint = path.split("?")[0];
+  if (!API_BASE) throw new PlatformRequestError(endpoint, "not_configured");
+  let response: Response;
+  try {
+    response = await fetch(API_BASE + path, {
+      headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
+      // Render can issue canonical redirects. Fetch strips Authorization on
+      // cross-origin redirects; reject a final response from any other host.
+      redirect: "follow",
+    });
+  } catch (error) {
+    const detail = safeFetchErrorCode(error);
+    console.warn("Dashboard API request failed", { path: endpoint, errorCode: detail });
+    throw new PlatformRequestError(endpoint, "connection", detail);
+  }
+  if (response.url && new URL(response.url).origin !== new URL(API_BASE).origin) {
+    throw new PlatformRequestError(endpoint, "redirected", new URL(response.url).host);
+  }
+  if (!response.ok) throw new PlatformApiError(path.split("?")[0], response.status);
+  try {
+    return await response.json() as T;
+  } catch {
+    throw new PlatformRequestError(endpoint, "invalid_response");
+  }
 }
 
 function shortId(value: string) {
@@ -90,13 +148,15 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       conversations: conversationResult.items,
       error: null as string | null,
     };
-  } catch {
+  } catch (error) {
     return {
       configured: true,
       connected: false,
       leads: [] as Lead[],
       conversations: [] as Conversation[],
-      error: "Your session could not access the workspace. Sign in again or ask an administrator to check the key grants.",
+      error: error instanceof PlatformApiError || error instanceof PlatformRequestError
+        ? accessFailure(error.path, error)
+        : "Your session could not access the workspace. Sign in again.",
     };
   }
 }
@@ -117,6 +177,9 @@ export async function action({ request, context }: Route.ActionArgs) {
     });
   }
 
+  const returnTo = new URL(request.url).searchParams.get("returnTo");
+  const postLoginPath = returnTo === "/onboarding" ? returnTo : "/dashboard";
+
   const apiKey = String(form.get("apiKey") || "").trim();
   if (!/^ap_[A-Za-z0-9_-]{43}$/.test(apiKey)) {
     return { error: "Enter a valid provisioned platform API key." };
@@ -124,21 +187,29 @@ export async function action({ request, context }: Route.ActionArgs) {
   const sessionSecret = context.cloudflare.env.SESSION_ENCRYPTION_KEY;
   if (!sessionSecret) return { error: "Workspace authentication is not configured yet." };
 
-  try {
-    await Promise.all([
+  const checks = await Promise.allSettled([
       fetchPlatform<ListResponse<Lead>>("/leads?offset=0&limit=1", apiKey),
       fetchPlatform<ListResponse<Conversation>>("/conversations?offset=0&limit=1", apiKey),
-    ]);
+  ]);
+  const failures = checks.flatMap((check) => check.status === "rejected" ? [check.reason] : []);
+  if (failures.length) {
+    return {
+      error: [...new Set(failures.map((failure) => failure instanceof PlatformApiError || failure instanceof PlatformRequestError
+        ? accessFailure(failure.path, failure)
+        : "Could not reach the staging API. Check its configured URL and availability."))].join(" "),
+    };
+  }
+  try {
     return new Response(null, {
       status: 303,
       headers: {
-        Location: "/dashboard",
+        Location: postLoginPath,
         "Set-Cookie": await createSessionCookie(apiKey, sessionSecret),
         "Cache-Control": "private, no-store",
       },
     });
   } catch {
-    return { error: "The key could not read this tenant workspace. Check its grants and try again." };
+    return { error: "Workspace session could not be created. Check the Worker session encryption configuration." };
   }
 }
 
@@ -151,7 +222,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
           <h1>Your receptionist activity</h1>
           <p className="workspace-description">Review recent leads and conversations. The API scopes each result to the tenant assigned to your key.</p>
         </div>
-        {loaderData.connected && <Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form>}
+        {loaderData.connected && <div className="workspace-actions"><Link className="secondary-button" to="/onboarding">Configure receptionist</Link><Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form></div>}
       </header>
 
       {!loaderData.connected ? (
@@ -168,7 +239,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
               <input id="workspace-api-key" name="apiKey" type="password" autoComplete="off" spellCheck={false} required placeholder="ap_…" />
               <button className="primary-button" type="submit">Connect</button>
             </div>
-            <p className="helper">The browser never receives the key from the server. The key stays out of browser storage and is removed when the session expires or you sign out. Use a provisioned key with lead_reader access.</p>
+            <p className="helper">The browser never receives the key from the server. The key stays out of browser storage and is removed when the session expires or you sign out. Use a provisioned key with lead_reader and conversation_reader access.</p>
           </Form>
         </section>
       ) : (
@@ -176,7 +247,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
           <section className="workspace-stats" aria-label="Workspace summary">
             <article className="stat-card"><span>Recent leads</span><strong>{loaderData.leads.length}</strong><small>Up to 25 most recent</small></article>
             <article className="stat-card"><span>Conversations</span><strong>{loaderData.conversations.length}</strong><small>Up to 25 most recent</small></article>
-            <article className="stat-card"><span>Connection</span><strong className="connection-ready">Connected</strong><small>Railway API data loaded</small></article>
+            <article className="stat-card"><span>Connection</span><strong className="connection-ready">Connected</strong><small>Platform API data loaded</small></article>
           </section>
 
           <section className="card data-card">
