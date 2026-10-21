@@ -37,7 +37,8 @@ dispatching `.github/workflows/web-staging-deploy.yml` from the feature branch:
 
 The workflow asks for the isolated Render API origin and optional Cloudflare
 site origin. It rejects non-HTTPS or non-Render API origins and deploys under
-the separate Worker name `agent-platform-web-staging`. It runs
+the separate Worker name `agent-platform-web-staging`, matching the staging
+URL `https://agent-platform-web-staging.<account>.workers.dev`. It runs
 `npm run check` before deploying. Never use the live Railway API origin here.
 
 After the first deploy, record the actual `workers.dev` origin. Set the
