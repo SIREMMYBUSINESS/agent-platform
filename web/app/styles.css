@@ -117,18 +117,11 @@ td strong, td small { display: block; } td strong { color: #29443e; font-size: 1
 .page-shell { width: min(100% - 40px, 1040px); margin: 0 auto; padding: 34px 0 72px; }
 .topbar { display: flex; align-items: center; gap: 13px; padding: 14px 0 22px; border-bottom: 1px solid #e0e9e6; }
 .topbar h1 { margin: 0; color: #18342f; font-size: 17px; line-height: 1.25; }
+.topbar .eyebrow { margin: 0 0 2px; }
 .step-pill { margin-left: auto; padding: 7px 11px; border: 1px solid #dce8e4; border-radius: 99px; background: #fff; color: #61716d; font-size: 12px; font-weight: 650; }
 .intro { max-width: 740px; padding: 32px 0 18px; }
 .intro h2 { margin: 5px 0 9px; color: #18342f; font-size: clamp(27px, 4vw, 39px); line-height: 1.14; letter-spacing: -.04em; }
 .intro > p:last-child { max-width: 650px; margin: 0; color: #657570; font-size: 15px; }
-.page-shell .card { padding: 24px; }
-.page-shell .card + .card { margin-top: 14px; }
-.page-shell .section-heading h3 { margin: 1px 0 7px; color: #203a35; font-size: 18px; letter-spacing: -.02em; }
-.page-shell label { display: grid; gap: 6px; color: #405b55; font-size: 12px; font-weight: 700; }
-.page-shell input:not([type="checkbox"]), .page-shell textarea, .page-shell select { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid #ccd9d5; border-radius: 8px; background: #fff; color: #203a35; }
-.page-shell input:focus, .page-shell textarea:focus, .page-shell select:focus { outline: 2px solid #24887b55; outline-offset: 1px; border-color: #24887b; }
-.page-shell .day-check { display: flex; align-items: center; gap: 8px; }
-.page-shell > footer { margin-top: 18px; padding-top: 14px; border-top: 1px solid #e0e9e6; color: #697875; font-size: 12px; line-height: 1.6; }
 .credentials-card { border-color: #d5e6e1; }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 14px 0; }
 .stack { display: grid; gap: 14px; }
@@ -147,7 +140,6 @@ td strong, td small { display: block; } td strong { color: #29443e; font-size: 1
 .page-shell { width: min(100% - 28px, 1040px); padding-top: 22px; }
 .topbar { flex-wrap: wrap; }
 .step-pill { font-size: 10px; }
-.page-shell .card { padding: 20px 16px; }
 .field-grid { grid-template-columns: 1fr; }
 .hours-row { grid-template-columns: 1fr 1fr; }
 .hours-row .day-check { grid-column: 1 / -1; }

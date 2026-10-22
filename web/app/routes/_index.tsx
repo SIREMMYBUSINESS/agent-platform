@@ -217,7 +217,8 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
   return (
     <main className="page-shell">
       <header className="topbar">
-        <h1>Clinic onboarding</h1>
+        <div className="brand-mark">A</div>
+        <div><p className="eyebrow">Agent Platform</p><h1>Clinic onboarding</h1></div>
         <span className="step-pill">About 5–10 minutes</span>
       </header>
 
@@ -234,8 +235,9 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
           : <Link className="primary-button" to="/dashboard?returnTo=%2Fonboarding">Go to workspace sign in</Link>}
       </section> : <>
         <section className="card credentials-card">
-          <div className="section-heading"><span className="number">1</span><div><h3>Start your clinic setup</h3><p>Your workspace is connected. Load the dental template to get editable clinic defaults.</p></div></div>
-          <button className="primary-button" disabled={busy} onClick={loadTemplate}>{busy ? "Loading template…" : "Load dental clinic template"}</button>
+          <div className="section-heading"><span className="number">1</span><div><h3>Workspace connected</h3><p>Onboarding uses your encrypted workspace session.</p></div></div>
+          <p className="helper">Provider credentials belong in the protected secret manager, not this page.</p>
+          <button className="secondary-button" disabled={busy} onClick={loadTemplate}>{busy ? "Loading…" : "Load dental clinic template"}</button>
         </section>
 
       {template && <>
