@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'">
+  <title>Staging dashboard key provisioner</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color: #203a35; background: #f4f8f6; }
+    body { max-width: 760px; margin: 40px auto; padding: 0 18px; }
+    main { padding: 26px; border: 1px solid #dce7e3; border-radius: 14px; background: white; }
+    h1 { margin-top: 0; font-size: 25px; }
+    p, li { color: #53645f; }
+    label { display: block; margin: 18px 0 6px; font-weight: 700; }
+    input, textarea, button { box-sizing: border-box; width: 100%; padding: 11px; border: 1px solid #bdccc6; border-radius: 8px; font: inherit; }
+    textarea { min-height: 165px; font-family: ui-monospace, monospace; font-size: 12px; }
+    button { margin-top: 18px; border: 0; background: #147d72; color: white; font-weight: 700; cursor: pointer; }
+    .notice { padding: 12px; border-radius: 8px; background: #fff7df; }
+    .key { overflow-wrap: anywhere; padding: 13px; border: 1px solid #efd58f; border-radius: 8px; background: #fffaf0; font-family: ui-monospace, monospace; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Staging dashboard API key</h1>
+  <p class="notice"><strong>Private local tool:</strong> this page has no network access and does not save data. Keep it open only on a trusted device. The raw key appears only on this page; the SQL contains its SHA-256 hash, not the key.</p>
+  <ol>
+    <li>Enter the existing tenant ID you found in the staging Neon database.</li>
+    <li>Generate the key here and copy the SQL into Neon SQL Editor. Run the SQL once.</li>
+    <li>Copy the raw key into the staging dashboard at <code>/dashboard</code>. Never paste the key into SQL, chat, or logs. Do not generate another key after running the SQL.</li>
+  </ol>
+  <label for="tenant">Existing staging tenant ID</label>
+  <input id="tenant" autocomplete="off" spellcheck="false" required>
+  <label for="days">Key lifetime (days)</label>
+  <input id="days" type="number" min="1" max="3650" value="90" required>
+  <button id="generate" type="button">Generate key and SQL</button>
+  <section id="result" hidden>
+    <h2>Raw key — copy once</h2>
+    <p>This value is not included in the SQL below. Once you close or reload this page, it cannot be recovered.</p>
+    <div id="key" class="key" aria-live="polite"></div>
+    <button id="copy-key" type="button">Copy raw key</button>
+    <label for="sql">Atomic SQL for Neon (contains hash only)</label>
+    <textarea id="sql" readonly spellcheck="false"></textarea>
+    <button id="copy-sql" type="button">Copy SQL</button>
+  </section>
+  <p id="error" role="alert" hidden></p>
+</main>
+<script>
+  const tenantInput = document.querySelector('#tenant');
+  const daysInput = document.querySelector('#days');
+  const result = document.querySelector('#result');
+  const error = document.querySelector('#error');
+  let rawKey = '';
+
+  function quoteSql(value) {
+    return "'" + value.replaceAll("'", "''") + "'";
+  }
+
+  async function copyText(value) {
+    await navigator.clipboard.writeText(value);
+  }
+
+  document.querySelector('#generate').addEventListener('click', async () => {
+    error.hidden = true;
+    result.hidden = true;
+    rawKey = '';
+    const tenantId = tenantInput.value.trim();
+    const days = Number(daysInput.value);
+    if (!tenantId) { error.textContent = 'Enter an existing tenant ID.'; error.hidden = false; return; }
+    if (!Number.isInteger(days) || days < 1 || days > 3650) {
+      error.textContent = 'Lifetime must be a whole number from 1 to 3650 days.';
+      error.hidden = false;
+      return;
+    }
+    if (!globalThis.crypto?.getRandomValues || !globalThis.crypto?.subtle) {
+      error.textContent = 'This browser does not provide secure local cryptography. Try a current browser.';
+      error.hidden = false;
+      return;
+    }
+
+    const generateButton = document.querySelector('#generate');
+    generateButton.disabled = true;
+    try {
+      const bytes = crypto.getRandomValues(new Uint8Array(32));
+      const binary = String.fromCharCode(...bytes);
+      const secret = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
+      rawKey = 'ap_' + secret;
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawKey));
+      const keyHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+      const principalId = crypto.randomUUID();
+      const issuedAt = new Date();
+      const expiresAt = new Date(issuedAt.getTime() + days * 24 * 60 * 60 * 1000);
+      const issuedSql = quoteSql(issuedAt.toISOString());
+      const expiresSql = quoteSql(expiresAt.toISOString());
+      const tenantSql = quoteSql(tenantId);
+      const principalSql = quoteSql(principalId);
+      const hashSql = quoteSql(keyHash);
+      const sql = `DO $provision$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM tenants WHERE id = ${tenantSql}) THEN\n    RAISE EXCEPTION 'Tenant ID was not found; no key was created';\n  END IF;\n  INSERT INTO api_keys (id, tenant_id, key_hash, revoked, issued_at, expires_at)\n  VALUES (${principalSql}, ${tenantSql}, ${hashSql}, FALSE, ${issuedSql}::timestamptz, ${expiresSql}::timestamptz);\n  INSERT INTO api_key_grants (principal_id, tenant_id, roles, enabled, expires_at)\n  VALUES (${principalSql}, ${tenantSql}, '["lead_reader","conversation_reader"]'::jsonb, TRUE, ${expiresSql}::timestamptz);\nEND;\n$provision$;`;
+      document.querySelector('#key').textContent = rawKey;
+      document.querySelector('#sql').value = sql;
+      result.hidden = false;
+    } catch {
+      rawKey = '';
+      generateButton.disabled = false;
+      error.textContent = 'Key generation failed. No key or SQL was produced.';
+      error.hidden = false;
+    }
+  });
+
+  document.querySelector('#copy-key').addEventListener('click', async () => {
+    if (!rawKey) return;
+    try { await copyText(rawKey); } catch {
+      error.textContent = 'Clipboard access failed. Select and copy the key manually.';
+      error.hidden = false;
+    }
+  });
+  document.querySelector('#copy-sql').addEventListener('click', async () => {
+    try { await copyText(document.querySelector('#sql').value); } catch {
+      error.textContent = 'Clipboard access failed. Select and copy the SQL manually.';
+      error.hidden = false;
+    }
+  });
+</script>
+</body>
+</html>

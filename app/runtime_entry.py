@@ -100,8 +100,12 @@ def main() -> None:
 
         run()
         return
+    if process_type == "provision-api-key":
+        from app.admin.provision_api_key import main as provision_api_key
+
+        raise SystemExit(provision_api_key(sys.argv[2:]))
     raise SystemExit(
-        "usage: python -m app.runtime_entry [api|worker|migrate|staging-queue-smoke]"
+        "usage: python -m app.runtime_entry [api|worker|migrate|staging-queue-smoke|provision-api-key]"
     )
 
 

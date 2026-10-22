@@ -256,6 +256,7 @@ inheritance):
 | Inbound intake | `inbound_writer` |
 | Lead import | `lead_writer` |
 | Lead reads | `lead_reader` |
+| Conversation reads | `conversation_reader` |
 | Campaign creation, enrollment, triggering, replies | `campaign_writer` |
 | Campaign details and analytics | `campaign_reader` |
 
@@ -274,6 +275,38 @@ Credential provisioning is a trusted administrative operation:
    `enabled=True`, and an optional UTC expiration. Persist both atomically.
 4. Deliver the raw key once through a secure channel. Never put it in logs,
    source control, URLs, or request bodies. Use HTTPS outside local development.
+
+For an existing tenant in the isolated staging database, the repository
+includes an interactive provisioning command. Run it from a private terminal
+on a trusted admin machine with the Neon staging URL, never in CI or deployment
+logs. It refuses non-staging environments and non-Neon database hosts:
+
+```bash
+export ENVIRONMENT=staging
+export STAGING_CREDENTIAL_PROVISIONING_ENABLED=true
+read -r -s -p 'Staging Neon DATABASE_URL: ' DATABASE_URL; printf '\n'
+export DATABASE_URL
+python -m app.runtime_entry provision-api-key --tenant-id '<existing-tenant-id>'
+unset DATABASE_URL
+```
+
+Install the project dependencies in a virtual environment first. The command
+asks for confirmation, creates a 90-day key with enabled `lead_reader` and
+`conversation_reader` grants in one database transaction, and displays the raw
+key once after commit. The dashboard needs both read grants to load its lead
+and conversation panels. Use `--expires-in-days N` for a lifetime from 1 to
+3650 days. A missing tenant aborts without creating a key. Deliver the key
+directly through a secure channel; do not paste it into chat or save it in
+logs or source control. This command does not create tenants or expose a
+public credential-provisioning endpoint.
+
+For admins without a private terminal, open
+[ops/staging/provision-dashboard-key.html](ops/staging/provision-dashboard-key.html)
+locally in a current browser; do not host it. It generates the raw key in the
+browser, with no network requests or browser storage, and creates SQL that
+contains only the SHA-256 hash. Run that SQL in the staging Neon SQL Editor,
+then copy the displayed key directly into `/dashboard`. Close the page after
+copying the key; it cannot be recovered from the generated SQL.
 
 SHA-256 is used for generated high-entropy keys, not human-chosen passwords.
 Key/grant validity is checked on each request without a principal cache. To
