@@ -16,5 +16,7 @@ services:
         value: eu-west-1
       - key: DATABASE_REGION_ID
         value: eu-west-1
+      - key: PROVIDER_SECRETS_DIR
+        value: /etc/secrets
       - key: DATABASE_URL
         sync: false

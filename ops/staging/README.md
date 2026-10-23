@@ -19,8 +19,8 @@ checks only. It is not an always-on or customer-data environment.
 4. Wait for `/ready` to pass, then check `/health/components`. `/ready` means
    both PostgreSQL and the worker heartbeat are healthy. The service runs
    the Alembic upgrade at startup and starts one queue poller alongside the
-   API. Every poll logs the claim count, task, conversation, and outcome. No
-   provider secrets are configured, so provider health remains
+   API. Every poll logs the claim count, task, conversation, and outcome.
+   Provider secrets are not checked into Git; provider health remains
    unprobed. Use only synthetic tenants and data.
 
 The Render Free web instance sleeps after 15 minutes without inbound traffic.
@@ -105,6 +105,33 @@ For queue recovery, `POST /queue/tasks/{task_id}/redrive` accepts
 `{ "business_id": "..." }` from a key with `workflow_executor`. It requeues
 dead-letter work or a `running` task whose one-hour lease expired. Active tasks
 and tasks outside the key's tenant/business scope are denied.
+
+## One real Twilio staging inbound
+
+The API accepts a signed Twilio SMS callback after a staging secret file and
+Twilio number are configured. Keep this setup separate from Railway production:
+
+1. In staging Neon, prepare a synthetic tenant, a distinct business, and a
+   contact whose phone is your test sender number. Give the contact explicit
+   SMS consent and ensure its approved region permits inbound SMS.
+2. In Render, add a secret file under `/etc/secrets/`. Name it
+   `sha256(tenant_id + NUL + business_id).hexdigest() + ".json"`. Its JSON
+   object must contain `sms_provider`, `account_sid`, `auth_token`, `from_sms`,
+   and `sms_inbound_webhook_url`. Set that URL to
+   `https://agent-platform-staging.onrender.com/webhooks/sms?tenant_id=<tenant>&business_id=<business>`
+   with the exact seeded IDs. Keep credentials in the secret file, never Git,
+   chat, or the webhook URL.
+3. Set the staging Twilio number's incoming-message webhook to that exact URL
+   with method `POST`. Do not point a production number at staging.
+4. Send one harmless test message from the consented sender to the staging
+   number. Verify the callback returns `202`, the worker logs the task and
+   conversation, the conversation leaves `blocked`, and the tenant-scoped
+   `/conversations` response includes it.
+
+Twilio signature verification uses the exact configured callback URL. The API
+also matches the sender and destination against the seeded contact and staging
+number, records provider event idempotency, and queues the inbound. This test
+requires the staging Twilio number, secret file, and sender/contact records.
 
 If it times out, check the Render service logs and rerun the workflow. The Free
 service may sleep again after inactivity.
