@@ -83,6 +83,11 @@ class DirectoryTenantConfigResolver:
             raise ProviderConfigurationError("provider scope is required")
         scope = hashlib.sha256(f"{tenant_id}\0{business_id}".encode()).hexdigest()
         path = self._root / f"{scope}.json"
+        # Render rejects secret filenames beginning with a digit. Preserve the
+        # legacy name and use the same tenant-scoped hash with a fixed prefix.
+        # Existing invalid or unsafe legacy files must still fail closed.
+        if not path.exists() and not path.is_symlink():
+            path = self._root / f"scope-{scope}.json"
         try:
             if path.is_symlink():
                 raise ProviderConfigurationError("provider configuration is unavailable")
