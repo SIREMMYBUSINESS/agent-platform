@@ -22,8 +22,8 @@ from app.services.outreach_execution import (
 from app.services.recipient_selection import RecipientSelectionError
 
 from app.config import settings
-from app.schemas import InboundRequest, InboundResponse, QueuedInboundRequest
-from app.persistence.session import session_factory
+from app.schemas import InboundRequest, InboundResponse, QueuedInboundRequest, RuntimeConfigurationResponse
+from app.persistence.session import control_session_factory, session_factory
 from app.persistence.unit_of_work import UnitOfWork
 from app.services.inbound import (
     InboundProvisioningError,
@@ -202,10 +202,25 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/runtime", response_model=RuntimeConfigurationResponse, include_in_schema=False)
+def runtime_configuration():
+    """Report non-secret configuration; dependency health is checked separately."""
+    return RuntimeConfigurationResponse(
+        environment=settings.environment,
+        deployment_region_id=settings.deployment_region_id,
+        database_region_id=settings.database_region_id,
+        tenant_region_routing_enabled=settings.tenant_region_routing_enabled,
+    )
+
+
 @app.get("/health/components", include_in_schema=False)
 def component_health():
     """Report dependency and worker health without exposing host or error details."""
-    result = check_components(session_factory=session_factory)
+    result = check_components(
+        session_factory=session_factory,
+        control_session_factory=(control_session_factory
+                                 if settings.tenant_region_routing_enabled else None),
+    )
     return JSONResponse(status_code=200 if result["status"] == "healthy" else 503,
                         content=result)
 
@@ -256,6 +271,12 @@ def readiness():
     try:
         session = session_factory()
         session.exec(text("SELECT 1")).one()
+        if settings.tenant_region_routing_enabled:
+            control_session = control_session_factory()
+            try:
+                control_session.exec(text("SELECT 1")).one()
+            finally:
+                control_session.close()
     except Exception:
         return JSONResponse(status_code=503, content={"status": "not_ready"})
     finally:

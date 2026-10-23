@@ -24,12 +24,16 @@ class SingleProcessWorker:
     def __init__(self, *, uow_factory=None, now_provider=None) -> None:
         self._uow_factory = uow_factory or (lambda: UnitOfWork(session_factory))
         self._now = now_provider or (lambda: datetime.now(UTC))
-        self._region_id = settings.deployment_region_id
+        self._region_id = settings.database_region_id or settings.deployment_region_id
+        if (settings.tenant_region_routing_enabled
+                and settings.database_region_id != settings.deployment_region_id):
+            raise RuntimeError("regional worker database must match its deployment region")
         self._worker_id = os.environ.get("RAILWAY_SERVICE_ID", "agent-platform-worker")[:120]
         self._poller = DatabaseQueuePoller(
             uow_factory=self._uow_factory,
             runner=runner,
             now_provider=self._now,
+            region_id=self._region_id if settings.tenant_region_routing_enabled else None,
         )
 
     def _heartbeat(self, *, started_at: datetime | None = None) -> None:
