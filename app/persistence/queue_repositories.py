@@ -156,9 +156,11 @@ class SQLQueueTaskRepository:
     def redrive(self, *, tenant_id: str, business_id: str, task_id: UUID,
                 now: datetime, stale_before: datetime) -> QueueTaskRecord | None:
         row = self.get(tenant_id=tenant_id, business_id=business_id, task_id=task_id, lock=True)
+        started_at = _aware_utc(row.started_at) if row is not None else None
+        stale_before = _aware_utc(stale_before)
         if row is None or not (row.status == "dead_letter" or
-                               (row.status == "running" and row.started_at is not None
-                                and row.started_at <= stale_before)):
+                               (row.status == "running" and started_at is not None
+                                and stale_before is not None and started_at <= stale_before)):
             return None
         row.status = "pending"
         row.attempts = 0
