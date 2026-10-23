@@ -75,3 +75,8 @@ class QueueTaskView(BaseModel):
     available_at: datetime
     correlation_id: str
     error_code: str | None = None
+
+
+class QueueTaskRedriveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    business_id: str = Field(min_length=1, max_length=160)

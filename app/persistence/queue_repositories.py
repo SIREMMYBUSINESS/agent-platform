@@ -20,7 +20,8 @@ class QueueTaskRepository(Protocol):
     def mark_dispatched(self, *, task_id: UUID, now: datetime, stale_before: datetime) -> bool: ...
     def succeed(self, *, task_id: UUID, now: datetime, result: dict) -> QueueTaskRecord | None: ...
     def fail_or_retry(self, *, task_id: UUID, now: datetime, error_code: str, retry_at: datetime) -> QueueTaskRecord | None: ...
-    def redrive(self, *, tenant_id: str, business_id: str, task_id: UUID, now: datetime) -> QueueTaskRecord | None: ...
+    def redrive(self, *, tenant_id: str, business_id: str, task_id: UUID,
+                now: datetime, stale_before: datetime) -> QueueTaskRecord | None: ...
 
 
 class SQLQueueTaskRepository:
@@ -153,9 +154,11 @@ class SQLQueueTaskRepository:
         return row
 
     def redrive(self, *, tenant_id: str, business_id: str, task_id: UUID,
-                now: datetime) -> QueueTaskRecord | None:
+                now: datetime, stale_before: datetime) -> QueueTaskRecord | None:
         row = self.get(tenant_id=tenant_id, business_id=business_id, task_id=task_id, lock=True)
-        if row is None or row.status != "dead_letter":
+        if row is None or not (row.status == "dead_letter" or
+                               (row.status == "running" and row.started_at is not None
+                                and row.started_at <= stale_before)):
             return None
         row.status = "pending"
         row.attempts = 0

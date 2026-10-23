@@ -12,7 +12,8 @@ from app.auth.api_keys import generate_api_key, hash_api_key
 from app.auth.dependencies import get_auth_uow_factory
 from app.main import app, get_queue_task_service
 from app.observability.metrics import MetricsRegistry
-from app.persistence.models import ApiKey, ApiKeyGrant, Business, Contact, Conversation, EventLog, Tenant
+from app.persistence.models import (ApiKey, ApiKeyGrant, Business, Contact, Conversation,
+                                   EventLog, QueueTaskRecord, Tenant)
 from app.persistence.unit_of_work import UnitOfWork
 from app.queue.contracts import QueueDomain, QueueTaskSubmission
 from app.queue.dispatcher import DurableQueueDispatcher
@@ -238,6 +239,32 @@ def test_worker_retry_dead_letter_and_redrive_are_durable(queue_store):
     redriven = service.redrive(principal("workflow_executor"),
                                business_id="business-a", task_id=task.id)
     assert redriven.status == "pending" and redriven.attempts == 0
+
+
+def test_redrive_recovers_only_expired_running_task(queue_store):
+    engine, factory = queue_store
+    service = create_service(factory)
+    task = service.enqueue(principal("inbound_writer"), submission(key="stale-running"))
+    with Session(engine) as session:
+        row = session.get(QueueTaskRecord, task.id)
+        row.status = "running"
+        row.started_at = NOW - timedelta(hours=2)
+        row.attempts = 1
+        session.commit()
+
+    redriven = service.redrive(principal("workflow_executor"),
+                               business_id="business-a", task_id=task.id)
+    assert redriven.status == "pending" and redriven.attempts == 0
+
+    task = service.enqueue(principal("inbound_writer"), submission(key="active-running"))
+    with Session(engine) as session:
+        row = session.get(QueueTaskRecord, task.id)
+        row.status = "running"
+        row.started_at = NOW - timedelta(minutes=5)
+        session.commit()
+    with pytest.raises(QueueAuthorizationError):
+        service.redrive(principal("workflow_executor"),
+                        business_id="business-a", task_id=task.id)
 
 
 def test_duplicate_worker_delivery_runs_handler_once(queue_store):

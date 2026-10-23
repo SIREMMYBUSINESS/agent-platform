@@ -1,6 +1,6 @@
 """Principal-scoped durable enqueue, idempotency, retries, and DLQ redrive."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from collections.abc import Callable
 from uuid import UUID
 
@@ -136,7 +136,7 @@ class QueueTaskService:
         with self._uow_factory() as uow:
             row = uow.queue_tasks.redrive(
                 tenant_id=principal.tenant_id, business_id=business_id,
-                task_id=task_id, now=now,
+                task_id=task_id, now=now, stale_before=now - timedelta(seconds=3600),
             )
             if row is None:
                 raise QueueAuthorizationError("queue operation denied")

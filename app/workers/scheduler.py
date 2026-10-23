@@ -55,12 +55,11 @@ class SingleProcessWorker:
             })
 
     def _poll(self) -> None:
-        processed = self._poller.run_once()
-        if processed:
-            logger.info("database queue batch processed", extra={
-                "component": "workflow", "operation": "poll",
-                "outcome": "completed", "task_count": processed,
-            })
+        self._poller.run_once(limit=1)
+        # Only refresh the liveness marker after a queue poll succeeds. The
+        # /ready probe therefore detects a stalled consumer loop as well as a
+        # dead worker process.
+        self._heartbeat()
 
     def _daily_optimization(self) -> None:
         from app.workers.optimization_batch import run_daily_optimization
@@ -81,10 +80,6 @@ class SingleProcessWorker:
         scheduler.add_job(
             lambda: self._guarded("queue_poll", self._poll),
             "interval", seconds=5, id="postgres_queue_poll", next_run_time=started_at,
-        )
-        scheduler.add_job(
-            lambda: self._guarded("worker_heartbeat", self._heartbeat),
-            "interval", seconds=10, id="worker_heartbeat", next_run_time=started_at,
         )
         scheduler.add_job(
             lambda: self._guarded("daily_optimization", self._daily_optimization),

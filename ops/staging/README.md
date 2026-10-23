@@ -16,9 +16,11 @@ checks only. It is not an always-on or customer-data environment.
 3. Enter the staging Neon connection string when Render prompts for
    `DATABASE_URL`. Keep it in Render's secret environment settings; do not add
    it to GitHub or a local checked-in file.
-4. Wait for `/ready` to pass, then check `/health/components`. The service runs
+4. Wait for `/ready` to pass, then check `/health/components`. `/ready` means
+   both PostgreSQL and the worker heartbeat are healthy. The service runs
    the Alembic upgrade at startup and starts one queue poller alongside the
-   API. No provider secrets are configured, so provider health remains
+   API. Every poll logs the claim count, task, conversation, and outcome. No
+   provider secrets are configured, so provider health remains
    unprobed. Use only synthetic tenants and data.
 
 The Render Free web instance sleeps after 15 minutes without inbound traffic.
@@ -84,16 +86,25 @@ queue smoke from GitHub Actions:
    connection string. Do not use the Railway production URL.
 2. Open **Actions → Staging queue smoke → Run workflow** and select
    `feat/agent-workspace-dashboard` (or the branch containing this workflow).
-3. The workflow wakes the Render service, verifies `/ready` and
-   `/health/components`, then creates one synthetic tenant, business, and
-   contact, enqueues an inbound `chat` task, and polls its durable queue record
-   until the Render worker marks it `succeeded` (up to three minutes).
+3. The workflow wakes the Render service and waits for `/ready` and
+   `/health/components`. It creates a synthetic tenant with a distinct
+   business ID, contact, approved staging region configuration, explicit chat
+   consent, and a short-lived API key. It POSTs a real authenticated
+   `/inbound/queue` request, then waits up to 60 seconds for the durable task
+   to succeed and its conversation to leave `blocked`. Finally it verifies
+   that conversation appears in `/conversations`, the API used by the dashboard.
 
 The command refuses to run outside `ENVIRONMENT=staging`, without the
 workflow's explicit opt-in, or unless the database hostname belongs to Neon.
 Synthetic records remain in the isolated staging database for audit. The task
 contains no phone number or email and does not invoke SMS, email, voice, or
-other external providers. Provider validation remains a separate gate.
+other external providers. The temporary raw key remains in process memory and
+is revoked after the run. Provider validation remains a separate gate.
+
+For queue recovery, `POST /queue/tasks/{task_id}/redrive` accepts
+`{ "business_id": "..." }` from a key with `workflow_executor`. It requeues
+dead-letter work or a `running` task whose one-hour lease expired. Active tasks
+and tasks outside the key's tenant/business scope are denied.
 
 If it times out, check the Render service logs and rerun the workflow. The Free
 service may sleep again after inactivity.

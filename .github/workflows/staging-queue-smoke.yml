@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   queue-smoke:
-    name: Enqueue and await provider-free staging task
+    name: Prove inbound workflow and dashboard visibility
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-staging-queue-smoke]')
     runs-on: ubuntu-24.04
     timeout-minutes: 8

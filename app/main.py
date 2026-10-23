@@ -2,7 +2,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import text
 
 from app.auth.dependencies import get_authenticated_principal, require_role
 from app.security import AuthenticatedPrincipal
@@ -51,9 +50,10 @@ from app.observability.middleware import ObservabilityMiddleware
 from app.observability.metrics import metrics
 from app.observability.health import check_components
 from app.observability.collectors import refresh_optimization_health, refresh_queue_depths
-from app.queue.contracts import QueueDomain, QueueTaskSubmission, QueueTaskView
+from app.queue.contracts import (QueueDomain, QueueTaskRedriveRequest,
+                                 QueueTaskSubmission, QueueTaskView)
 from app.queue.service import QueueAuthorizationError, QueueTaskConflict, QueueTaskService
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 configure_structured_logging(settings.log_level)
 app = FastAPI(title=settings.app_name)
@@ -244,6 +244,17 @@ async def queue_authorization_error_handler(request: Request, exc: QueueAuthoriz
     return JSONResponse(status_code=403, content={"detail": "Queue operation denied"})
 
 
+@app.post("/queue/tasks/{task_id}/redrive", response_model=QueueTaskView)
+def redrive_queue_task(
+    task_id: UUID,
+    request: QueueTaskRedriveRequest,
+    principal: AuthenticatedPrincipal = Depends(require_role("workflow_executor")),
+    service: QueueTaskService = Depends(get_queue_task_service),
+) -> QueueTaskView:
+    """Requeue dead-letter work or work with an expired worker lease."""
+    return service.redrive(principal, business_id=request.business_id, task_id=task_id)
+
+
 @app.exception_handler(QueueTaskConflict)
 async def queue_conflict_handler(request: Request, exc: QueueTaskConflict) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": str(exc)})
@@ -251,17 +262,13 @@ async def queue_conflict_handler(request: Request, exc: QueueTaskConflict) -> JS
 
 @app.get("/ready", include_in_schema=False)
 def readiness():
-    """Readiness probe; validates the PostgreSQL connection without exposing errors."""
-    session = None
-    try:
-        session = session_factory()
-        session.exec(text("SELECT 1")).one()
-    except Exception:
-        return JSONResponse(status_code=503, content={"status": "not_ready"})
-    finally:
-        if session is not None:
-            session.close()
-    return {"status": "ready"}
+    """Ready only when PostgreSQL and the worker consumer heartbeat are healthy."""
+    result = check_components(session_factory=session_factory)
+    ready = result["status"] == "healthy"
+    return JSONResponse(status_code=200 if ready else 503, content={
+        "status": "ready" if ready else "not_ready",
+        "components": result["components"],
+    })
 
 
 @app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)
