@@ -12,6 +12,12 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 
+class StagingAPIError(RuntimeError):
+    def __init__(self, method: str, path: str, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(f"staging API {method} {path} returned HTTP {status_code}")
+
+
 def _require_staging_opt_in(environment: str, opt_in: str) -> None:
     if environment.strip().lower() != "staging":
         raise RuntimeError("staging queue smoke refused: ENVIRONMENT must be staging")
@@ -26,7 +32,8 @@ def _require_neon_database(database_url: str) -> None:
 
 
 def _request_json(url: str, *, key: str, method: str = "GET",
-                  body: dict | None = None, idempotency_key: str | None = None) -> dict:
+                  body: dict | None = None, idempotency_key: str | None = None,
+                  timeout_seconds: float = 20) -> dict:
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
     if data is not None:
@@ -35,12 +42,10 @@ def _request_json(url: str, *, key: str, method: str = "GET",
         headers["Idempotency-Key"] = idempotency_key
     request = Request(url, data=data, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=20) as response:
+        with urlopen(request, timeout=timeout_seconds) as response:
             return json.load(response)
     except HTTPError as exc:
-        raise RuntimeError(
-            f"staging API {method} {urlsplit(url).path} returned HTTP {exc.code}"
-        ) from None
+        raise StagingAPIError(method, urlsplit(url).path, exc.code) from None
 
 
 def run(*, timeout_seconds: int = 60, poll_interval_seconds: float = 2) -> None:
@@ -151,9 +156,23 @@ def run(*, timeout_seconds: int = 60, poll_interval_seconds: float = 2) -> None:
             if last_status == "succeeded" and conversation is not None:
                 if workflow_state == "blocked":
                     raise RuntimeError("staging inbound workflow completed but conversation stayed blocked")
-                listing = _request_json(
-                    f"{origin}/conversations?offset=0&limit=100", key=raw_key,
-                )
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            "conversation reached a non-blocked state but the dashboard API "
+                            "did not become available within 60 seconds"
+                        )
+                    try:
+                        listing = _request_json(
+                            f"{origin}/conversations?offset=0&limit=100", key=raw_key,
+                            timeout_seconds=min(10, remaining),
+                        )
+                        break
+                    except StagingAPIError as exc:
+                        if exc.status_code not in {502, 503, 504}:
+                            raise
+                        time.sleep(min(2, max(0, deadline - time.monotonic())))
                 visible = any(str(item.get("id")) == conversation_id
                               for item in listing.get("items", []))
                 if not visible:

@@ -49,6 +49,10 @@ jobs:
           PY
       - name: Install runtime dependencies
         run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Run queue and staging smoke unit tests
+        run: |
+          python -m pip install --disable-pip-version-check '.[test]'
+          python -m pytest -q tests/test_queue_runtime.py tests/test_staging_queue_smoke.py
       - name: Wake staging API and worker
         run: |
           python - <<'PY'
@@ -75,5 +79,5 @@ jobs:
           else:
               raise SystemExit(f"Staging API/worker readiness failed: {last_error}")
           PY
-      - name: Run provider-free queue smoke check
+      - name: Prove real inbound workflow and dashboard visibility
         run: python -m app.staging_queue_smoke
