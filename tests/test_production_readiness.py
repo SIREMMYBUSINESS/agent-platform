@@ -162,7 +162,12 @@ def test_readiness_probe_reports_database_unavailable_without_leaking_details(mo
     monkeypatch.setattr("app.main.session_factory", lambda: Session())
     response = TestClient(app).get("/ready")
     assert response.status_code == 503
-    assert response.json() == {"status": "not_ready"}
+    assert response.json() == {
+        "status": "not_ready",
+        "components": {
+            "database": "unhealthy", "worker": "unhealthy", "providers": "not_probed",
+        },
+    }
     assert "secret" not in response.text
 
 
@@ -178,7 +183,12 @@ def test_readiness_probe_reports_session_factory_failure_as_unavailable(monkeypa
     response = TestClient(main.app).get("/ready")
 
     assert response.status_code == 503
-    assert response.json() == {"status": "not_ready"}
+    assert response.json() == {
+        "status": "not_ready",
+        "components": {
+            "database": "unhealthy", "worker": "unhealthy", "providers": "not_probed",
+        },
+    }
     assert "database driver" not in response.text
 
 
@@ -187,11 +197,15 @@ def test_readiness_probe_checks_postgres_with_a_small_select(monkeypatch):
         closed = False
 
         def exec(self, statement):
-            assert str(statement) == "SELECT 1"
+            if str(statement) == "SELECT 1":
+                self.database_checked = True
             return self
 
         def one(self):
             return (1,)
+
+        def first(self):
+            return object()
 
         def close(self):
             self.closed = True
@@ -200,5 +214,11 @@ def test_readiness_probe_checks_postgres_with_a_small_select(monkeypatch):
     monkeypatch.setattr("app.main.session_factory", lambda: session)
     response = TestClient(app).get("/ready")
     assert response.status_code == 200
-    assert response.json() == {"status": "ready"}
+    assert response.json() == {
+        "status": "ready",
+        "components": {
+            "database": "healthy", "worker": "healthy", "providers": "not_probed",
+        },
+    }
+    assert session.database_checked
     assert session.closed
