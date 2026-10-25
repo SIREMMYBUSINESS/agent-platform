@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import base64
 import json
+import logging
 from datetime import UTC, datetime
 from email.utils import parseaddr
 from urllib.parse import parse_qsl
@@ -29,6 +30,7 @@ from app.security import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/webhooks", tags=["provider-webhooks"])
 MAX_BODY = 65_536
+logger = logging.getLogger("app.observability")
 
 
 def _scoped_config(tenant_id: str, business_id: str):
@@ -38,7 +40,11 @@ def _scoped_config(tenant_id: str, business_id: str):
         return DirectoryTenantConfigResolver(settings.provider_secrets_dir).resolve(
             tenant_id=tenant_id, business_id=business_id,
         )
-    except ProviderConfigurationError:
+    except ProviderConfigurationError as exc:
+        logger.warning("provider webhook scope configuration unavailable", extra={
+            "component": "provider_webhook", "operation": "config_resolution",
+            "outcome": "rejected", "reason": str(exc),
+        })
         raise HTTPException(403, "Provider webhook authentication failed") from None
 
 
@@ -96,13 +102,26 @@ async def inbound_sms(request: Request):
     values = {key: all_values[-1] for key, all_values in params.items()}
     config = _scoped_config(tenant_id, business_id)
     expected_url = config.get("sms_inbound_webhook_url", "")
-    if (not expected_url.startswith("https://")
-            or values.get("AccountSid") != config.get("account_sid")
-            or not validate_twilio_signature(
-                callback_url=expected_url, parameters=params,
-                signature=request.headers.get("x-twilio-signature", ""),
-                auth_token=config.get("auth_token", ""),
-            )):
+    url_configured = expected_url.startswith("https://")
+    account_sid_matches = values.get("AccountSid") == config.get("account_sid")
+    signature = request.headers.get("x-twilio-signature", "")
+    signature_valid = url_configured and validate_twilio_signature(
+        callback_url=expected_url, parameters=params,
+        signature=signature, auth_token=config.get("auth_token", ""),
+    )
+    if not (url_configured and account_sid_matches and signature_valid):
+        reason = (
+            "callback_url_unconfigured" if not url_configured else
+            "account_sid_mismatch" if not account_sid_matches else
+            "signature_invalid"
+        )
+        logger.warning("Twilio inbound webhook authentication rejected", extra={
+            "component": "provider_webhook", "operation": "sms_inbound_auth",
+            "outcome": "rejected", "reason": reason,
+            "callback_url_configured": url_configured,
+            "account_sid_matches": account_sid_matches,
+            "signature_present": bool(signature),
+        })
         raise HTTPException(403, "Provider callback authentication failed")
     sender, recipient = values.get("From", ""), values.get("To", "")
     external_id, body = values.get("MessageSid", ""), values.get("Body", "")
