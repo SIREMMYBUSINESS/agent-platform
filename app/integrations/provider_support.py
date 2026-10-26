@@ -65,8 +65,9 @@ class DirectoryTenantConfigResolver:
     """Resolve tenant credentials from read-only, scope-hashed mounted secret files.
 
     A file is named by SHA-256 of the tenant/business scope, never by caller text.
-    The contents are a JSON object of string configuration values. It is intended
-    for a secret volume (for example, a Kubernetes projected Secret volume).
+    Platforms that require filenames to start with a letter may prefix the digest
+    with ``scope-``. The contents are a JSON object of string configuration
+    values. It is intended for a protected secret volume.
     """
 
     def __init__(self, root: str | Path, *, max_bytes: int = 65536) -> None:
@@ -82,7 +83,19 @@ class DirectoryTenantConfigResolver:
         if not tenant_id.strip() or not business_id.strip():
             raise ProviderConfigurationError("provider scope is required")
         scope = hashlib.sha256(f"{tenant_id}\0{business_id}".encode()).hexdigest()
-        path = self._root / f"{scope}.json"
+        # Render requires secret filenames to begin with a letter. Keep the
+        # original digest filename for existing deployments and accept the
+        # Render-safe prefixed form as well. The extensionless prefixed form is
+        # accepted for existing Render files created without a .json suffix.
+        candidates = (
+            self._root / f"{scope}.json",
+            self._root / f"scope-{scope}.json",
+            self._root / f"scope-{scope}",
+        )
+        matches = [candidate for candidate in candidates if os.path.lexists(candidate)]
+        if len(matches) > 1:
+            raise ProviderConfigurationError("provider configuration is ambiguous")
+        path = matches[0] if matches else candidates[0]
         try:
             if path.is_symlink():
                 raise ProviderConfigurationError("provider configuration is unavailable")

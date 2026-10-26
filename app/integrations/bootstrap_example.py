@@ -1,8 +1,10 @@
 """Example worker provider bootstrap using protected mounted secret files.
 
 Set WORKER_BOOTSTRAP_MODULE=app.integrations.bootstrap_example and
-PROVIDER_SECRETS_DIR to a read-only secret volume. Each SHA-256 hashed
-tenant/business JSON file contains provider selectors and provider credentials.
+PROVIDER_SECRETS_DIR to a read-only secret volume. Each tenant/business JSON
+file is named with the SHA-256 scope digest (prefixed with ``scope-`` when the
+platform requires an alphabetic first character) and contains provider
+selectors and credentials.
 """
 from app.config import settings
 from app.integrations.factory import ProviderAdapterFactory, TenantScopedMessageSender

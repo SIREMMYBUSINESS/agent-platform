@@ -38,6 +38,17 @@ def test_directory_secret_resolver_is_scope_hashed_and_fails_closed(tmp_path):
         resolver.resolve(tenant_id="tenant-b", business_id="business-a")
 
 
+@pytest.mark.parametrize("suffix", (".json", ""))
+def test_directory_secret_resolver_accepts_render_safe_scope_filename(tmp_path, suffix):
+    digest = hashlib.sha256(b"tenant-a\0business-a").hexdigest()
+    path = tmp_path / f"scope-{digest}{suffix}"
+    path.write_text(json.dumps({"auth_token": "render-secret"}), encoding="utf-8")
+    path.chmod(0o400)
+
+    resolver = DirectoryTenantConfigResolver(tmp_path)
+    assert resolver.resolve(tenant_id="tenant-a", business_id="business-a")["auth_token"] == "render-secret"
+
+
 @pytest.mark.skipif(__import__("os").name == "nt", reason="Windows ACLs are not represented by POSIX mode bits")
 def test_directory_secret_resolver_rejects_overly_permissive_secret_file(tmp_path):
     path = _scope_file(tmp_path, "tenant-a", "business-a", {"auth_token": "private"})
