@@ -31,6 +31,19 @@ from app.security import AuthenticatedPrincipal
 router = APIRouter(prefix="/webhooks", tags=["provider-webhooks"])
 MAX_BODY = 65_536
 logger = logging.getLogger("app.observability")
+_PROVIDER_CONFIG_REASON_CODES = {
+    "provider secret directory is unavailable": "secret_directory_unavailable",
+    "provider scope is required": "scope_required",
+    "provider configuration is ambiguous": "multiple_scope_files",
+    "provider configuration is unavailable": "scope_file_unavailable",
+    "provider secret file permissions are too broad": "scope_file_permissions",
+    "provider configuration is invalid": "scope_file_invalid",
+}
+
+
+def _twilio_empty_response() -> Response:
+    """Acknowledge queued inbound SMS using the TwiML response Twilio expects."""
+    return Response(content="<Response></Response>", media_type="application/xml", status_code=200)
 
 
 def _scoped_config(tenant_id: str, business_id: str):
@@ -43,7 +56,10 @@ def _scoped_config(tenant_id: str, business_id: str):
     except ProviderConfigurationError as exc:
         logger.warning("provider webhook scope configuration unavailable", extra={
             "component": "provider_webhook", "operation": "config_resolution",
-            "outcome": "rejected", "reason": str(exc),
+            "outcome": "rejected",
+            "reason_code": _PROVIDER_CONFIG_REASON_CODES.get(
+                str(exc), "provider_configuration_rejected",
+            ),
         })
         raise HTTPException(403, "Provider webhook authentication failed") from None
 
@@ -86,7 +102,7 @@ def _persist(tenant_id: str, business_id: str, provider: str, event_key: str,
         return {"id": row.id, "result": dict(row.result)}, created
 
 
-@router.post("/sms", status_code=202)
+@router.post("/sms", status_code=200)
 async def inbound_sms(request: Request):
     tenant_id, business_id = request.query_params.get("tenant_id", ""), request.query_params.get("business_id", "")
     if not tenant_id or not business_id:
@@ -159,8 +175,7 @@ async def inbound_sms(request: Request):
                             "canceled_enrollments": canceled_enrollments},
                 )
                 event_id = event.id
-        return {"accepted": True, "duplicate": not created, "event_id": str(event_id),
-                "consent_status": "revoked"}
+        return _twilio_empty_response()
     principal = AuthenticatedPrincipal(
         principal_id=f"twilio:{config['account_sid']}", tenant_id=tenant_id,
         roles=("inbound_writer",), auth_source="twilio_webhook", issued_at=datetime.now(UTC),
@@ -178,12 +193,12 @@ async def inbound_sms(request: Request):
         )
     except Exception:
         raise HTTPException(503, "Inbound message could not be queued") from None
-    stored, created = _persist(
+    _persist(
         tenant_id, business_id, "twilio", external_id, "sms.inbound",
         {key: values.get(key) for key in ("MessageSid", "From", "To", "Body", "NumMedia")},
         {"queue_task_id": str(task.id), "status": task.status.value},
     )
-    return {"accepted": True, "duplicate": not created, "event_id": str(stored["id"])}
+    return _twilio_empty_response()
 
 
 @router.post("/email/inbound", status_code=202)

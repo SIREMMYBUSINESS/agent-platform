@@ -177,11 +177,14 @@ def test_inbound_sms_webhook_verifies_then_enqueues_once(monkeypatch):
                "MessageSid": "SM" + "a" * 32, "Body": "Hello"}
     first = client.post(url, data=payload, headers={"X-Twilio-Signature": "verified"})
     second = client.post(url, data=payload, headers={"X-Twilio-Signature": "verified"})
-    assert first.status_code == second.status_code == 202
-    assert first.json()["duplicate"] is False and second.json()["duplicate"] is True
+    assert first.status_code == second.status_code == 200
+    assert first.headers["content-type"].startswith("application/xml")
+    assert first.text == second.text == "<Response></Response>"
     optout = dict(payload, MessageSid="SM" + "b" * 32, Body="STOP")
     stopped = client.post(url, data=optout, headers={"X-Twilio-Signature": "verified"})
-    assert stopped.status_code == 202 and stopped.json()["consent_status"] == "revoked"
+    assert stopped.status_code == 200
+    assert stopped.headers["content-type"].startswith("application/xml")
+    assert stopped.text == "<Response></Response>"
     with Session(engine) as session:
         assert session.exec(select(ConsentRecord)).one().status == "revoked"
     engine.dispose()

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode, parse_qs
@@ -18,6 +19,7 @@ from app.integrations.sms.twilio_webhooks import (
     build_status_callback_url, validate_twilio_signature,
 )
 from app.integrations.sms.twilio import TwilioMessageSender
+from app.observability.logging import StructuredFormatter
 from app.main import app
 from app.routes.provider_webhooks import get_outreach_service
 
@@ -47,6 +49,26 @@ def test_directory_secret_resolver_accepts_render_safe_scope_filename(tmp_path, 
 
     resolver = DirectoryTenantConfigResolver(tmp_path)
     assert resolver.resolve(tenant_id="tenant-a", business_id="business-a")["auth_token"] == "render-secret"
+
+
+def test_structured_provider_config_rejection_logs_safe_reason_code(monkeypatch, caplog):
+    import app.routes.provider_ingress as ingress
+    from fastapi import HTTPException
+
+    class InvalidResolver:
+        def __init__(self, _): pass
+        def resolve(self, *, tenant_id, business_id):
+            raise ProviderConfigurationError("provider configuration is invalid")
+
+    monkeypatch.setattr(ingress.settings, "provider_secrets_dir", Path("/tmp/secrets"))
+    monkeypatch.setattr(ingress, "DirectoryTenantConfigResolver", InvalidResolver)
+    with caplog.at_level(logging.WARNING, logger="app.observability"):
+        with pytest.raises(HTTPException):
+            ingress._scoped_config("tenant-a", "business-a")
+
+    record = next(record for record in caplog.records if record.msg == "provider webhook scope configuration unavailable")
+    structured = json.loads(StructuredFormatter().format(record))
+    assert structured["reason_code"] == "scope_file_invalid"
 
 
 @pytest.mark.skipif(__import__("os").name == "nt", reason="Windows ACLs are not represented by POSIX mode bits")
