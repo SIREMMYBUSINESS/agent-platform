@@ -19,6 +19,25 @@ class ProviderConfigurationError(RuntimeError):
     pass
 
 
+_PROVIDER_CONFIGURATION_REASON_CODES = {
+    "provider scope is required": "scope_missing",
+    "provider configuration is unavailable for tenant scope": "scope_unconfigured",
+    "provider secret directory is unavailable": "secret_directory_unavailable",
+    "provider configuration is ambiguous": "scope_file_ambiguous",
+    "provider configuration is unavailable": "scope_file_unavailable",
+    "provider secret file permissions are too broad": "scope_file_permissions",
+    "provider configuration is invalid": "scope_file_invalid",
+}
+
+
+def safe_provider_configuration_reason_code(error: ProviderConfigurationError) -> str:
+    """Return a stable, non-sensitive reason code for provider config failures."""
+    message = str(error)
+    if message.startswith("unsupported ") and message.endswith(" provider"):
+        return "provider_selector_unsupported"
+    return _PROVIDER_CONFIGURATION_REASON_CODES.get(message, "configuration_error")
+
+
 class ProviderHTTPError(RuntimeError):
     def __init__(self, status_code: int, *, retryable: bool) -> None:
         super().__init__(f"provider_http_error:{status_code}")
@@ -203,5 +222,5 @@ __all__ = [
     "CallableAuditSink", "DirectoryTenantConfigResolver", "JSONHTTPTransport", "MappingTenantConfig",
     "ProviderAuditEvent", "ProviderAuditSink", "ProviderConfigurationError",
     "ProviderHTTPError", "TenantConfigResolver", "UrllibJSONTransport", "emit_audit",
-    "json_request",
+    "json_request", "safe_provider_configuration_reason_code",
 ]

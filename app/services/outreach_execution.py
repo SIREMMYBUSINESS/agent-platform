@@ -11,6 +11,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
+from app.integrations.provider_support import (
+    ProviderConfigurationError, safe_provider_configuration_reason_code,
+)
 from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 from app.observability.metrics import metrics
@@ -204,6 +207,11 @@ class OutreachExecutionService:
                         content=row.content, idempotency_key=row.idempotency_key,
                         message_id=row.id, attempt=claimed.attempts,
                     )
+            except ProviderConfigurationError as exc:
+                # Persist only a stable reason code. The raw exception message
+                # stays out of records and logs, while operators can distinguish
+                # a missing scope file from an invalid or ambiguous one.
+                error = f"provider_config:{safe_provider_configuration_reason_code(exc)}"
             except Exception as exc:  # provider details may contain secrets or PII
                 error = f"provider_error:{type(exc).__name__}"
         with self._uow_factory() as uow:
