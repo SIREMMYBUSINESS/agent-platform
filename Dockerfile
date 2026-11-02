@@ -7,8 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 RUN groupadd --system --gid 10001 app && \
     if ! getent group 1000 >/dev/null; then groupadd --gid 1000 render-secrets; fi && \
-    render_secret_group="$(getent group 1000 | cut -d: -f1)" && \
-    useradd --system --uid 10001 --gid app --groups "$render_secret_group" --home-dir /app app
+    useradd --system --uid 10001 --gid 1000 --groups app --home-dir /app app
 
 COPY pyproject.toml requirements.txt alembic.ini ./
 COPY app ./app
@@ -16,7 +15,7 @@ COPY migrations ./migrations
 COPY ops/staging/start.sh ./ops/staging/start.sh
 RUN python -m pip install --no-cache-dir -r requirements.txt .
 
-USER app
+USER 10001:1000
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()" || exit 1
