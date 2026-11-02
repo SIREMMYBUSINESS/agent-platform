@@ -6,7 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 RUN groupadd --system --gid 10001 app && \
-    useradd --system --uid 10001 --gid app --home-dir /app app
+    if ! getent group 1000 >/dev/null; then groupadd --gid 1000 render-secrets; fi && \
+    render_secret_group="$(getent group 1000 | cut -d: -f1)" && \
+    useradd --system --uid 10001 --gid app --groups "$render_secret_group" --home-dir /app app
 
 COPY pyproject.toml requirements.txt alembic.ini ./
 COPY app ./app
