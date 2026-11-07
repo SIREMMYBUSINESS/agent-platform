@@ -77,6 +77,7 @@ class QueueTaskRunner:
                  lease_seconds: int = 3600) -> None:
         self._uow_factory = uow_factory
         self._handlers = handlers
+        self._region_id = settings.database_region_id or settings.deployment_region_id
         self._now = now_provider or (lambda: datetime.now(UTC))
         self._base_retry_seconds = base_retry_seconds
         self._max_retry_seconds = max_retry_seconds
@@ -99,7 +100,13 @@ class QueueTaskRunner:
                 max_attempts=row.max_attempts,
             )
             available_at = row.available_at
-            claimed = uow.queue_tasks.claim(task_id=task_id, now=now, lease=self._lease)
+            if (settings.tenant_region_routing_enabled
+                    and row.region_id != self._region_id):
+                return {"status": "region_mismatch"}
+            claimed = uow.queue_tasks.claim(
+                task_id=task_id, now=now, lease=self._lease,
+                region_id=self._region_id if settings.tenant_region_routing_enabled else None,
+            )
         if claimed is None:
             return {"status": "duplicate_or_terminal"}
         if available_at.tzinfo is None:
@@ -114,8 +121,7 @@ class QueueTaskRunner:
         started = time.perf_counter()
         parent = extract_context({"traceparent": task.traceparent or ""})
         try:
-            if (task.region_id is not None
-                    and task.region_id != settings.deployment_region_id):
+            if (task.region_id is not None and task.region_id != self._region_id):
                 raise RuntimeError("regional_worker_mismatch")
             with start_span("queue.task.execute", parent_context=parent, attributes={
                 "queue.domain": task.domain, "task.name": task.task_name,

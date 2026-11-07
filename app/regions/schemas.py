@@ -1,5 +1,7 @@
 """Validated API requests for tenant region provisioning and policy review."""
+from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -80,7 +82,7 @@ class TenantRegionConfigView(BaseModel):
     active: bool
     approval_status: str
     approved_by: str | None
-    approved_at: object | None
+    approved_at: datetime | None
 
 
 class TenantRegionsResponse(BaseModel):
@@ -101,8 +103,8 @@ class RegionPolicyResponse(BaseModel):
 
 
 class RegionPolicyOverrideView(BaseModel):
-    id: object
+    id: UUID
     region_id: str
     override_rules: dict
     approved_by: str
-    created_at: object
+    created_at: datetime

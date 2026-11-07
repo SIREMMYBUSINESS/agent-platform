@@ -66,7 +66,11 @@ def test_structured_formatter_emits_trace_context_without_request_payload():
     assert "Authorization" not in output
 
 
-def test_metrics_endpoint_requires_metrics_reader_and_returns_prometheus():
+def test_metrics_endpoint_requires_metrics_reader_and_returns_prometheus(monkeypatch):
+    import app.main as main_module
+
+    monkeypatch.setattr(main_module, "refresh_queue_depths", lambda _factory: None)
+    monkeypatch.setattr(main_module, "refresh_optimization_health", lambda _factory: None)
     client = TestClient(app)
     assert client.get("/metrics").status_code == 401
     principal = AuthenticatedPrincipal(

@@ -15,6 +15,9 @@ SETTING_ENV_VARS = (
     "INBOUND_TENANT_ID",
     "DATABASE_URL",
     "DATABASE_URL_FILE",
+    "CONTROL_DATABASE_URL",
+    "CONTROL_DATABASE_URL_FILE",
+    "TENANT_REGION_ROUTING_ENABLED",
     "REDIS_URL_FILE",
     "PROVIDER_SECRETS_DIR",
     "WORKER_BOOTSTRAP_MODULE",
@@ -163,6 +166,38 @@ def test_production_rejects_unverified_database_tls_and_inline_credentials(monke
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@db.example/platform?sslmode=verify-full")
     with pytest.raises(RuntimeError, match="DATABASE_URL_FILE"):
+        load_settings()
+
+
+def test_regional_routing_requires_separate_control_database_and_matching_region(monkeypatch, tmp_path):
+    from app.config import load_settings
+
+    clear_settings_environment(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TENANT_REGION_ROUTING_ENABLED", "true")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@regional.example/eu")
+    monkeypatch.setenv("DEPLOYMENT_REGION_ID", "eu-west-1")
+    monkeypatch.setenv("DATABASE_REGION_ID", "eu-west-1")
+    with pytest.raises(RuntimeError, match="CONTROL_DATABASE_URL is required"):
+        load_settings()
+
+    monkeypatch.setenv("CONTROL_DATABASE_URL", "postgresql://user:pass@control.example/global")
+    assert load_settings().tenant_region_routing_enabled is True
+
+    monkeypatch.setenv("DATABASE_REGION_ID", "us-east-1")
+    with pytest.raises(RuntimeError, match="must match DEPLOYMENT_REGION_ID"):
+        load_settings()
+
+
+def test_explicit_database_region_mismatch_rejected_without_routing(monkeypatch, tmp_path):
+    from app.config import load_settings
+
+    clear_settings_environment(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DEPLOYMENT_REGION_ID", "eu-west-1")
+    monkeypatch.setenv("DATABASE_REGION_ID", "us-east-1")
+    monkeypatch.setenv("TENANT_REGION_ROUTING_ENABLED", "false")
+    with pytest.raises(RuntimeError, match="database region must match"):
         load_settings()
 
 

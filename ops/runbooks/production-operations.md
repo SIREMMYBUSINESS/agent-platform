@@ -1,5 +1,7 @@
 # Production operations runbook
 
+Tenant assignment lookup and a fail-closed local-region guard are implemented behind `TENANT_REGION_ROUTING_ENABLED`; physical regional isolation and tenant migration are not. For the target architecture and gated migration/recovery procedure, see [Tenant regional data plane](../architecture/tenant-regional-data-plane.md) and [Regional tenant migration and recovery](regional-tenant-migration-recovery.md). Do not enable the flag or move a live tenant until all paths and regional services meet those gates.
+
 ## PostgreSQL migration and validation
 
 Use a dedicated disposable database whose name ends in `_test` for the live migration suite. The fixture creates and drops a unique temporary schema in that database and refuses other database names.

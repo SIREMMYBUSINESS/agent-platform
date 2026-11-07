@@ -29,6 +29,12 @@ from app.services.reply_service import CampaignReplyNotFoundError
 router = APIRouter(tags=["workflows"])
 
 
+def _require_local_token_routing() -> None:
+    """Public contact tokens need directory-based home-region lookup first."""
+    if settings.tenant_region_routing_enabled:
+        raise HTTPException(503, "Contact action routing is unavailable")
+
+
 @router.get("/businesses/{business_id}/funnel", response_model=BusinessFunnelResponse)
 def business_funnel(
     business_id: str,
@@ -72,6 +78,7 @@ def confirm_appointment(
 ):
     try:
         if request.token is not None:
+            _require_local_token_routing()
             return AppointmentWorkflowService(
                 trusted_tenant_id="contact-token",
                 uow_factory=lambda: UnitOfWork(session_factory),
@@ -108,6 +115,7 @@ def cancel_appointment(
 ):
     try:
         if request.token is not None:
+            _require_local_token_routing()
             result = AppointmentWorkflowService(
                 trusted_tenant_id="contact-token",
                 uow_factory=lambda: UnitOfWork(session_factory),
@@ -129,6 +137,7 @@ def cancel_appointment(
 
 @router.post("/contact/appointments/confirm", response_model=AppointmentWorkflowResponse)
 def confirm_contact_appointment(request: ContactAppointmentActionRequest):
+    _require_local_token_routing()
     service = AppointmentWorkflowService(
         trusted_tenant_id="contact-token", uow_factory=lambda: UnitOfWork(session_factory),
         calendar_provider=build_calendar_provider() if settings.provider_secrets_dir else None,
@@ -143,6 +152,7 @@ def confirm_contact_appointment(request: ContactAppointmentActionRequest):
 
 @router.post("/contact/appointments/cancel", response_model=AppointmentWorkflowResponse)
 def cancel_contact_appointment(request: ContactAppointmentCancelRequest):
+    _require_local_token_routing()
     service = AppointmentWorkflowService(
         trusted_tenant_id="contact-token", uow_factory=lambda: UnitOfWork(session_factory),
         calendar_provider=build_calendar_provider() if settings.provider_secrets_dir else None,

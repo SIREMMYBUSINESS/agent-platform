@@ -72,6 +72,7 @@ EXPECTED_TABLES = {
     "business_vertical_profiles",
     "vertical_intake_sessions",
     "worker_heartbeats",
+    "tenant_database_assignments",
 }
 
 

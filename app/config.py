@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Local service addresses only; credentials belong in the environment or .env.
     database_url: str = "postgresql://localhost:5432/agent_platform"
     database_url_file: Path | None = None
+    control_database_url: str | None = Field(default=None, repr=False)
+    control_database_url_file: Path | None = None
+    tenant_region_routing_enabled: bool = False
     redis_url_file: Path | None = None
     provider_secrets_dir: Path | None = None
     worker_bootstrap_module: str | None = None
@@ -96,6 +99,17 @@ class Settings(BaseSettings):
             raise ValueError("must be a PostgreSQL URL with a host and database name")
         return value
 
+    @field_validator("control_database_url")
+    @classmethod
+    def validate_control_database_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        parsed = urlsplit(value)
+        is_postgresql = parsed.scheme == "postgresql" or parsed.scheme.startswith("postgresql+")
+        if not is_postgresql or not parsed.hostname or not parsed.path.strip("/"):
+            raise ValueError("must be a PostgreSQL URL with a host and database name")
+        return value
+
     @field_validator("redis_url")
     @classmethod
     def validate_redis_url(cls, value: str) -> str:
@@ -154,6 +168,7 @@ def load_settings() -> Settings:
     # Redis file loading remains for rolling back older images; current runtime
     # paths never read or connect to this setting.
     for env_name, field_name in (("DATABASE_URL_FILE", "database_url"),
+                                 ("CONTROL_DATABASE_URL_FILE", "control_database_url"),
                                  ("REDIS_URL_FILE", "redis_url")):
         secret_file = os.environ.get(env_name) or getattr(base_settings, env_name.lower())
         if not secret_file:
@@ -188,6 +203,29 @@ def load_settings() -> Settings:
             raise RuntimeError("production DATABASE_URL must be supplied through DATABASE_URL_FILE")
         if base_settings.database_region_id != base_settings.deployment_region_id:
             raise RuntimeError("production database region must match DEPLOYMENT_REGION_ID")
+        if (base_settings.tenant_region_routing_enabled
+                and base_settings.control_database_url is not None
+                and base_settings.control_database_url_file is None):
+            raise RuntimeError("production CONTROL_DATABASE_URL must be supplied through CONTROL_DATABASE_URL_FILE")
+        if base_settings.tenant_region_routing_enabled and base_settings.control_database_url:
+            control = urlsplit(base_settings.control_database_url)
+            control_sslmode = parse_qs(control.query).get("sslmode", [""])[-1]
+            if control_sslmode not in {"verify-full", "verify-ca"}:
+                raise RuntimeError("production CONTROL_DATABASE_URL must require TLS certificate verification")
+    if (base_settings.database_region_id is not None
+            and base_settings.database_region_id != base_settings.deployment_region_id):
+        raise RuntimeError("database region must match DEPLOYMENT_REGION_ID")
+    if base_settings.tenant_region_routing_enabled:
+        if not base_settings.control_database_url:
+            raise RuntimeError("CONTROL_DATABASE_URL is required when tenant region routing is enabled")
+        if base_settings.database_region_id != base_settings.deployment_region_id:
+            raise RuntimeError("regional database region must match DEPLOYMENT_REGION_ID")
+        regional = urlsplit(base_settings.database_url)
+        control = urlsplit(base_settings.control_database_url)
+        if ((regional.hostname or "").lower(), regional.port, regional.path) == (
+            (control.hostname or "").lower(), control.port, control.path
+        ):
+            raise RuntimeError("control and regional databases must be separate databases")
     return base_settings
 
 

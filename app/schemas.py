@@ -6,6 +6,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, ConfigDict, model_validator, field_validator
 
+
+class RuntimeConfigurationResponse(BaseModel):
+    environment: str
+    deployment_region_id: str
+    database_region_id: str | None
+    tenant_region_routing_enabled: bool
+
 class InboundRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

@@ -11,17 +11,19 @@ logger = logging.getLogger("app.observability")
 
 class DatabaseQueuePoller:
     def __init__(self, *, uow_factory, runner, now_provider=None,
-                 lease_seconds: int = 3600) -> None:
+                 lease_seconds: int = 3600, region_id: str | None = None) -> None:
         self._uow_factory = uow_factory
         self._runner = runner
         self._now = now_provider or (lambda: datetime.now(UTC))
         self._lease = timedelta(seconds=lease_seconds)
+        self._region_id = region_id
 
     def run_once(self, *, limit: int = 100) -> int:
         now = self._now()
         with self._uow_factory() as uow:
             rows = uow.queue_tasks.list_due(
                 now=now, stale_before=now - self._lease, limit=limit,
+                region_id=self._region_id,
             )
             due = [(row.id, row.domain) for row in rows]
 

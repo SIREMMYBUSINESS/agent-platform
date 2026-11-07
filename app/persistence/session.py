@@ -80,3 +80,10 @@ class SessionFactory:
 
 # This singleton owns only the lazily-created engine and sessionmaker, never a Session.
 session_factory = SessionFactory()
+control_session_factory = SessionFactory(
+    lambda: settings.control_database_url or _missing_control_database_url(),
+)
+
+
+def _missing_control_database_url() -> str:
+    raise RuntimeError("CONTROL_DATABASE_URL is required when tenant region routing is enabled")

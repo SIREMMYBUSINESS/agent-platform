@@ -13,7 +13,8 @@ from app.persistence.models import WorkerHeartbeat
 QUEUE_DOMAINS = ("inbound", "outreach", "scheduling", "escalation", "analytics")
 
 
-def check_components(*, session_factory, worker_stale_seconds: int = 30,
+def check_components(*, session_factory, control_session_factory=None,
+                     worker_stale_seconds: int = 30,
                      redis_url: str | None = None, celery_app=None) -> dict[str, object]:
     components: dict[str, str] = {}
     session = None
@@ -26,6 +27,17 @@ def check_components(*, session_factory, worker_stale_seconds: int = 30,
     finally:
         if session is not None:
             session.close()
+    if control_session_factory is not None:
+        control_session = None
+        try:
+            control_session = control_session_factory()
+            control_session.exec(text("SELECT 1")).one()
+            components["directory"] = "healthy"
+        except Exception:
+            components["directory"] = "unhealthy"
+        finally:
+            if control_session is not None:
+                control_session.close()
     # Preserve the old probe only for callers explicitly using the deprecated API.
     if redis_url is not None and celery_app is not None:
         try:
@@ -52,7 +64,9 @@ def check_components(*, session_factory, worker_stale_seconds: int = 30,
             components["celery_workers"] = "unhealthy"
             for domain in QUEUE_DOMAINS:
                 metrics.set_gauge("worker_heartbeat", 0.0, queue_domain=domain)
-        healthy = components["database"] == "healthy" and components["redis"] == "healthy"
+        healthy = (components["database"] == "healthy"
+                   and components["redis"] == "healthy"
+                   and components.get("directory", "healthy") == "healthy")
         components["providers"] = "not_probed"
         return {"status": "healthy" if healthy else "degraded", "components": components}
 
@@ -76,5 +90,6 @@ def check_components(*, session_factory, worker_stale_seconds: int = 30,
                           queue_domain=domain)
     # Provider probes are opt-in because they can incur cost or mutate provider state.
     components["providers"] = "not_probed"
-    healthy = components["database"] == "healthy" and components["worker"] == "healthy"
+    healthy = (components["database"] == "healthy" and components["worker"] == "healthy"
+               and components.get("directory", "healthy") == "healthy")
     return {"status": "healthy" if healthy else "degraded", "components": components}

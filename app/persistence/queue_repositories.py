@@ -15,8 +15,10 @@ class QueueTaskRepository(Protocol):
     def enqueue(self, **values) -> tuple[QueueTaskRecord, bool]: ...
     def get(self, *, tenant_id: str, business_id: str, task_id: UUID, lock: bool = False) -> QueueTaskRecord | None: ...
     def get_by_key(self, *, tenant_id: str, business_id: str, idempotency_key: str) -> QueueTaskRecord | None: ...
-    def list_due(self, *, now: datetime, stale_before: datetime, limit: int) -> list[QueueTaskRecord]: ...
-    def claim(self, *, task_id: UUID, now: datetime, lease: timedelta) -> QueueTaskRecord | None: ...
+    def list_due(self, *, now: datetime, stale_before: datetime, limit: int,
+                 region_id: str | None = None) -> list[QueueTaskRecord]: ...
+    def claim(self, *, task_id: UUID, now: datetime, lease: timedelta,
+              region_id: str | None = None) -> QueueTaskRecord | None: ...
     def mark_dispatched(self, *, task_id: UUID, now: datetime, stale_before: datetime) -> bool: ...
     def succeed(self, *, task_id: UUID, now: datetime, result: dict) -> QueueTaskRecord | None: ...
     def fail_or_retry(self, *, task_id: UUID, now: datetime, error_code: str, retry_at: datetime) -> QueueTaskRecord | None: ...
@@ -85,7 +87,7 @@ class SQLQueueTaskRepository:
         return _database_call(persist)
 
     def list_due(self, *, now: datetime, stale_before: datetime,
-                 limit: int) -> list[QueueTaskRecord]:
+                 limit: int, region_id: str | None = None) -> list[QueueTaskRecord]:
         statement = select(QueueTaskRecord).where(
             (
                 QueueTaskRecord.status.in_(("pending", "queued", "retrying"))
@@ -96,13 +98,17 @@ class SQLQueueTaskRepository:
                 & (QueueTaskRecord.started_at <= stale_before)
             ),
         ).order_by(QueueTaskRecord.available_at, QueueTaskRecord.created_at).limit(limit)
+        if region_id is not None:
+            statement = statement.where(QueueTaskRecord.region_id == region_id)
         return _database_call(lambda: list(self._session.exec(statement).all()))
 
-    def claim(self, *, task_id: UUID, now: datetime, lease: timedelta) -> QueueTaskRecord | None:
+    def claim(self, *, task_id: UUID, now: datetime, lease: timedelta,
+              region_id: str | None = None) -> QueueTaskRecord | None:
         def persist():
-            row = self._session.exec(select(QueueTaskRecord).where(
-                QueueTaskRecord.id == task_id,
-            ).with_for_update()).first()
+            statement = select(QueueTaskRecord).where(QueueTaskRecord.id == task_id)
+            if region_id is not None:
+                statement = statement.where(QueueTaskRecord.region_id == region_id)
+            row = self._session.exec(statement.with_for_update()).first()
             if row is None or row.status in {"succeeded", "dead_letter"}:
                 return None
             started_at = _aware_utc(row.started_at)

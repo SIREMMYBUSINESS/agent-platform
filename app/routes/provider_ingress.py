@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from app.auth.dependencies import require_tenant_home_region
 from app.config import settings
 from app.integrations.provider_support import DirectoryTenantConfigResolver, ProviderConfigurationError
 from app.integrations.sms.twilio_webhooks import validate_twilio_signature
@@ -104,6 +105,7 @@ async def inbound_sms(request: Request):
                 auth_token=config.get("auth_token", ""),
             )):
         raise HTTPException(403, "Provider callback authentication failed")
+    require_tenant_home_region(tenant_id)
     sender, recipient = values.get("From", ""), values.get("To", "")
     external_id, body = values.get("MessageSid", ""), values.get("Body", "")
     if not sender or not recipient or not external_id or len(body) > 20_000:
@@ -181,6 +183,7 @@ async def inbound_email(request: Request):
         config.get("email_inbound_webhook_secret", ""),
     ):
         raise HTTPException(403, "Provider callback authentication failed")
+    require_tenant_home_region(tenant_id)
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -293,6 +296,7 @@ async def _authenticated_event(request: Request, kind: str):
         raise HTTPException(403, "Provider callback authentication failed")
     if not event_key:
         raise HTTPException(400, "Provider callback is missing event identity")
+    require_tenant_home_region(tenant_id)
     if kind == "call":
         # Twilio voice webhooks are policy checked before recording or queueing.
         # Recording is disabled unless business configuration explicitly enables it.
@@ -408,6 +412,7 @@ async def outbound_call_twiml(request: Request):
         auth_token=config.get("auth_token", ""),
     ):
         raise HTTPException(403, "Provider callback authentication failed")
+    require_tenant_home_region(tenant_id)
     xml = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
            f"<Response><Say>{escape(message)}</Say><Hangup /></Response>")
     return Response(content=xml, media_type="application/xml", status_code=200)
