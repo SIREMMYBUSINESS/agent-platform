@@ -48,6 +48,7 @@ from app.services.enrollment_service import CampaignEligibilityError
 from app.services.reply_service import CampaignReplyNotFoundError, CampaignReplyTenantMismatchError
 from app.observability.logging import configure_structured_logging
 from app.observability.middleware import ObservabilityMiddleware
+from app.openapi_contract import install_openapi_contract
 from app.observability.metrics import metrics
 from app.observability.health import check_components
 from app.observability.collectors import refresh_optimization_health, refresh_queue_depths
@@ -67,12 +68,16 @@ def install_cors_middleware(application: FastAPI, allowed_origins: list[str]) ->
         allow_origins=allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        allow_headers=[
+            "Authorization", "Content-Type", "Idempotency-Key",
+            "X-Correlation-ID", "X-Request-ID", "traceparent",
+        ],
         max_age=600,
     )
 
 
 install_cors_middleware(app, settings.cors_allowed_origins)
+install_openapi_contract(app)
 app.include_router(lead_router)
 app.include_router(campaign_router)
 app.include_router(conversation_router)
