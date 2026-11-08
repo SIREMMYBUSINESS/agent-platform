@@ -38,6 +38,24 @@ def test_directory_secret_resolver_is_scope_hashed_and_fails_closed(tmp_path):
         resolver.resolve(tenant_id="tenant-b", business_id="business-a")
 
 
+def test_directory_secret_resolver_accepts_render_filename_without_cross_tenant_access(tmp_path):
+    path = _scope_file(tmp_path, "tenant-a", "business-a", {"auth_token": "private"})
+    path.rename(path.with_name("scope-" + path.name))
+    resolver = DirectoryTenantConfigResolver(tmp_path)
+    assert resolver.resolve(tenant_id="tenant-a", business_id="business-a") == {"auth_token": "private"}
+    with pytest.raises(ProviderConfigurationError):
+        resolver.resolve(tenant_id="tenant-b", business_id="business-a")
+
+
+def test_directory_secret_resolver_does_not_hide_invalid_legacy_file(tmp_path):
+    path = _scope_file(tmp_path, "tenant-a", "business-a", {"auth_token": "private"})
+    path.rename(path.with_name("scope-" + path.name))
+    path.write_text("invalid-json", encoding="utf-8")
+    path.chmod(0o400)
+    with pytest.raises(ProviderConfigurationError, match="invalid"):
+        DirectoryTenantConfigResolver(tmp_path).resolve(tenant_id="tenant-a", business_id="business-a")
+
+
 @pytest.mark.skipif(__import__("os").name == "nt", reason="Windows ACLs are not represented by POSIX mode bits")
 def test_directory_secret_resolver_rejects_overly_permissive_secret_file(tmp_path):
     path = _scope_file(tmp_path, "tenant-a", "business-a", {"auth_token": "private"})

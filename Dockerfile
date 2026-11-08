@@ -16,7 +16,10 @@ COPY migrations ./migrations
 COPY ops/staging/start.sh ./ops/staging/start.sh
 RUN python -m pip install --no-cache-dir -r requirements.txt .
 
-USER 10001:10001
+# Keep supplementary group 1000, which grants read access to Render secrets.
+# An explicit USER group would discard the memberships configured above.
+USER app
+RUN python -c "import os; assert os.getuid() == 10001; assert 1000 in os.getgroups()"
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()" || exit 1

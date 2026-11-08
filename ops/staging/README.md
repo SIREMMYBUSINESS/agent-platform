@@ -34,12 +34,14 @@ loads the tenant-scoped provider bootstrap. The Docker image adds its service
 user to Render's secret-file group so the process can read those files without
 running as root.
 
-Each provider secret file must be named with the SHA-256 hex digest of the
-tenant ID, a NUL byte, and the business ID, followed by `.json`. Generate the
+Each Render provider secret file must be named `scope-` followed by the SHA-256
+hex digest of the tenant ID, a NUL byte, and the business ID, followed by `.json`.
+The prefix avoids Render's restriction on filenames starting with a digit.
+Existing unprefixed filenames remain supported and take precedence. Generate the
 filename locally (the IDs are not secrets):
 
 ```powershell
-python -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+'\0'+sys.argv[2]).encode()).hexdigest()+'.json')" "<tenant-id>" "<business-id>"
+python -c "import hashlib,sys; print('scope-'+hashlib.sha256((sys.argv[1]+'\0'+sys.argv[2]).encode()).hexdigest()+'.json')" "<tenant-id>" "<business-id>"
 ```
 
 In Render, open the staging service's **Environment → Secret Files** and add
