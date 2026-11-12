@@ -1,0 +1,33 @@
+name: voice-worker
+
+on:
+  pull_request:
+    paths:
+      - "voice-worker/**"
+      - ".github/workflows/voice-worker.yml"
+  push:
+    branches: [main]
+    paths:
+      - "voice-worker/**"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: voice-worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voice-worker/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Wrangler dry run (bindings + bundle)
+        run: npx wrangler deploy --dry-run --outdir dist
