@@ -1,131 +1,89 @@
-import { ReceptionistAgent } from "./agent";
-import { issueStreamToken, verifyTwilioSignature } from "./security";
+import { getAgentByName } from "agents";
+import type { Env } from "./types";
+import {
+  CALL_SID_RE,
+  escapeXml,
+  makeStreamToken,
+  validTwilioSignature,
+  verifyStreamToken,
+} from "./twilio";
 
-export { ReceptionistAgent };
+export { ReceptionistAgent } from "./agent";
 
-export interface Env {
-  RECEPTIONIST: DurableObjectNamespace;
-  AI: Ai;
-  TWILIO_AUTH_TOKEN: string;
-  STREAM_SECRET: string;
-  PLATFORM_API_KEY: string;
-  PLATFORM_API: string;
-  PUBLIC_URL: string;
-  MAX_CALL_SECONDS?: string;
-}
-
-const twiml = (content: string, status = 200): Response =>
-  new Response(content, {
-    status,
-    headers: {
-      "content-type": "text/xml; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
+const PHONE_RE = /^\+?[0-9]{5,16}$/;
+const STREAM_TOKEN_TTL_SECONDS = 120;
+const MAX_WEBHOOK_BYTES = 10_000;
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
 
-    if (url.pathname === "/health" && request.method === "GET") {
-      return Response.json({ status: "ok" });
+    if (url.pathname === "/health") return new Response("ok");
+
+    // 1. Twilio incoming-call webhook -> TwiML that opens the media stream.
+    if (url.pathname === "/voice/incoming") {
+      if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+      return handleIncoming(req, url, env);
     }
 
-    if (url.pathname === "/voice/incoming" && request.method === "POST") {
-      const form = await request.formData();
-
-      if (!await verifyTwilioSignature(request, form, env.TWILIO_AUTH_TOKEN, env.PUBLIC_URL)) {
+    // 2. Media stream WebSocket: /voice/stream/<callSid>/<exp>/<token>
+    const m = url.pathname.match(/^\/voice\/stream\/([^/]+)\/(\d+)\/([0-9a-f]{64})$/);
+    if (m) {
+      if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+        return new Response("Expected WebSocket", { status: 426 });
+      }
+      const [, callSid, exp, token] = m;
+      // Reject before any Durable Object is created or woken.
+      if (!(await verifyStreamToken(env.STREAM_SECRET, callSid, exp, token))) {
         return new Response("Forbidden", { status: 403 });
       }
-
-      const callSid = form.get("CallSid");
-      const dialedNumber = form.get("To");
-
-      if (
-        typeof callSid !== "string" ||
-        !/^CA[a-fA-F0-9]{32}$/.test(callSid) ||
-        typeof dialedNumber !== "string" ||
-        !/^\+[1-9]\d{6,14}$/.test(dialedNumber)
-      ) {
-        return new Response("Invalid call", { status: 400 });
-      }
-
-      let tenantId: string;
-      let businessId: string;
-
-      try {
-        const lookupUrl = new URL("/voice/resolve-number", env.PLATFORM_API);
-        lookupUrl.searchParams.set("to", dialedNumber);
-
-        const lookup = await fetch(lookupUrl, {
-          headers: {
-            authorization: `Bearer ${env.PLATFORM_API_KEY}`,
-            accept: "application/json",
-          },
-        });
-
-        if (!lookup.ok) throw new Error("number_lookup_failed");
-
-        const mapping = await lookup.json() as { tenant_id?: unknown; business_id?: unknown };
-        if (
-          typeof mapping.tenant_id !== "string" ||
-          !mapping.tenant_id ||
-          typeof mapping.business_id !== "string" ||
-          !mapping.business_id
-        ) {
-          throw new Error("invalid_number_mapping");
-        }
-
-        tenantId = mapping.tenant_id;
-        businessId = mapping.business_id;
-      } catch {
-        return twiml(
-          `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Say>We are unable to connect your call right now. Please try again later.</Say><Hangup/></Response>`,
-          503,
-        );
-      }
-
-      const streamToken = await issueStreamToken({
-        callSid,
-        tenantId,
-        businessId,
-        secret: env.STREAM_SECRET,
-        nowSeconds: Math.floor(Date.now() / 1000),
-      });
-
-      const streamUrl = new URL(`/voice/stream/${encodeURIComponent(callSid)}`, env.PUBLIC_URL);
-      streamUrl.protocol = "wss:";
-
-      const parameters = [
-        ["streamToken", streamToken],
-        ["tenantId", tenantId],
-        ["businessId", businessId],
-      ]
-        .map(([name, value]) => `<Parameter name="${escapeXml(name)}" value="${escapeXml(value)}"/>`)
-        .join("");
-
-      return twiml(
-        `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Connect><Stream url="${escapeXml(streamUrl.toString())}">${parameters}</Stream></Connect></Response>`,
-      );
+      const agent = await getAgentByName(env.RECEPTIONIST, callSid);
+      return agent.fetch(req);
     }
 
-    const match = url.pathname.match(/^\/voice\/stream\/(CA[a-fA-F0-9]{32})$/);
-    if (match && request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
-      const callSid = match[1];
-      const id = env.RECEPTIONIST.idFromName(callSid);
-      return env.RECEPTIONIST.get(id).fetch(request);
-    }
-
-    return new Response("Not found", { status: 404 });
+    return new Response("Not Found", { status: 404 });
   },
 } satisfies ExportedHandler<Env>;
 
-function escapeXml(value: string): string {
-  return value.replace(/[&<>"']/g, (char) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&apos;",
-  })[char]!);
+async function handleIncoming(req: Request, url: URL, env: Env): Promise<Response> {
+  const len = Number(req.headers.get("content-length") ?? "0");
+  if (len > MAX_WEBHOOK_BYTES) return new Response("Payload Too Large", { status: 413 });
+
+  const form = await req.formData();
+  const pairs: Array<[string, string]> = [];
+  for (const [k, v] of form.entries()) if (typeof v === "string") pairs.push([k, v]);
+
+  // Validate against the configured public origin, never the Host/X-Forwarded-* headers.
+  const signedUrl = `${env.PUBLIC_ORIGIN}${url.pathname}${url.search}`;
+  const ok = await validTwilioSignature(
+    env.TWILIO_AUTH_TOKEN,
+    signedUrl,
+    pairs,
+    req.headers.get("X-Twilio-Signature"),
+  );
+  if (!ok) return new Response("Forbidden", { status: 403 });
+
+  const callSid = String(form.get("CallSid") ?? "");
+  const from = String(form.get("From") ?? "");
+  const to = String(form.get("To") ?? "");
+  if (!CALL_SID_RE.test(callSid) || !PHONE_RE.test(from) || !PHONE_RE.test(to)) {
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  const exp = Math.floor(Date.now() / 1000) + STREAM_TOKEN_TTL_SECONDS;
+  const token = await makeStreamToken(env.STREAM_SECRET, callSid, exp);
+  const wsOrigin = env.PUBLIC_ORIGIN.replace(/^https:/, "wss:");
+
+  // Twilio does not allow query strings on <Stream> URLs, so the token lives in the path.
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${escapeXml(`${wsOrigin}/voice/stream/${callSid}/${exp}/${token}`)}">
+      <Parameter name="from" value="${escapeXml(from)}"/>
+      <Parameter name="to" value="${escapeXml(to)}"/>
+    </Stream>
+  </Connect>
+</Response>`;
+
+  return new Response(twiml, { headers: { "Content-Type": "text/xml; charset=utf-8" } });
 }
