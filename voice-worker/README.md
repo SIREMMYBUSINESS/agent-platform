@@ -1,31 +1,33 @@
-# Cloudflare voice receptionist Worker
+# voice-worker
 
-This standalone Worker handles Twilio incoming-call webhooks and Media Streams. It routes calls by CallSid to a SQLite-backed Durable Object. The website Worker in `web/` remains separate.
+Cloudflare Worker + Durable Object AI voice receptionist.
+Twilio Media Streams -> Worker (edge router) -> `ReceptionistAgent` (Agents SDK Durable Object, one per call)
+-> Workers AI (STT, LLM, TTS). Tool calls (booking, messages, transfer, call-log postback) are **off** in this scaffold.
+
+## Layout
+- `src/index.ts` - routes: `POST /voice/incoming` (signature-checked TwiML), `WS /voice/stream/<callSid>/<exp>/<token>` (token-checked before the DO is touched), `GET /health`
+- `src/twilio.ts` - Twilio signature validation, per-call stream token, XML escaping
+- `src/agent.ts` - per-call agent: STT socket, streaming LLM -> sentence-level TTS, barge-in, max-call alarm, TTS-failure fallback
+- `test/twilio.test.ts` - signature and token unit tests
 
 ## Setup
+1. Set `PUBLIC_ORIGIN` in `wrangler.jsonc` to your public origin (custom domain recommended), no trailing slash.
+2. Secrets (Cloudflare dashboard -> Worker -> Settings -> Variables and Secrets, or `wrangler secret put`):
+   `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `STREAM_SECRET` (any long random string).
+3. Workers Builds: connect this repo, root directory `voice-worker`.
+4. Twilio number -> Voice webhook: `POST https://<PUBLIC_ORIGIN host>/voice/incoming`.
 
-1. Set `PUBLIC_URL` to the exact HTTPS origin Twilio calls, and `PLATFORM_API` to the platform API origin.
-2. Add these as Cloudflare Worker secrets, not GitHub secrets:
-   - `TWILIO_AUTH_TOKEN`
-   - `STREAM_SECRET`
-   - `PLATFORM_API_KEY`
-3. The incoming webhook verifies Twilio's signature against the configured canonical public URL. It resolves tenant/business scope from the signed Twilio `To` number using `GET /voice/resolve-number?to=...`.
-4. The platform must implement that endpoint and authenticate the service key, returning `{ "tenant_id": "...", "business_id": "..." }`. That endpoint does not currently exist in the platform API. Calls fail closed until it is implemented.
-5. Install, type-check, and dry-run deploy:
+## Verified in CI (see `.github/workflows/voice-worker.yml`)
+`npm ci`, `npm run typecheck`, `npm test`, `wrangler deploy --dry-run` (Durable Object + AI bindings resolve).
 
-   ```sh
-   npm ci
-   npm run typecheck
-   npx --yes wrangler@4 deploy --dry-run --config wrangler.jsonc
-   ```
+## Still to verify on a deployed Worker (cannot be checked in CI)
+- STT/TTS parameters at the top of `src/agent.ts` against the live Workers AI model schemas (`STT_PARAMS`, `TTS_PARAMS`).
+- Agents SDK WebSocket hand-off from the Worker (`getAgentByName(...).fetch(req)`) with a real Twilio stream.
+- Real-call signature validation (if it fails behind a proxy, the signed URL must equal what Twilio calls).
+- First-audio latency, barge-in, max-call alarm (15 min), clean close, no leaked sockets.
+- Emergency wording in `SYSTEM_PROMPT` reviewed; recording/transcription consent configured in Twilio.
+- Transcript retention: decide, then implement the TODO in `finalize()`.
 
-6. Deploy, configure the Twilio phone number's Voice webhook as `https://<public-origin>/voice/incoming` using POST, and run a test call before production.
-
-## Scope and production gates
-
-- Booking, message-taking, transfer, and other platform mutations are intentionally disabled. Do not enable them until tenant-authorized platform contracts exist and have tests.
-- The Worker stores recognized transcript text in Durable Object SQLite. Establish consent, retention, residency, and deletion policies before live customer traffic.
-- Verify Nova-3/Aura model schemas and streaming behavior against the active Cloudflare model catalog. This scaffold does not guarantee sub-second latency.
-- Validate real Twilio audio format, playback pacing, interruption behavior, timeout alarm, and emergency messaging on a deployed test number.
-- Do not log phone numbers, transcripts, API credentials, raw webhook bodies, or caller audio.
-- Use a fixed custom domain for signature validation; do not derive trust from proxy headers.
+## Before enabling tools
+Platform endpoints must be tenant-scoped and authorized; resolve the tenant server-side from the dialed number
+(`state.to`), never from anything the caller says or supplies; API key stays a Worker secret.
