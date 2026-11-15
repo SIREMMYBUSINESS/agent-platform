@@ -1,33 +1,50 @@
 # voice-worker
 
 Cloudflare Worker + Durable Object AI voice receptionist.
-Twilio Media Streams -> Worker (edge router) -> `ReceptionistAgent` (Agents SDK Durable Object, one per call)
--> Workers AI (STT, LLM, TTS). Tool calls (booking, messages, transfer, call-log postback) are **off** in this scaffold.
+Twilio Media Streams → Worker (edge router) → `ReceptionistAgent` (Agents SDK Durable Object, one per call) → Workers AI (STT, LLM, TTS). Tool calls (booking, messages, transfer, call-log postback) are **off**.
+
+## Call flow and trust model
+1. `POST /voice/incoming` validates Twilio's signature against `PUBLIC_ORIGIN` (never request Host/proxy headers).
+2. The signed dialed number (`To`) is resolved through the platform. Lookup failures fail closed. The caller's number is not forwarded.
+3. The Worker returns TwiML with a stream URL: `/voice/stream/<callSid>/<expiry>/<token>`. Twilio does not allow query strings in `<Stream>` URLs. The HMAC-SHA256 token binds the URL to CallSid and expiry.
+4. The Worker rejects invalid/expired stream tokens before creating or waking the Durable Object. The Durable Object is keyed by CallSid.
+5. The Durable Object receives only the dialed number in Stream custom parameters. It does not derive tenant authority from caller speech or caller-supplied values. Tools are disabled.
+
+## Platform contract (not yet implemented)
+The Worker expects:
+
+```http
+GET {PLATFORM_API_URL}/voice/resolve-number?to=%2B15550001111
+Authorization: Bearer <service key>
+```
+
+Success response:
+
+```json
+{"tenant_id":"tenant-id","business_id":"business-id"}
+```
+
+IDs must match `^[A-Za-z0-9_-]{1,64}$`. The endpoint must authenticate a dedicated service key, resolve exact E.164 numbers from provisioned tenant/business data, return only those IDs, apply rate limits, and fail closed. Do not log the dialed number together with transcripts.
 
 ## Layout
-- `src/index.ts` - routes: `POST /voice/incoming` (signature-checked TwiML), `WS /voice/stream/<callSid>/<exp>/<token>` (token-checked before the DO is touched), `GET /health`
-- `src/twilio.ts` - Twilio signature validation, per-call stream token, XML escaping
-- `src/agent.ts` - per-call agent: STT socket, streaming LLM -> sentence-level TTS, barge-in, max-call alarm, TTS-failure fallback
-- `test/twilio.test.ts` - signature and token unit tests
+- `src/index.ts` — router; validates stream token before handing off to the Durable Object.
+- `src/incoming.ts` — webhook validation, number lookup, and TwiML generation.
+- `src/twilio.ts` — signature validation, stream tokens, and XML escaping.
+- `src/agent.ts` — per-call agent, STT/LLM/TTS, barge-in, max-call alarm, and transcript persistence.
+- `test/` — signature, stream-token, incoming signature, lookup, and fail-closed tests.
 
 ## Setup
-1. Set `PUBLIC_ORIGIN` in `wrangler.jsonc` to your public origin (custom domain recommended), no trailing slash.
-2. Secrets (Cloudflare dashboard -> Worker -> Settings -> Variables and Secrets, or `wrangler secret put`):
-   `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `STREAM_SECRET` (any long random string).
-3. Workers Builds: connect this repo, root directory `voice-worker`.
-4. Twilio number -> Voice webhook: `POST https://<PUBLIC_ORIGIN host>/voice/incoming`.
+1. In `wrangler.jsonc`, set `PUBLIC_ORIGIN` to the exact public origin (custom domain recommended, no trailing slash) and set `PLATFORM_API_URL`.
+2. Set Cloudflare Worker secrets: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `STREAM_SECRET`, and `PLATFORM_API_KEY`. Never commit secret values.
+3. Connect a separate Worker through Workers Builds with root directory `voice-worker`.
+4. Configure the Twilio voice webhook as `POST https://<PUBLIC_ORIGIN host>/voice/incoming`.
+5. Run checks from this directory: `npm ci`, `npm run typecheck`, `npm test`, and `npm run dry-run`.
 
-## Verified in CI (see `.github/workflows/voice-worker.yml`)
-`npm ci`, `npm run typecheck`, `npm test`, `wrangler deploy --dry-run` (Durable Object + AI bindings resolve).
-
-## Still to verify on a deployed Worker (cannot be checked in CI)
-- STT/TTS parameters at the top of `src/agent.ts` against the live Workers AI model schemas (`STT_PARAMS`, `TTS_PARAMS`).
-- Agents SDK WebSocket hand-off from the Worker (`getAgentByName(...).fetch(req)`) with a real Twilio stream.
-- Real-call signature validation (if it fails behind a proxy, the signed URL must equal what Twilio calls).
-- First-audio latency, barge-in, max-call alarm (15 min), clean close, no leaked sockets.
-- Emergency wording in `SYSTEM_PROMPT` reviewed; recording/transcription consent configured in Twilio.
-- Transcript retention: decide, then implement the TODO in `finalize()`.
-
-## Before enabling tools
-Platform endpoints must be tenant-scoped and authorized; resolve the tenant server-side from the dialed number
-(`state.to`), never from anything the caller says or supplies; API key stays a Worker secret.
+## Production checks still required
+- Verify Workers AI Nova-3 and Aura parameters against the current model schemas.
+- Verify Agents SDK WebSocket handoff with a real Twilio stream.
+- Test canonical URL/signature behavior behind the deployed custom domain.
+- Measure first-audio latency; test barge-in, the 15-minute alarm, clean close, and socket cleanup.
+- Review emergency wording and configure recording/transcription consent.
+- Decide transcript retention, implement the call-log/retention path, and do not log transcripts or phone numbers.
+- Keep tools disabled until their platform contracts are tenant-scoped, authorized, and tested. Enable message-taking, booking, transfer, and call-log posting separately after review.

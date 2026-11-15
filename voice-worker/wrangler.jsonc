@@ -10,11 +10,10 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
   "vars": {
-    // Exact public origin Twilio calls (no trailing slash). Use your custom domain.
-    // Signature validation and the stream URL are built from this, never from request headers.
-    "PUBLIC_ORIGIN": "https://voice.example.com"
+    // Set this to the exact deployed public origin, without a trailing slash.
+    "PUBLIC_ORIGIN": "https://voice.example.com",
+    "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com"
   }
-  // Secrets (set in the Cloudflare dashboard or `wrangler secret put`, never in git):
-  //   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, STREAM_SECRET
-  //   PLATFORM_API_URL, PLATFORM_API_KEY   (only once tool calls are enabled)
+  // Set secrets in Cloudflare, never here:
+  // TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, STREAM_SECRET, PLATFORM_API_KEY
 }
