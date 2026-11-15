@@ -1,17 +1,20 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "agent-platform-voice-worker",
+  "name": "voice-worker",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
   "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
   "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [{ "name": "RECEPTIONIST", "class_name": "ReceptionistAgent" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
   "vars": {
-    "PLATFORM_API": "https://agent-platform-staging.onrender.com",
-    "PUBLIC_URL": "https://<voice-worker-custom-domain>",
-    "MAX_CALL_SECONDS": "1800"
+    // Exact public origin Twilio calls (no trailing slash). Use your custom domain.
+    // Signature validation and the stream URL are built from this, never from request headers.
+    "PUBLIC_ORIGIN": "https://voice.example.com"
   }
+  // Secrets (set in the Cloudflare dashboard or `wrangler secret put`, never in git):
+  //   TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, STREAM_SECRET
+  //   PLATFORM_API_URL, PLATFORM_API_KEY   (only once tool calls are enabled)
 }
