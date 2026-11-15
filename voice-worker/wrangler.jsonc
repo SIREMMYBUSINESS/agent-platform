@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "agent-platform-voice-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [{ "name": "RECEPTIONIST", "class_name": "ReceptionistAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
+  "vars": {
+    "PLATFORM_API": "https://agent-platform-staging.onrender.com",
+    "PUBLIC_URL": "https://<voice-worker-custom-domain>",
+    "MAX_CALL_SECONDS": "1800"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "agent-platform-voice-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "npx --yes --package typescript@5.9.3 tsc --project tsconfig.json"
+  }
+}
