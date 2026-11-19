@@ -1,6 +1,6 @@
-import { Agent, type Connection, type WSMessage } from "agents";
+import { Agent, type Connection, type ConnectionContext, type WSMessage } from "agents";
 import type { Env } from "./types";
-import { escapeXml } from "./twilio";
+import { escapeXml, parseStreamPath, verifyStreamToken } from "./twilio";
 
 // ---- Model contracts: verify against the live Workers AI model schemas before production. ----
 const LLM_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -26,11 +26,12 @@ const GREETING = "Thanks for calling. How can I help you today?";
 const FALLBACK_TWIML = (msg: string) =>
   `<Response><Say>${escapeXml(msg)}</Say><Hangup/></Response>`;
 
+// Tenant scope is set only from the signed stream path (verified in onConnect), never from caller input.
 type CallState = {
   callSid?: string;
+  tenantId?: string;
+  businessId?: string;
   streamSid?: string;
-  from?: string;
-  to?: string;
 };
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
@@ -47,10 +48,21 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   private speaking = false;
   private speakStartedAt = 0;
   private finalized = false;
+  private started = false;
 
   async onStart() {
     this.sql`CREATE TABLE IF NOT EXISTS transcript (
       id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL)`;
+  }
+
+  /** Defense in depth: the Worker already verified the token, the Durable Object checks it again. */
+  async onConnect(conn: Connection, ctx: ConnectionContext) {
+    const parsed = parseStreamPath(new URL(ctx.request.url).pathname);
+    if (!parsed || !(await verifyStreamToken(this.env.STREAM_SECRET, parsed))) {
+      conn.close(1008, "unauthorized");
+      return;
+    }
+    this.setState({ callSid: parsed.callSid, tenantId: parsed.tenantId, businessId: parsed.businessId });
   }
 
   async onMessage(conn: Connection, message: WSMessage) {
@@ -64,12 +76,13 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
 
     switch (msg.event) {
       case "start": {
-        this.setState({
-          callSid: msg.start?.callSid,
-          streamSid: msg.start?.streamSid,
-          from: msg.start?.customParameters?.from,
-          to: msg.start?.customParameters?.to,
-        });
+        // Only accept a start for the call this socket was authorized for, and only once.
+        if (this.started || !this.state.callSid || msg.start?.callSid !== this.state.callSid) {
+          conn.close(1008, "unauthorized");
+          return;
+        }
+        this.started = true;
+        this.setState({ ...this.state, streamSid: msg.start?.streamSid });
         await this.schedule(MAX_CALL_SECONDS, "hangup");
         try {
           await this.openStt(conn);
@@ -206,9 +219,10 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
 
   // ---------------- Tools (disabled until the platform API boundary is confirmed) ----------------
 
-  // Tenant must be resolved server-side from the dialed number (this.state.to) via the platform API.
-  // Never take tenant/business identifiers from caller speech or caller-supplied fields.
-  // Booking, message intake, transfer and call-log postback stay OFF until that endpoint exists.
+  // this.state.tenantId / businessId come from the signed stream path (resolved by the platform from the
+  // dialed number). Platform calls must send them as server-side scope; never take tenant/business
+  // identifiers from caller speech. Booking, message intake, transfer and call-log postback stay OFF
+  // until tenant-authorized platform endpoints exist and are tested.
 
   // ---------------- Fallback, persistence, cleanup ----------------
 
