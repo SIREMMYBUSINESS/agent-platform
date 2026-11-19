@@ -19,7 +19,7 @@ function createEnv(): Env {
     PLATFORM_API_URL: "https://platform.example.test",
     PLATFORM_API_KEY: "test-platform-key",
     AI: { run: async () => ({}) } as unknown as Ai,
-    RECEPTIONIST: {} as DurableObjectNamespace,
+    RECEPTIONIST: {} as unknown as Env["RECEPTIONIST"],
   };
 }
 
@@ -53,8 +53,8 @@ test("incoming call resolves signed To number and returns a protected stream URL
   const body = await response.text();
   assert.match(body, /<Connect>/);
   assert.match(body, /<Stream url="wss:\/\/voice\.example\.com\/voice\/stream\/CAc{32}\/\d+\/[0-9a-f]{64}">/);
-  assert.match(body, new RegExp(`<Parameter name="to" value="${TO}"\/>`));
-  assert.doesNotMatch(body, new RegExp(FROM));
+  assert.ok(body.includes(<Parameter name="to" value="${TO}"/>));
+  assert.ok(!body.includes(FROM), "caller number must not be forwarded");
 });
 
 test("invalid Twilio signature never performs tenant lookup", async () => {
