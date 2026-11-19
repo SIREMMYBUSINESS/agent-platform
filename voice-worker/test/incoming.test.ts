@@ -1,78 +1,95 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
-import { handleIncoming } from "../src/incoming";
-import type { Env } from "../src/types";
+import { handleIncoming, type IncomingEnv } from "../src/incoming";
+import { parseStreamPath, twilioSignature, verifyStreamToken } from "../src/twilio";
 
-const ORIGIN = "https://voice.example.com";
-const AUTH_TOKEN = "twilio-test-token";
-const CALL_SID = `CA${"c".repeat(32)}`;
-const FROM = "+15552223333";
+const ENV: IncomingEnv = {
+  PUBLIC_ORIGIN: "https://voice.example.com",
+  PLATFORM_API_URL: "https://platform.example.com",
+  PLATFORM_API_KEY: "svc-key",
+  TWILIO_AUTH_TOKEN: "twilio-token",
+  STREAM_SECRET: "stream-secret",
+};
+const SID = "CA" + "c".repeat(32);
 const TO = "+15550001111";
 
-function createEnv(): Env {
-  return {
-    PUBLIC_ORIGIN: ORIGIN,
-    TWILIO_ACCOUNT_SID: "AC00000000000000000000000000000000",
-    TWILIO_AUTH_TOKEN: AUTH_TOKEN,
-    STREAM_SECRET: "a-long-test-stream-secret",
-    PLATFORM_API_URL: "https://platform.example.test",
-    PLATFORM_API_KEY: "test-platform-key",
-    AI: { run: async () => ({}) } as unknown as Ai,
-    RECEPTIONIST: {} as unknown as Env["RECEPTIONIST"],
-  };
+async function webhook(fields: Record<string, string>, opts: { sign?: boolean; sig?: string } = {}) {
+  const body = new URLSearchParams(fields);
+  const sig =
+    opts.sig ??
+    (opts.sign === false
+      ? ""
+      : await twilioSignature(ENV.TWILIO_AUTH_TOKEN, `${ENV.PUBLIC_ORIGIN}/voice/incoming`, [...body.entries()]));
+  const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
+  if (sig) headers["X-Twilio-Signature"] = sig;
+  return new Request("https://some-internal-host.workers.dev/voice/incoming", { method: "POST", headers, body });
 }
 
-function signedRequest(): Request {
-  const form = new URLSearchParams({ CallSid: CALL_SID, From: FROM, To: TO });
-  const pairs = [...form.entries()].sort(([a], [b]) => a.localeCompare(b));
-  let signed = `${ORIGIN}/voice/incoming`;
-  for (const [key, value] of pairs) signed += key + value;
-  const signature = createHmac("sha1", AUTH_TOKEN).update(signed).digest("base64");
-  return new Request(`${ORIGIN}/voice/incoming`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded",
-      "X-Twilio-Signature": signature,
-    },
-    body: form,
-  });
+function platform(respond: (url: URL, init?: RequestInit) => Response | Promise<Response>) {
+  const calls: Array<{ url: URL; init?: RequestInit }> = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    calls.push({ url, init });
+    return respond(url, init);
+  }) as typeof fetch;
+  return { calls, fetchImpl };
 }
 
-test("incoming call resolves signed To number and returns a protected stream URL", async () => {
-  let requested: URL | undefined;
-  const response = await handleIncoming(signedRequest(), createEnv(), async (input, init) => {
-    requested = new URL(String(input));
-    assert.equal(init?.method, "GET");
-    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-platform-key");
-    return Response.json({ tenant_id: "tenant_1", business_id: "business_1" });
+const ok = () => Response.json({ tenant_id: "tenant-1", business_id: "biz_1" });
+
+test("valid call resolves tenant from the dialed number and issues a scoped stream URL", async () => {
+  const p = platform(ok);
+  const res = await handleIncoming(await webhook({ CallSid: SID, From: "+15552223333", To: TO }), ENV, p.fetchImpl);
+  assert.equal(res.status, 200);
+  const xml = await res.text();
+  assert.match(xml, /<Connect><Stream url="wss:\/\/voice\.example\.com\/voice\/stream\//);
+  assert.doesNotMatch(xml, /15552223333/); // caller number is not forwarded
+  assert.doesNotMatch(xml, /<Parameter/);
+
+  assert.equal(p.calls.length, 1);
+  assert.equal(p.calls[0].url.pathname, "/voice/resolve-number");
+  assert.equal(p.calls[0].url.searchParams.get("to"), TO);
+  assert.equal((p.calls[0].init?.headers as Record<string, string>).Authorization, "Bearer svc-key");
+
+  const path = new URL(xml.match(/url="([^"]+)"/)![1]).pathname;
+  const parsed = parseStreamPath(path)!;
+  assert.equal(parsed.callSid, SID);
+  assert.equal(parsed.tenantId, "tenant-1");
+  assert.equal(parsed.businessId, "biz_1");
+  assert.equal(await verifyStreamToken(ENV.STREAM_SECRET, parsed), true);
+});
+
+test("invalid or missing Twilio signature returns 403 and never calls the platform", async () => {
+  const p = platform(ok);
+  const bad = await handleIncoming(await webhook({ CallSid: SID, To: TO }, { sig: "bogus" }), ENV, p.fetchImpl);
+  const none = await handleIncoming(await webhook({ CallSid: SID, To: TO }, { sign: false }), ENV, p.fetchImpl);
+  assert.equal(bad.status, 403);
+  assert.equal(none.status, 403);
+  assert.equal(p.calls.length, 0);
+});
+
+test("malformed CallSid or dialed number returns 400 without a lookup", async () => {
+  const p = platform(ok);
+  assert.equal((await handleIncoming(await webhook({ CallSid: "nope", To: TO }), ENV, p.fetchImpl)).status, 400);
+  assert.equal((await handleIncoming(await webhook({ CallSid: SID, To: "12345" }), ENV, p.fetchImpl)).status, 400);
+  assert.equal(p.calls.length, 0);
+});
+
+for (const [name, respond] of [
+  ["unknown number (404)", () => new Response("no", { status: 404 })],
+  ["platform error (500)", () => new Response("boom", { status: 500 })],
+  ["unauthorized (401)", () => new Response("no", { status: 401 })],
+  ["malformed body", () => Response.json({ nope: 1 })],
+  ["non-string ids", () => Response.json({ tenant_id: 5, business_id: ["x"] })],
+  ["ids with unsafe characters", () => Response.json({ tenant_id: "a/b", business_id: "c d" })],
+  ["empty ids", () => Response.json({ tenant_id: "", business_id: "" })],
+  ["network failure", () => { throw new Error("down"); }],
+] as Array<[string, () => Response]>) {
+  test(`fails closed on ${name}`, async () => {
+    const p = platform(respond);
+    const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), ENV, p.fetchImpl);
+    const xml = await res.text();
+    assert.match(xml, /<Hangup\/>/);
+    assert.doesNotMatch(xml, /<Stream/);
   });
-
-  assert.equal(response.status, 200);
-  assert.equal(requested?.searchParams.get("to"), TO);
-  const body = await response.text();
-  assert.match(body, /<Connect>/);
-  assert.match(body, /<Stream url="wss:\/\/voice\.example\.com\/voice\/stream\/CAc{32}\/\d+\/[0-9a-f]{64}">/);
-  assert.ok(body.includes('<Parameter name="to" value="' + TO + '"/>'));
-  assert.ok(!body.includes(FROM), "caller number must not be forwarded");
-});
-
-test("invalid Twilio signature never performs tenant lookup", async () => {
-  const request = signedRequest();
-  const headers = new Headers(request.headers);
-  headers.set("X-Twilio-Signature", "invalid");
-  const tampered = new Request(request.url, { method: "POST", headers, body: await request.clone().text() });
-  let lookupCalled = false;
-  const response = await handleIncoming(tampered, createEnv(), async () => {
-    lookupCalled = true;
-    return Response.json({ tenant_id: "tenant_1", business_id: "business_1" });
-  });
-  assert.equal(response.status, 403);
-  assert.equal(lookupCalled, false);
-});
-
-test("number lookup failure fails closed without leaking platform details", async () => {
-  const response = await handleIncoming(signedRequest(), createEnv(), async () => new Response("private error", { status: 404 }));
-  assert.equal(response.status, 503);
-  assert.doesNotMatch(await response.text(), /private error/);
-});
+}
