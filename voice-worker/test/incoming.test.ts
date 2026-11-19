@@ -53,7 +53,7 @@ test("incoming call resolves signed To number and returns a protected stream URL
   const body = await response.text();
   assert.match(body, /<Connect>/);
   assert.match(body, /<Stream url="wss:\/\/voice\.example\.com\/voice\/stream\/CAc{32}\/\d+\/[0-9a-f]{64}">/);
-  assert.ok(body.includes(<Parameter name="to" value="${TO}"/>));
+  assert.ok(body.includes('<Parameter name="to" value="' + TO + '"/>'));
   assert.ok(!body.includes(FROM), "caller number must not be forwarded");
 });
 
