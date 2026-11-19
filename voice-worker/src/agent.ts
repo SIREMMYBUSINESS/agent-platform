@@ -1,59 +1,93 @@
-import { Agent, type Connection } from "agents";
-import type { Env } from "./index";
+import { Agent, type Connection, type WSMessage } from "agents";
+import type { Env } from "./types";
+import { escapeXml } from "./twilio";
+
+// ---- Model contracts: verify against the live Workers AI model schemas before production. ----
+const LLM_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const STT_MODEL = "@cf/deepgram/nova-3";
+const TTS_MODEL = "@cf/deepgram/aura-1";
+const STT_PARAMS = { encoding: "mulaw", sample_rate: "8000", interim_results: "true", vad_events: "true" };
+const TTS_PARAMS = { speaker: "luna", encoding: "mulaw", container: "none", sample_rate: 8000 };
+// -----------------------------------------------------------------------------------------------
+
+const MAX_CALL_SECONDS = 15 * 60;
+const FRAME_BYTES = 160; // 20 ms of 8 kHz mu-law
+const BARGE_IN_GUARD_MS = 400; // ignore speech-start right after we begin speaking (line echo)
+const SENTENCE_END = /[.!?]\s/;
+
+const SYSTEM_PROMPT = `You are a polite phone receptionist.
+Keep every reply to one or two short spoken sentences. No lists, no markdown.
+Find out who is calling and why. You cannot book, transfer or look anything up yet:
+offer to take a message and say a team member will follow up.
+Never invent availability, prices or policies.
+If the caller describes a medical or safety emergency, tell them to hang up and call their local emergency number immediately.`;
+
+const GREETING = "Thanks for calling. How can I help you today?";
+const FALLBACK_TWIML = (msg: string) =>
+  `<Response><Say>${escapeXml(msg)}</Say><Hangup/></Response>`;
 
 type CallState = {
+  callSid?: string;
   streamSid?: string;
-  caller?: string;
-  speaking: boolean;
-  startedAt?: number;
-  turns: number;
-};
-type Turn = { role: "user" | "assistant"; content: string };
-type TwilioEvent = {
-  event?: string;
-  start?: { streamSid?: string; callSid?: string; customParameters?: Record<string, string> };
-  media?: { payload?: string };
-  streamSid?: string;
+  from?: string;
+  to?: string;
 };
 
-const SYSTEM_PROMPT = `You are a concise, friendly phone receptionist. Keep spoken replies to at most two short sentences. Collect the caller's name and reason, help request an appointment, or take a message. Never invent availability or claim an action succeeded unless a tool confirms it. For medical or other emergencies, advise contacting local emergency services and offer a human transfer.`;
+type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
 export class ReceptionistAgent extends Agent<Env, CallState> {
-  initialState: CallState = { speaking: false, turns: 0 };
-  private history: Turn[] = [];
+  // Keep the DO resident for the life of the call (it holds an outbound STT socket).
+  static options = { hibernate: false };
+
+  initialState: CallState = {};
+
   private stt?: WebSocket;
-  private socketGeneration = 0;
-  private activeConnection?: Connection;
-  private ending = false;
+  private history: ChatMsg[] = [];
+  private turn = 0;
+  private speaking = false;
+  private speakStartedAt = 0;
+  private finalized = false;
 
   async onStart() {
     this.sql`CREATE TABLE IF NOT EXISTS transcript (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
-      text TEXT NOT NULL,
-      ts INTEGER NOT NULL
-    )`;
-    const maxSeconds = Math.max(60, Math.min(7200, Number(this.env.MAX_CALL_SECONDS ?? 1800)));
-    await this.schedule(maxSeconds, "max_call_duration");
+      id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL)`;
   }
 
-  async onMessage(conn: Connection, raw: string | ArrayBuffer) {
-    this.activeConnection = conn;
-    let event: TwilioEvent;
+  async onMessage(conn: Connection, message: WSMessage) {
+    if (typeof message !== "string") return;
+    let msg: any;
     try {
-      event = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
+      msg = JSON.parse(message);
     } catch {
       return;
     }
-    if (event.event === "start" && event.start?.streamSid) {
-      this.setState({ ...this.state, streamSid: event.start.streamSid, startedAt: Date.now() });
-      await this.openStt(conn);
-      await this.say(conn, "Thanks for calling. How can I help you today?");
-    } else if (event.event === "media" && event.media?.payload) {
-      const payload = decodeBase64(event.media.payload);
-      if (this.stt?.readyState === WebSocket.OPEN) this.stt.send(payload);
-    } else if (event.event === "stop") {
-      await this.finalizeCall();
+
+    switch (msg.event) {
+      case "start": {
+        this.setState({
+          callSid: msg.start?.callSid,
+          streamSid: msg.start?.streamSid,
+          from: msg.start?.customParameters?.from,
+          to: msg.start?.customParameters?.to,
+        });
+        await this.schedule(MAX_CALL_SECONDS, "hangup");
+        try {
+          await this.openStt(conn);
+          await this.speak(conn, GREETING, ++this.turn);
+        } catch (e) {
+          await this.fallback("start failed");
+        }
+        break;
+      }
+      case "media": {
+        if (this.stt && this.stt.readyState === WebSocket.OPEN && msg.media?.payload) {
+          this.stt.send(base64ToBytes(msg.media.payload));
+        }
+        break;
+      }
+      case "stop":
+        await this.finalize();
+        break;
     }
   }
 

@@ -1,0 +1,19 @@
+{
+  "name": "voice-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "ai": { "binding": "AI" },
+  "durable_objects": {
+    "bindings": [{ "name": "RECEPTIONIST", "class_name": "ReceptionistAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
+  "vars": {
+    // Set this to the exact deployed public origin, without a trailing slash.
+    "PUBLIC_ORIGIN": "https://agent-platform-web-staging.olaoluwaemmanuel6.workers.dev",
+    "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com"
+  }
+  // Set secrets in Cloudflare, never here:
+  // TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, STREAM_SECRET, PLATFORM_API_KEY
+}

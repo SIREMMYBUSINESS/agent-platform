@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     tenant_region_routing_enabled: bool = False
     redis_url_file: Path | None = None
     provider_secrets_dir: Path | None = None
+    # Dedicated platform-wide bearer token for GET /voice/resolve-number (voice gateway Worker only).
+    voice_number_lookup_token: str | None = Field(default=None, repr=False)
     worker_bootstrap_module: str | None = None
     cors_allowed_origins: list[str] = Field(default_factory=list)
     workflow_dry_run: bool = False
@@ -61,6 +63,16 @@ class Settings(BaseSettings):
             return None
         value = value.strip()
         return value or None
+
+    @field_validator("voice_number_lookup_token")
+    @classmethod
+    def validate_voice_number_lookup_token(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if len(value) < 32:
+            raise ValueError("must be at least 32 characters")
+        return value
 
     @field_validator("worker_bootstrap_module")
     @classmethod
