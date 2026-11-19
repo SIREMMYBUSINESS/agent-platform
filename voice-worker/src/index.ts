@@ -26,31 +26,26 @@ const xml = (body: string, status = 200) => new Response(body, {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    if (url.pathname === "/voice/incoming" && req.method === "POST") {
-      const form = await req.formData();
-      if (!await verifyTwilioSignature(req, form, env.TWILIO_AUTH_TOKEN, env.PUBLIC_URL)) {
-        return new Response("Forbidden", { status: 403 });
-      }
-      const callSid = form.get("CallSid");
-      if (typeof callSid !== "string" || !/^CA[a-fA-F0-9]{32}$/.test(callSid)) {
-        return xml("<Response><Say>We could not connect your call.</Say><Hangup/></Response>", 400);
-      }
-      const token = await signStreamToken(callSid, env.TWILIO_AUTH_TOKEN);
-      const streamUrl = new URL(`/voice/stream/${encodeURIComponent(callSid)}`, env.PUBLIC_URL);
-      streamUrl.protocol = "wss:";
-      streamUrl.searchParams.set("token", token);
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response><Connect><Stream url="${escapeXml(streamUrl.toString())}"><Parameter name="streamToken" value="${escapeXml(token)}"/></Stream></Connect></Response>`;
-      return xml(twiml);
+
+    if (url.pathname === "/health") return new Response("ok");
+
+    // 1. Twilio incoming-call webhook -> signature check, tenant lookup, TwiML.
+    if (url.pathname === "/voice/incoming") {
+      if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405 });
+      return handleIncoming(req, env);
     }
 
-    const match = url.pathname.match(/^\/voice\/stream\/(CA[a-fA-F0-9]{32})$/);
-    if (match && req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
-      const callSid = match[1];
-      const token = url.searchParams.get("token") ?? "";
-      if (!await verifyStreamToken(callSid, token, env.TWILIO_AUTH_TOKEN)) {
+    // 2. Media stream WebSocket: /voice/stream/<callSid>/<exp>/<tenantId>/<businessId>/<token>
+    if (url.pathname.startsWith("/voice/stream/")) {
+      if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+        return new Response("Expected WebSocket", { status: 426 });
+      }
+      const parsed = parseStreamPath(url.pathname);
+      // Reject before any Durable Object is created or woken.
+      if (!parsed || !(await verifyStreamToken(env.STREAM_SECRET, parsed))) {
         return new Response("Forbidden", { status: 403 });
       }
-      const agent = await getAgentByName(env.RECEPTIONIST, callSid);
+      const agent = await getAgentByName(env.RECEPTIONIST, parsed.callSid);
       return agent.fetch(req);
     }
 

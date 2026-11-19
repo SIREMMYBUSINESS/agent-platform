@@ -1,110 +1,100 @@
+// Handler for Twilio's incoming-call webhook. Kept free of Workers-only imports so it is unit-testable.
+// Fails closed: if the tenant cannot be resolved from the dialed number, the call is not connected.
+
 import type { Env } from "./types";
-import { CALL_SID_RE, escapeXml, makeStreamToken, validTwilioSignature } from "./twilio";
+import {
+  CALL_SID_RE,
+  SCOPE_ID_RE,
+  STREAM_TOKEN_TTL_SECONDS,
+  escapeXml,
+  makeStreamToken,
+  streamPath,
+  validTwilioSignature,
+} from "./twilio";
 
-const MAX_WEBHOOK_BYTES = 10_000;
+export type IncomingEnv = Pick<
+  Env,
+  "PUBLIC_ORIGIN" | "PLATFORM_API_URL" | "PLATFORM_API_KEY" | "TWILIO_AUTH_TOKEN" | "STREAM_SECRET"
+>;
+
 const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
-const SCOPE_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-const STREAM_TOKEN_TTL_SECONDS = 120;
+const MAX_WEBHOOK_BYTES = 10_000;
+const LOOKUP_TIMEOUT_MS = 3000;
 
-type NumberMapping = { tenant_id?: unknown; business_id?: unknown };
-type Fetcher = typeof fetch;
-
-/** Validate Twilio, resolve the dialed number from the trusted platform directory, then emit TwiML. */
-export async function handleIncoming(
-  request: Request,
-  env: Env,
-  fetcher: Fetcher = fetch,
-): Promise<Response> {
-  const contentLength = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_WEBHOOK_BYTES) {
-    return new Response("Payload Too Large", { status: 413 });
-  }
-  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/x-www-form-urlencoded")) {
-    return new Response("Unsupported Media Type", { status: 415 });
-  }
-
-  let form: FormData;
-  try {
-    form = await request.formData();
-  } catch {
-    return new Response("Bad Request", { status: 400 });
-  }
-
-  const pairs: Array<[string, string]> = [];
-  for (const [key, value] of form.entries()) {
-    if (typeof value !== "string") return new Response("Bad Request", { status: 400 });
-    pairs.push([key, value]);
-  }
-  const publicOrigin = env.PUBLIC_ORIGIN.replace(/\/$/, "");
-  const requestUrl = new URL(request.url);
-  const signedUrl = `${publicOrigin}${requestUrl.pathname}${requestUrl.search}`;
-  if (!await validTwilioSignature(env.TWILIO_AUTH_TOKEN, signedUrl, pairs, request.headers.get("X-Twilio-Signature"))) {
-    return new Response("Forbidden", { status: 403 });
-  }
-
-  const callSid = form.get("CallSid");
-  const from = form.get("From");
-  const to = form.get("To");
-  if (
-    typeof callSid !== "string" || !CALL_SID_RE.test(callSid) ||
-    typeof from !== "string" || !PHONE_RE.test(from) ||
-    typeof to !== "string" || !PHONE_RE.test(to)
-  ) {
-    return new Response("Bad Request", { status: 400 });
-  }
-
-  if (!env.PLATFORM_API_URL || !env.PLATFORM_API_KEY) {
-    return unavailableTwiml();
-  }
-
-  let mapping: NumberMapping;
-  try {
-    const endpoint = new URL("/voice/resolve-number", env.PLATFORM_API_URL);
-    endpoint.searchParams.set("to", to);
-    const result = await fetcher(endpoint, {
-      method: "GET",
-      headers: {
-        authorization: `Bearer ${env.PLATFORM_API_KEY}`,
-        accept: "application/json",
-      },
-    });
-    if (!result.ok) return unavailableTwiml();
-    mapping = await result.json() as NumberMapping;
-  } catch {
-    return unavailableTwiml();
-  }
-
-  if (
-    typeof mapping.tenant_id !== "string" || !SCOPE_ID_RE.test(mapping.tenant_id) ||
-    typeof mapping.business_id !== "string" || !SCOPE_ID_RE.test(mapping.business_id)
-  ) {
-    return unavailableTwiml();
-  }
-
-  const expiresAt = Math.floor(Date.now() / 1000) + STREAM_TOKEN_TTL_SECONDS;
-  const token = await makeStreamToken(env.STREAM_SECRET, callSid, expiresAt);
-  const streamOrigin = new URL(env.PUBLIC_ORIGIN);
-  if (streamOrigin.protocol !== "https:") return unavailableTwiml();
-  streamOrigin.protocol = "wss:";
-  const streamUrl = `${streamOrigin.origin}/voice/stream/${callSid}/${expiresAt}/${token}`;
-
-  // Do not forward the caller's phone number. Tenant lookup used only the signed To number.
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${escapeXml(streamUrl)}">
-      <Parameter name="to" value="${escapeXml(to)}"/>
-    </Stream>
-  </Connect>
-</Response>`;
-  return new Response(twiml, {
-    headers: { "content-type": "text/xml; charset=utf-8", "cache-control": "no-store" },
+const xml = (body: string) =>
+  new Response(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`, {
+    headers: { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" },
   });
+
+const UNAVAILABLE = () =>
+  xml(`<Response><Say>We are unable to connect your call right now. Please try again later.</Say><Hangup/></Response>`);
+
+type Scope = { tenantId: string; businessId: string };
+
+/**
+ * Platform contract: GET {PLATFORM_API_URL}/voice/resolve-number?to=<E.164>
+ * Authorization: Bearer <PLATFORM_API_KEY>
+ * 200 -> { "tenant_id": "...", "business_id": "..." }; anything else -> fail closed.
+ */
+async function resolveNumber(env: IncomingEnv, to: string, fetchImpl: typeof fetch): Promise<Scope | null> {
+  try {
+    const url = new URL("/voice/resolve-number", env.PLATFORM_API_URL);
+    url.searchParams.set("to", to);
+    const res = await fetchImpl(url.toString(), {
+      headers: { Authorization: `Bearer ${env.PLATFORM_API_KEY}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { tenant_id?: unknown; business_id?: unknown };
+    if (typeof body.tenant_id !== "string" || typeof body.business_id !== "string") return null;
+    if (!SCOPE_ID_RE.test(body.tenant_id) || !SCOPE_ID_RE.test(body.business_id)) return null;
+    return { tenantId: body.tenant_id, businessId: body.business_id };
+  } catch {
+    return null;
+  }
 }
 
-function unavailableTwiml(): Response {
-  return new Response(
-    `<?xml version="1.0" encoding="UTF-8"?><Response><Say>We are unable to connect your call right now. Please try again later.</Say><Hangup/></Response>`,
-    { status: 503, headers: { "content-type": "text/xml; charset=utf-8", "cache-control": "no-store" } },
+export async function handleIncoming(
+  req: Request,
+  env: IncomingEnv,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
+  const url = new URL(req.url);
+
+  const len = Number(req.headers.get("content-length") ?? "0");
+  if (len > MAX_WEBHOOK_BYTES) return new Response("Payload Too Large", { status: 413 });
+
+  const form = await req.formData();
+  const pairs: Array<[string, string]> = [];
+  for (const [k, v] of form.entries()) if (typeof v === "string") pairs.push([k, v]);
+
+  // Validate against the configured public origin, never the Host/X-Forwarded-* headers.
+  const signedUrl = `${env.PUBLIC_ORIGIN}${url.pathname}${url.search}`;
+  const ok = await validTwilioSignature(
+    env.TWILIO_AUTH_TOKEN,
+    signedUrl,
+    pairs,
+    req.headers.get("X-Twilio-Signature"),
+  );
+  if (!ok) return new Response("Forbidden", { status: 403 });
+
+  const callSid = String(form.get("CallSid") ?? "");
+  const to = String(form.get("To") ?? "");
+  if (!CALL_SID_RE.test(callSid) || !PHONE_RE.test(to)) {
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  // Tenant scope comes only from the platform, keyed by the (signed) dialed number.
+  const scope = await resolveNumber(env, to, fetchImpl);
+  if (!scope) return UNAVAILABLE();
+
+  const exp = Math.floor(Date.now() / 1000) + STREAM_TOKEN_TTL_SECONDS;
+  const stream = { callSid, exp, ...scope };
+  const token = await makeStreamToken(env.STREAM_SECRET, stream);
+  const wsOrigin = env.PUBLIC_ORIGIN.replace(/^https:/, "wss:");
+
+  // Twilio does not allow query strings on <Stream> URLs, so the signed scope lives in the path.
+  return xml(
+    `<Response><Connect><Stream url="${escapeXml(`${wsOrigin}${streamPath(stream, token)}`)}"/></Connect></Response>`,
   );
 }
