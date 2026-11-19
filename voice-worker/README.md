@@ -1,50 +1,32 @@
-# voice-worker
+# Cloudflare voice receptionist
 
-Cloudflare Worker + Durable Object AI voice receptionist.
-Twilio Media Streams → Worker (edge router) → `ReceptionistAgent` (Agents SDK Durable Object, one per call) → Workers AI (STT, LLM, TTS). Tool calls (booking, messages, transfer, call-log postback) are **off**.
+This is a separate Worker from `web/`: it owns Twilio's form webhook and media WebSocket while the existing React Router Worker continues to serve the website. `ReceptionistAgent` is one SQLite-backed Durable Object per Twilio CallSid.
 
-## Call flow and trust model
-1. `POST /voice/incoming` validates Twilio's signature against `PUBLIC_ORIGIN` (never request Host/proxy headers).
-2. The signed dialed number (`To`) is resolved through the platform. Lookup failures fail closed. The caller's number is not forwarded.
-3. The Worker returns TwiML with a stream URL: `/voice/stream/<callSid>/<expiry>/<token>`. Twilio does not allow query strings in `<Stream>` URLs. The HMAC-SHA256 token binds the URL to CallSid and expiry.
-4. The Worker rejects invalid/expired stream tokens before creating or waking the Durable Object. The Durable Object is keyed by CallSid.
-5. The Durable Object receives only the dialed number in Stream custom parameters. It does not derive tenant authority from caller speech or caller-supplied values. Tools are disabled.
+## Configure and deploy
 
-## Platform contract (not yet implemented)
-The Worker expects:
+1. Set `PUBLIC_URL` to the exact public HTTPS origin assigned to this Worker, and set `TENANT_ID` and `BUSINESS_ID` to provisioned platform records. Never take tenant/business scope from a call or query string.
+2. Add secrets from `voice-worker/`:
 
-```http
-GET {PLATFORM_API_URL}/voice/resolve-number?to=%2B15550001111
-Authorization: Bearer <service key>
-```
+   ```sh
+   npx wrangler secret put TWILIO_AUTH_TOKEN
+   npx wrangler secret put PLATFORM_API_KEY
+   ```
 
-Success response:
+3. Install dependencies and deploy from `voice-worker/`:
 
-```json
-{"tenant_id":"tenant-id","business_id":"business-id"}
-```
+   ```sh
+   npm install
+   npx wrangler deploy
+   ```
 
-IDs must match `^[A-Za-z0-9_-]{1,64}$`. The endpoint must authenticate a dedicated service key, resolve exact E.164 numbers from provisioned tenant/business data, return only those IDs, apply rate limits, and fail closed. Do not log the dialed number together with transcripts.
+4. Configure the Twilio phone number's incoming-call webhook to `https://<voice-worker-host>/voice/incoming` with HTTP POST.
 
-## Layout
-- `src/index.ts` — router; validates stream token before handing off to the Durable Object.
-- `src/incoming.ts` — webhook validation, number lookup, and TwiML generation.
-- `src/twilio.ts` — signature validation, stream tokens, and XML escaping.
-- `src/agent.ts` — per-call agent, STT/LLM/TTS, barge-in, max-call alarm, and transcript persistence.
-- `test/` — signature, stream-token, incoming signature, lookup, and fail-closed tests.
+The call webhook verifies Twilio's HMAC-SHA1 signature against the configured canonical public URL, returns escaped TwiML, and signs the CallSid media URL with an HMAC token. The WebSocket handler verifies that token before routing the socket to the per-call Durable Object. Keep the Worker endpoint on HTTPS/WSS.
 
-## Setup
-1. In `wrangler.jsonc`, set `PUBLIC_ORIGIN` to the exact public origin (custom domain recommended, no trailing slash) and set `PLATFORM_API_URL`.
-2. Set Cloudflare Worker secrets: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `STREAM_SECRET`, and `PLATFORM_API_KEY`. Never commit secret values.
-3. Connect a separate Worker through Workers Builds with root directory `voice-worker`.
-4. Configure the Twilio voice webhook as `POST https://<PUBLIC_ORIGIN host>/voice/incoming`.
-5. Run checks from this directory: `npm ci`, `npm run typecheck`, `npm test`, and `npm run dry-run`.
+## Current scope and known integration boundary
 
-## Production checks still required
-- Verify Workers AI Nova-3 and Aura parameters against the current model schemas.
-- Verify Agents SDK WebSocket handoff with a real Twilio stream.
-- Test canonical URL/signature behavior behind the deployed custom domain.
-- Measure first-audio latency; test barge-in, the 15-minute alarm, clean close, and socket cleanup.
-- Review emergency wording and configure recording/transcription consent.
-- Decide transcript retention, implement the call-log/retention path, and do not log transcripts or phone numbers.
-- Keep tools disabled until their platform contracts are tenant-scoped, authorized, and tested. Enable message-taking, booking, transfer, and call-log posting separately after review.
+The Worker scaffold accepts Twilio Media Streams messages, forwards 8 kHz μ-law frames to Workers AI Nova-3, generates replies with Llama 3.3, generates μ-law audio with Aura, stores a local transcript in Durable Object SQLite, and ends a call at the configured maximum duration. It does **not** yet call the Agent Platform booking/message/transfer APIs: the current FastAPI application does not expose the `/appointments` and `/messages` paths in the sample. Do not configure or advertise those tools until matching tenant-authorized backend contracts are implemented. The API key and platform URL are reserved for that follow-up integration; no caller-provided identity is sent to the platform.
+
+The current path uses completed-utterance recognition and whole-response TTS, not sentence-level token streaming, so it does not meet a sub-second latency target. Model options and Workers AI websocket/raw response behavior can change; verify against the active Cloudflare model schemas and run a real Twilio test call before production. Twilio's 20 ms frames are emitted as audio bytes become available; validate pacing, stream format, interruption/barge-in, and audio levels with the configured provider.
+
+Call recording/transcription has privacy and retention implications. Configure consent, retention, tenant residency, emergency escalation, operational monitoring, and the platform call-log endpoint before production use.

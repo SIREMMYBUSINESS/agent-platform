@@ -1,26 +1,18 @@
 {
-  "name": "voice-worker",
-  "version": "0.1.0",
+  "name": "agent-platform-voice-worker",
   "private": true,
   "type": "module",
-  "description": "Cloudflare Worker + Durable Object AI voice receptionist (Twilio Media Streams, Workers AI, Agents SDK)",
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts",
-    "dry-run": "wrangler deploy --dry-run --outdir dist",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "agents": "^0.2.0",
-    "ai": "^7.0.170",
-    "zod": "^4.6.7"
+    "agents": "^0.0.100"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250901.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.6.0",
-    "wrangler": "~4.80.0"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.0.0"
   }
 }

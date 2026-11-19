@@ -105,215 +105,126 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   }
 
   async onClose() {
-    await this.finalize();
+    await this.finalizeCall();
   }
 
-  /** Scheduled hard cap, also used by the fallback path. */
-  async hangup() {
-    await this.twilioUpdate("Status=completed");
-    await this.finalize();
+  async onAlarm(alarmInfo: { name?: string }) {
+    if (alarmInfo.name === "max_call_duration") await this.finalizeCall();
   }
-
-  // ---------------- STT ----------------
 
   private async openStt(conn: Connection) {
-    const resp: any = await (this.env.AI as any).run(STT_MODEL, STT_PARAMS, { websocket: true });
-    const ws: WebSocket | undefined = resp?.webSocket;
-    if (!ws) throw new Error("STT websocket unavailable");
-    ws.accept();
-    this.stt = ws;
-
-    ws.addEventListener("message", (ev: MessageEvent) => {
-      this.onSttEvent(conn, ev.data).catch(() => this.fallback("stt event failed"));
-    });
-    ws.addEventListener("close", () => {
-      this.stt = undefined;
+    // Workers AI partner model supports streaming via its websocket response.
+    const result = await this.env.AI.run(
+      "@cf/deepgram/nova-3" as keyof AiModels,
+      { encoding: "mulaw", sample_rate: 8000, interim_results: true, vad_events: true } as never,
+      { websocket: true } as never,
+    ) as { webSocket?: WebSocket };
+    const socket = result.webSocket;
+    if (!socket) throw new Error("Workers AI STT did not return a websocket");
+    socket.accept();
+    this.stt = socket;
+    const generation = ++this.socketGeneration;
+    socket.addEventListener("message", (message) => {
+      if (generation !== this.socketGeneration) return;
+      void this.handleSttMessage(conn, message.data).catch(() => this.fallback(conn));
     });
   }
 
-  private async onSttEvent(conn: Connection, data: unknown) {
-    if (typeof data !== "string") return;
-    const r = JSON.parse(data);
-
-    // Barge-in: caller started talking while we are speaking.
-    if (r.type === "SpeechStarted" && this.speaking && Date.now() - this.speakStartedAt > BARGE_IN_GUARD_MS) {
-      this.turn++; // cancels any in-flight response
-      this.speaking = false;
+  private async handleSttMessage(conn: Connection, data: unknown) {
+    let result: Record<string, any>;
+    try { result = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data as ArrayBuffer)); }
+    catch { return; }
+    if ((result.type === "SpeechStarted" || result.event === "SpeechStarted") && this.state.speaking) {
       conn.send(JSON.stringify({ event: "clear", streamSid: this.state.streamSid }));
-      return;
+      this.setState({ ...this.state, speaking: false });
     }
-
-    const text: string | undefined = r.channel?.alternatives?.[0]?.transcript?.trim();
-    if (r.is_final && r.speech_final && text) {
-      this.record("user", text);
-      this.history.push({ role: "user", content: text });
-      await this.respond(conn);
+    const text = result.channel?.alternatives?.[0]?.transcript;
+    if (result.is_final && result.speech_final && typeof text === "string" && text.trim()) {
+      await this.handleUtterance(conn, text.trim());
     }
   }
 
-  // ---------------- LLM -> TTS ----------------
-
-  private async respond(conn: Connection) {
-    const turn = ++this.turn;
-    const stream = (await (this.env.AI as any).run(LLM_MODEL, {
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...this.history.slice(-20)],
-      stream: true,
-      max_tokens: 200,
-    })) as ReadableStream<Uint8Array>;
-
-    let buf = "";
-    let full = "";
-    for await (const delta of sseText(stream)) {
-      if (turn !== this.turn) {
-        await stream.cancel().catch(() => {});
-        return;
-      }
-      buf += delta;
-      full += delta;
-      let m: RegExpExecArray | null;
-      while ((m = SENTENCE_END.exec(buf))) {
-        const sentence = buf.slice(0, m.index + 1).trim();
-        buf = buf.slice(m.index + m[0].length);
-        if (sentence) await this.speak(conn, sentence, turn);
-        if (turn !== this.turn) return;
-      }
-    }
-    if (buf.trim() && turn === this.turn) await this.speak(conn, buf.trim(), turn);
-
-    if (full.trim() && turn === this.turn) {
-      this.history.push({ role: "assistant", content: full.trim() });
-      this.record("assistant", full.trim());
-    }
+  private async handleUtterance(conn: Connection, text: string) {
+    if (this.ending || this.state.turns >= 100) return;
+    this.history.push({ role: "user", content: text });
+    this.saveTranscript("user", text);
+    this.setState({ ...this.state, turns: this.state.turns + 1 });
+    const response = await this.env.AI.run(
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as keyof AiModels,
+      {
+        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...this.history.slice(-20)],
+        max_tokens: 180,
+        temperature: 0.2,
+      } as never,
+    ) as { response?: string };
+    const reply = response.response?.trim();
+    if (!reply) return this.fallback(conn);
+    this.history.push({ role: "assistant", content: reply });
+    this.saveTranscript("assistant", reply);
+    await this.say(conn, reply);
   }
 
-  private async speak(conn: Connection, text: string, turn: number) {
-    if (turn !== this.turn) return;
+  private async say(conn: Connection, text: string) {
+    if (this.ending || !this.state.streamSid) return;
+    this.setState({ ...this.state, speaking: true });
     try {
-      const res: any = await (this.env.AI as any).run(
-        TTS_MODEL,
-        { text, ...TTS_PARAMS },
-        { returnRawResponse: true },
-      );
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      if (bytes.length === 0) throw new Error("empty TTS audio");
-      if (turn !== this.turn) return;
-
-      this.speaking = true;
-      this.speakStartedAt = Date.now();
-      for (let o = 0; o < bytes.length; o += FRAME_BYTES) {
-        conn.send(
-          JSON.stringify({
-            event: "media",
-            streamSid: this.state.streamSid,
-            media: { payload: bytesToBase64(bytes.subarray(o, o + FRAME_BYTES)) },
-          }),
-        );
-      }
-      conn.send(
-        JSON.stringify({ event: "mark", streamSid: this.state.streamSid, mark: { name: crypto.randomUUID() } }),
-      );
-    } catch {
-      await this.fallback("tts failed");
-    }
-  }
-
-  // ---------------- Tools (disabled until the platform API boundary is confirmed) ----------------
-
-  // this.state.tenantId / businessId come from the signed stream path (resolved by the platform from the
-  // dialed number). Platform calls must send them as server-side scope; never take tenant/business
-  // identifiers from caller speech. Booking, message intake, transfer and call-log postback stay OFF
-  // until tenant-authorized platform endpoints exist and are tested.
-
-  // ---------------- Fallback, persistence, cleanup ----------------
-
-  private async fallback(_reason: string) {
-    this.turn++;
-    this.speaking = false;
-    await this.twilioUpdate(
-      `Twiml=${encodeURIComponent(FALLBACK_TWIML("Sorry, we are having technical trouble. Please try again shortly."))}`,
-    );
-    await this.finalize();
-  }
-
-  private async twilioUpdate(body: string) {
-    const sid = this.state.callSid;
-    if (!sid) return;
-    try {
-      await fetch(
-        `https://api.twilio.com/2010-04-01/Accounts/${this.env.TWILIO_ACCOUNT_SID}/Calls/${sid}.json`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: "Basic " + btoa(`${this.env.TWILIO_ACCOUNT_SID}:${this.env.TWILIO_AUTH_TOKEN}`),
-            "Content-Type": "application/x-www-form-urlencoded",
-          },
-          body,
-        },
-      );
-    } catch {
-      // Nothing more we can do; the call will end when Twilio's stream closes.
-    }
-  }
-
-  private record(role: "user" | "assistant", text: string) {
-    this.sql`INSERT INTO transcript (role, text, ts) VALUES (${role}, ${text}, ${Date.now()})`;
-  }
-
-  private async finalize() {
-    if (this.finalized) return;
-    this.finalized = true;
-    this.turn++;
-    this.speaking = false;
-    try {
-      this.stt?.close();
-    } catch {}
-    this.stt = undefined;
-    // TODO(after retention policy is decided): post summary to the platform call-log endpoint,
-    // then delete this call's transcript rows. Do not log transcripts or phone numbers.
-  }
-}
-
-// ---------------- helpers ----------------
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let s = "";
-  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-  return btoa(s);
-}
-
-/** Parses a Workers AI server-sent-event stream into text deltas. */
-async function* sseText(stream: ReadableStream<Uint8Array>): AsyncGenerator<string> {
-  const reader = stream.getReader();
-  const dec = new TextDecoder();
-  let pending = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      pending += dec.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = pending.indexOf("\n")) !== -1) {
-        const line = pending.slice(0, nl).trim();
-        pending = pending.slice(nl + 1);
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "[DONE]") return;
-        try {
-          const j = JSON.parse(payload);
-          if (typeof j.response === "string" && j.response) yield j.response;
-        } catch {
-          // ignore malformed chunk
+      const audio = await this.env.AI.run(
+        "@cf/deepgram/aura-1" as keyof AiModels,
+        { text, speaker: "luna", encoding: "mulaw", container: "none", sample_rate: 8000 } as never,
+        { returnRawResponse: true } as never,
+      ) as Response;
+      const reader = audio.body?.getReader();
+      if (!reader) throw new Error("Workers AI TTS returned no audio body");
+      while (this.state.speaking && !this.ending) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        // Twilio Media Streams expects outbound audio payloads in small μ-law chunks.
+        for (let offset = 0; offset < value.length && this.state.speaking; offset += 160) {
+          const frame = value.subarray(offset, Math.min(offset + 160, value.length));
+          conn.send(JSON.stringify({
+            event: "media", streamSid: this.state.streamSid,
+            media: { payload: encodeBase64(frame) },
+          }));
         }
       }
+      reader.releaseLock();
+    } catch {
+      await this.fallback(conn);
+    } finally {
+      this.setState({ ...this.state, speaking: false });
     }
-  } finally {
-    reader.releaseLock();
   }
+
+  private async fallback(conn: Connection) {
+    if (this.ending || !this.state.streamSid) return;
+    // Keep the call alive with provider-generated audio only as a last resort.
+    conn.send(JSON.stringify({ event: "clear", streamSid: this.state.streamSid }));
+  }
+
+  private saveTranscript(role: string, text: string) {
+    this.sql`INSERT INTO transcript (role, text, ts) VALUES (${role}, ${text.slice(0, 4000)}, ${Date.now()})`;
+  }
+
+  private async finalizeCall() {
+    if (this.ending) return;
+    this.ending = true;
+    this.socketGeneration++;
+    try { this.stt?.close(); } catch { /* already closed */ }
+    this.stt = undefined;
+  }
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + 0x8000, bytes.length)));
+  }
+  return btoa(binary);
 }
