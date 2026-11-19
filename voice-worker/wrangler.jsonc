@@ -1,5 +1,5 @@
 {
-  "name": "voice-worker",
+  "name": "agent-platform-voice-staging",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
   "compatibility_flags": ["nodejs_compat"],
