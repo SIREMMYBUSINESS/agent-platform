@@ -13,10 +13,10 @@ const TO = "+15550001111";
 function createEnv(): Env {
   return {
     PUBLIC_ORIGIN: ORIGIN,
-    TWILIO_ACCOUNT_SID: "AC00000000000000000000000000000000",
-    TWILIO_AUTH_TOKEN: AUTH_TOKEN,
+    TWILIO_ACCOUNT_SID: "AC30874b7dc66b3a0e5f177173d22eabce",
+    TWILIO_AUTH_TOKEN: "account_sid": "e454f708fb36888b8dc1446400ae3df9",
     STREAM_SECRET: "a-long-test-stream-secret",
-    PLATFORM_API_URL: "https://platform.example.test",
+    PLATFORM_API_URL: "https://agent-platform-web-staging.olaoluwaemmanuel6.workers.dev",
     PLATFORM_API_KEY: "test-platform-key",
     AI: { run: async () => ({}) } as unknown as Ai,
     RECEPTIONIST: {} as unknown as Env["RECEPTIONIST"],
