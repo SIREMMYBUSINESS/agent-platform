@@ -1,18 +1,24 @@
 {
   "name": "agent-platform-voice-worker",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "agents": "^0.0.100"
+    "agents": "^0.2.0",
+    "ai": "^7.0.170",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250901.0",
-    "typescript": "^5.9.3",
-    "wrangler": "^4.0.0"
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "wrangler": "~4.80.0"
   }
 }

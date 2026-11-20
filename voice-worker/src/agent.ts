@@ -6,8 +6,6 @@ import { escapeXml, parseStreamPath, verifyStreamToken } from "./twilio";
 const LLM_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const STT_MODEL = "@cf/deepgram/nova-3";
 const TTS_MODEL = "@cf/deepgram/aura-1";
-const STT_PARAMS = { encoding: "mulaw", sample_rate: "8000", interim_results: "true", vad_events: "true" };
-const TTS_PARAMS = { speaker: "luna", encoding: "mulaw", container: "none", sample_rate: 8000 };
 // -----------------------------------------------------------------------------------------------
 
 const MAX_CALL_SECONDS = 15 * 60;
@@ -32,6 +30,8 @@ type CallState = {
   tenantId?: string;
   businessId?: string;
   streamSid?: string;
+  speaking?: boolean;
+  turns?: number;
 };
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
@@ -48,6 +48,8 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   private speaking = false;
   private speakStartedAt = 0;
   private finalized = false;
+  private ending = false;
+  private socketGeneration = 0;
   private started = false;
 
   async onStart() {
@@ -83,23 +85,24 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
         }
         this.started = true;
         this.setState({ ...this.state, streamSid: msg.start?.streamSid });
-        await this.schedule(MAX_CALL_SECONDS, "hangup");
+        await this.schedule(MAX_CALL_SECONDS, "hangup", {});
         try {
           await this.openStt(conn);
-          await this.speak(conn, GREETING, ++this.turn);
+          await this.say(conn, GREETING);
         } catch (e) {
-          await this.fallback("start failed");
+          await this.fallback(conn);
         }
         break;
       }
       case "media": {
         if (this.stt && this.stt.readyState === WebSocket.OPEN && msg.media?.payload) {
-          this.stt.send(base64ToBytes(msg.media.payload));
+          const bytes = decodeBase64(msg.media.payload);
+          this.stt.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
         }
         break;
       }
       case "stop":
-        await this.finalize();
+        await this.finalizeCall();
         break;
     }
   }
@@ -108,14 +111,11 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     await this.finalizeCall();
   }
 
-  async onAlarm(alarmInfo: { name?: string }) {
-    if (alarmInfo.name === "max_call_duration") await this.finalizeCall();
-  }
 
   private async openStt(conn: Connection) {
     // Workers AI partner model supports streaming via its websocket response.
     const result = await this.env.AI.run(
-      "@cf/deepgram/nova-3" as keyof AiModels,
+      STT_MODEL as keyof AiModels,
       { encoding: "mulaw", sample_rate: 8000, interim_results: true, vad_events: true } as never,
       { websocket: true } as never,
     ) as { webSocket?: WebSocket };
@@ -145,12 +145,13 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   }
 
   private async handleUtterance(conn: Connection, text: string) {
-    if (this.ending || this.state.turns >= 100) return;
+    const turns = this.state.turns ?? 0;
+    if (this.ending || turns >= 100) return;
     this.history.push({ role: "user", content: text });
     this.saveTranscript("user", text);
-    this.setState({ ...this.state, turns: this.state.turns + 1 });
+    this.setState({ ...this.state, turns: turns + 1 });
     const response = await this.env.AI.run(
-      "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as keyof AiModels,
+      LLM_MODEL as keyof AiModels,
       {
         messages: [{ role: "system", content: SYSTEM_PROMPT }, ...this.history.slice(-20)],
         max_tokens: 180,
@@ -169,10 +170,10 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.setState({ ...this.state, speaking: true });
     try {
       const audio = await this.env.AI.run(
-        "@cf/deepgram/aura-1" as keyof AiModels,
+        TTS_MODEL as keyof AiModels,
         { text, speaker: "luna", encoding: "mulaw", container: "none", sample_rate: 8000 } as never,
         { returnRawResponse: true } as never,
-      ) as Response;
+      ) as unknown as Response;
       const reader = audio.body?.getReader();
       if (!reader) throw new Error("Workers AI TTS returned no audio body");
       while (this.state.speaking && !this.ending) {
@@ -205,9 +206,14 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.sql`INSERT INTO transcript (role, text, ts) VALUES (${role}, ${text.slice(0, 4000)}, ${Date.now()})`;
   }
 
+  async hangup() {
+    await this.finalizeCall();
+  }
+
   private async finalizeCall() {
     if (this.ending) return;
     this.ending = true;
+    this.finalized = true;
     this.socketGeneration++;
     try { this.stt?.close(); } catch { /* already closed */ }
     this.stt = undefined;
