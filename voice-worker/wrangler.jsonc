@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "agent-platform-voice-staging",
+  "name": "agent-platform-voice",
   "main": "src/index.ts",
   "compatibility_date": "2025-09-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -11,7 +11,7 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
   "vars": {
-    "PUBLIC_ORIGIN": "https://agent-platform-receptionistagent.olaoluwaemmanuel6.workers.dev",
+    "PUBLIC_ORIGIN": "https://agent-platform-voice.olaoluwaemmanuel6.workers.dev",
     "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com"
   }
   // Runtime secrets are provisioned separately in the staging Worker:
