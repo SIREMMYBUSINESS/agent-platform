@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "agents": "^0.2.0",
