@@ -32,6 +32,8 @@ type CallState = {
   tenantId?: string;
   businessId?: string;
   streamSid?: string;
+  speaking?: boolean;
+  turns?: number;
 };
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
@@ -48,6 +50,8 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   private speaking = false;
   private speakStartedAt = 0;
   private finalized = false;
+  private ending = false;
+  private socketGeneration = 0;
   private started = false;
 
   async onStart() {
@@ -83,23 +87,24 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
         }
         this.started = true;
         this.setState({ ...this.state, streamSid: msg.start?.streamSid });
-        await this.schedule(MAX_CALL_SECONDS, "hangup");
+        await this.schedule(MAX_CALL_SECONDS, "hangup", {});
         try {
           await this.openStt(conn);
-          await this.speak(conn, GREETING, ++this.turn);
+          await this.say(conn, GREETING);
         } catch (e) {
-          await this.fallback("start failed");
+          await this.fallback(conn);
         }
         break;
       }
       case "media": {
         if (this.stt && this.stt.readyState === WebSocket.OPEN && msg.media?.payload) {
-          this.stt.send(base64ToBytes(msg.media.payload));
+          const bytes = decodeBase64(msg.media.payload);
+          this.stt.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
         }
         break;
       }
       case "stop":
-        await this.finalize();
+        await this.finalizeCall();
         break;
     }
   }
@@ -108,9 +113,6 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     await this.finalizeCall();
   }
 
-  async onAlarm(alarmInfo: { name?: string }) {
-    if (alarmInfo.name === "max_call_duration") await this.finalizeCall();
-  }
 
   private async openStt(conn: Connection) {
     // Workers AI partner model supports streaming via its websocket response.
@@ -172,7 +174,7 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
         "@cf/deepgram/aura-1" as keyof AiModels,
         { text, speaker: "luna", encoding: "mulaw", container: "none", sample_rate: 8000 } as never,
         { returnRawResponse: true } as never,
-      ) as Response;
+      ) as unknown as Response;
       const reader = audio.body?.getReader();
       if (!reader) throw new Error("Workers AI TTS returned no audio body");
       while (this.state.speaking && !this.ending) {
@@ -205,9 +207,15 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.sql`INSERT INTO transcript (role, text, ts) VALUES (${role}, ${text.slice(0, 4000)}, ${Date.now()})`;
   }
 
+  async hangup() {
+    await this.finalizeCall();
+    for (const connection of this.getConnections()) connection.close(1000, "call duration limit");
+  }
+
   private async finalizeCall() {
     if (this.ending) return;
     this.ending = true;
+    this.finalized = true;
     this.socketGeneration++;
     try { this.stt?.close(); } catch { /* already closed */ }
     this.stt = undefined;
