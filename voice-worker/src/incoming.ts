@@ -86,7 +86,7 @@ export async function handleIncoming(
     // Safe diagnostics: no query values, form values, token, or signatures.
     console.warn(JSON.stringify({
       event: "twilio_signature_mismatch",
-      signed_url: `${url.origin}${url.pathname}`,
+      signed_url: `${env.PUBLIC_ORIGIN}${url.pathname}`,
       query_names: [...url.searchParams.keys()].sort(),
       param_names: pairs.map(([k]) => k).sort(),
       signature_header_present: Boolean(req.headers.get("X-Twilio-Signature")),
