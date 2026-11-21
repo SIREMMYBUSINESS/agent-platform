@@ -61,13 +61,11 @@ export async function handleIncoming(
 ): Promise<Response> {
   const url = new URL(req.url);
 
-  // Fail visibly when required webhook configuration is missing; do not misreport it as a signature attack.
-  const missing = (["PUBLIC_ORIGIN", "TWILIO_AUTH_TOKEN"] as const).filter((k) => !env[k]);
+  const missing = (["PUBLIC_ORIGIN", "TWILIO_AUTH_TOKEN"] as const).filter((key) => !env[key]);
   if (missing.length) {
     console.error(`voice webhook misconfigured; missing: ${missing.join(", ")}`);
     return new Response("Service misconfigured", { status: 500 });
   }
-
 
   const len = Number(req.headers.get("content-length") ?? "0");
   if (len > MAX_WEBHOOK_BYTES) return new Response("Payload Too Large", { status: 413 });
@@ -85,7 +83,7 @@ export async function handleIncoming(
     req.headers.get("X-Twilio-Signature"),
   );
   if (!ok) {
-    // Only log public URL path and parameter names. Do not expose query values, token, or signatures.
+    // Safe diagnostics: no query values, form values, token, or signatures.
     console.warn(JSON.stringify({
       event: "twilio_signature_mismatch",
       signed_url: `${url.origin}${url.pathname}`,
