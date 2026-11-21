@@ -37,6 +37,43 @@ test("twilio signature matches reference HMAC-SHA1", async () => {
   assert.equal(await validTwilioSignature(TOKEN, URL_, pairs, expected), true);
 });
 
+test("signature matches Twilio SDK normalization for full call payload and repeated fields", async () => {
+  const pairs: Array<[string, string]> = [
+    ["AccountSid", "AC" + "1".repeat(32)],
+    ["AddOns", JSON.stringify({ status: "completed", results: {} })],
+    ["ApiVersion", "2010-04-01"],
+    ["CallSid", SID],
+    ["CallStatus", "ringing"],
+    ["CallToken", "opaque-test-token"],
+    ["Called", "+15550001111"],
+    ["Caller", "+15552223333"],
+    ["Direction", "inbound"],
+    ["From", "+15552223333"],
+    ["To", "+15550001111"],
+    ["CallerCity", "Denver"],
+    ["CallerCity", "Denver"],
+    ["CallerState", "CO"],
+  ];
+
+  // Independent oracle matching twilio-node helper behavior:
+  // sort keys, then sort and deduplicate repeated values.
+  const grouped = new Map<string, string[]>();
+  for (const [key, value] of pairs) {
+    const values = grouped.get(key);
+    if (values) values.push(value);
+    else grouped.set(key, [value]);
+  }
+  let signed = URL_;
+  for (const key of [...grouped.keys()].sort()) {
+    for (const value of [...new Set(grouped.get(key)!)].sort()) signed += key + value;
+  }
+  const sdkExpected = createHmac("sha1", TOKEN).update(signed).digest("base64");
+
+  assert.equal(await twilioSignature(TOKEN, URL_, pairs), sdkExpected);
+  assert.equal(await validTwilioSignature(TOKEN, URL_, pairs, sdkExpected), true);
+  assert.equal(await validTwilioSignature(TOKEN, URL_, pairs, sdkExpected + "x"), false);
+});
+
 test("invalid or missing signature is rejected", async () => {
   const pairs: Array<[string, string]> = [["CallSid", SID]];
   assert.equal(await validTwilioSignature(TOKEN, URL_, pairs, null), false);
