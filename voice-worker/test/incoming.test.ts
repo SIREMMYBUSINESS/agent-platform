@@ -117,7 +117,7 @@ test("signature mismatch logs safe diagnostics only", async () => {
   }
   assert.equal(captured.length, 1);
   assert.match(captured[0], /twilio_signature_mismatch/);
-  assert.match(captured[0], /voice\\.example\\.com\\/voice\\/incoming/);
+  assert.match(captured[0], /voice\.example\.com\/voice\/incoming/);
   assert.match(captured[0], /CallSid/);
   assert.match(captured[0], /To/);
   assert.doesNotMatch(captured[0], /twilio-token/);
