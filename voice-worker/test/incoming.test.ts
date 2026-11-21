@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHmac } from "node:crypto";
 import assert from "node:assert/strict";
 import { handleIncoming, type IncomingEnv } from "../src/incoming";
 import { parseStreamPath, twilioSignature, verifyStreamToken } from "../src/twilio";
@@ -23,6 +24,20 @@ async function webhook(fields: Record<string, string>, opts: { sign?: boolean; s
   const headers: Record<string, string> = { "Content-Type": "application/x-www-form-urlencoded" };
   if (sig) headers["X-Twilio-Signature"] = sig;
   return new Request("https://some-internal-host.workers.dev/voice/incoming", { method: "POST", headers, body });
+}
+
+function twilioSdkFixtureSignature(url: string, pairs: Array<[string, string]>, token = ENV.TWILIO_AUTH_TOKEN): string {
+  const grouped = new Map<string, string[]>();
+  for (const [key, value] of pairs) {
+    const values = grouped.get(key);
+    if (values) values.push(value);
+    else grouped.set(key, [value]);
+  }
+  let data = url;
+  for (const key of [...grouped.keys()].sort()) {
+    for (const value of [...new Set(grouped.get(key)!)].sort()) data += key + value;
+  }
+  return createHmac("sha1", token).update(data).digest("base64");
 }
 
 function platform(respond: (url: URL, init?: RequestInit) => Response | Promise<Response>) {
@@ -57,6 +72,38 @@ test("valid call resolves tenant from the dialed number and issues a scoped stre
   assert.equal(parsed.tenantId, "tenant-1");
   assert.equal(parsed.businessId, "biz_1");
   assert.equal(await verifyStreamToken(ENV.STREAM_SECRET, parsed), true);
+});
+
+test("accepts a full Twilio call webhook fixture with AddOns and repeated fields", async () => {
+  const fields: Array<[string, string]> = [
+    ["AccountSid", "AC" + "1".repeat(32)],
+    ["AddOns", JSON.stringify({ status: "completed", results: {} })],
+    ["ApiVersion", "2010-04-01"],
+    ["CallSid", SID],
+    ["CallStatus", "ringing"],
+    ["CallToken", "test-call-token"],
+    ["Called", TO],
+    ["Caller", "+15552223333"],
+    ["Direction", "inbound"],
+    ["From", "+15552223333"],
+    ["To", TO],
+    ["CallerCity", "Denver"],
+    ["CallerCity", "Denver"],
+    ["CallerState", "CO"],
+  ];
+  const body = new URLSearchParams(fields);
+  const signature = twilioSdkFixtureSignature(`${ENV.PUBLIC_ORIGIN}/voice/incoming`, fields);
+  const req = new Request("https://some-internal-host.workers.dev/voice/incoming", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", "X-Twilio-Signature": signature },
+    body,
+  });
+  const p = platform(ok);
+  const res = await handleIncoming(req, ENV, p.fetchImpl);
+  assert.equal(res.status, 200);
+  assert.equal(p.calls.length, 1);
+  assert.equal(p.calls[0].url.pathname, "/voice/resolve-number");
+  assert.equal(p.calls[0].url.searchParams.get("to"), TO);
 });
 
 test("invalid or missing Twilio signature returns 403 and never calls the platform", async () => {
