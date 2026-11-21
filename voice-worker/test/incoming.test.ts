@@ -93,3 +93,30 @@ for (const [name, respond] of [
     assert.doesNotMatch(xml, /<Stream/);
   });
 }
+test("missing PUBLIC_ORIGIN or TWILIO_AUTH_TOKEN is a 500 with no lookup, never a misleading 403", async () => {
+  for (const broken of [{ PUBLIC_ORIGIN: "" }, { TWILIO_AUTH_TOKEN: "" }]) {
+    const p = platform(ok);
+    const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), { ...ENV, ...broken } as IncomingEnv, p.fetchImpl);
+    assert.equal(res.status, 500, JSON.stringify(broken));
+    assert.equal(p.calls.length, 0);
+  }
+});
+
+test("signature mismatch logs only URL path and field names, never token or values", async () => {
+  const seen: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => { seen.push(args.map(String).join(" ")); };
+  try {
+    const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }, { sig: "bogus" }), ENV, platform(ok).fetchImpl);
+    assert.equal(res.status, 403);
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(seen.length, 1);
+  const line = seen[0];
+  assert.match(line, /"signed_url":"https:\\/\\/voice\.example\.com\\/voice\\/incoming"/);
+  assert.match(line, /"param_names":\["CallSid","To"\]/);
+  assert.doesNotMatch(line, /twilio-token/);
+  assert.doesNotMatch(line, new RegExp(TO.replace("+", "\\+")));
+  assert.doesNotMatch(line, /bogus/);
+});
