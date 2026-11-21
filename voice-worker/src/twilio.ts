@@ -32,11 +32,21 @@ export async function twilioSignature(
   url: string,
   pairs: Array<[string, string]>,
 ): Promise<string> {
-  const sorted = [...pairs].sort((a, b) =>
-    a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0,
-  );
+  // Twilio's SDK normalizes repeated form keys as arrays: unique values sorted
+  // lexicographically, then each key/value pair appended. FormData can expose
+  // repeated keys, so normalize them the same way rather than sorting raw pairs.
+  const grouped = new Map<string, string[]>();
+  for (const [key, value] of pairs) {
+    const values = grouped.get(key);
+    if (values) values.push(value);
+    else grouped.set(key, [value]);
+  }
+
   let data = url;
-  for (const [k, v] of sorted) data += k + v;
+  for (const key of [...grouped.keys()].sort()) {
+    const values = [...new Set(grouped.get(key)!)].sort();
+    for (const value of values) data += key + value;
+  }
   return toBase64(await hmac("SHA-1", authToken, data));
 }
 
