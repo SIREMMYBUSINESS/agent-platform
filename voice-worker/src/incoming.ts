@@ -37,23 +37,43 @@ type Scope = { tenantId: string; businessId: string };
  * 200 -> { "tenant_id": "...", "business_id": "..." }; anything else -> fail closed.
  */
 async function resolveNumber(env: IncomingEnv, to: string, fetchImpl: typeof fetch): Promise<Scope | null> {
+  const fail = (reason: string, status?: number) => {
+    console.warn(JSON.stringify({ event: "voice_number_lookup_failed", reason, ...(status === undefined ? {} : { http_status: status }) }));
+    return null;
+  };
+
+  let res: Response;
   try {
     const url = new URL("/voice/resolve-number", env.PLATFORM_API_URL);
     url.searchParams.set("to", to);
-    const res = await fetchImpl(url.toString(), {
+    res = await fetchImpl(url.toString(), {
       headers: { Authorization: `Bearer ${env.PLATFORM_API_KEY}`, Accept: "application/json" },
       signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { tenant_id?: unknown; business_id?: unknown };
-    if (typeof body.tenant_id !== "string" || typeof body.business_id !== "string") return null;
-    if (!SCOPE_ID_RE.test(body.tenant_id) || !SCOPE_ID_RE.test(body.business_id)) return null;
-    return { tenantId: body.tenant_id, businessId: body.business_id };
-  } catch {
-    return null;
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    return fail(name === "TimeoutError" || name === "AbortError" ? "timeout" : "network_error");
   }
-}
 
+  if (!res.ok) return fail("http_error", res.status);
+
+  let body: { tenant_id?: unknown; business_id?: unknown };
+  try {
+    body = (await res.json()) as { tenant_id?: unknown; business_id?: unknown };
+  } catch {
+    return fail("invalid_json");
+  }
+
+  if (typeof body.tenant_id !== "string" || typeof body.business_id !== "string") {
+    return fail("missing_or_non_string_scope");
+  }
+  if (!SCOPE_ID_RE.test(body.tenant_id) || !SCOPE_ID_RE.test(body.business_id)) {
+    return fail("invalid_scope_format");
+  }
+
+  console.info(JSON.stringify({ event: "voice_number_lookup_success" }));
+  return { tenantId: body.tenant_id, businessId: body.business_id };
+}
 export async function handleIncoming(
   req: Request,
   env: IncomingEnv,
