@@ -171,3 +171,46 @@ test("signature mismatch logs safe diagnostics only", async () => {
   assert.doesNotMatch(captured[0], /15550001111/);
   assert.doesNotMatch(captured[0], /invalid-signature/);
 });
+
+
+async function mismatchLog(formFields: Record<string, string>, configuredSid?: string) {
+  const captured: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { captured.push(args.map(String).join(" ")); };
+  try {
+    const env = { ...ENV, ...(configuredSid === undefined ? {} : { TWILIO_ACCOUNT_SID: configuredSid }) } as IncomingEnv;
+    const res = await handleIncoming(await webhook(formFields, { sig: "invalid-signature" }), env, platform(ok).fetchImpl);
+    assert.equal(res.status, 403);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(captured.length, 1);
+  return { line: captured[0], json: JSON.parse(captured[0]) };
+}
+
+const SID_A = "AC" + "a".repeat(30) + "1111";
+const SID_B = "AC" + "b".repeat(30) + "2222";
+
+test("mismatch log says the token's account matches the request's account", async () => {
+  const { json, line } = await mismatchLog({ CallSid: SID, To: TO, AccountSid: SID_A }, SID_A);
+  assert.equal(json.account_sid_matches_config, true);
+  assert.equal(json.request_account_sid_suffix, "1111");
+  assert.equal(json.configured_account_sid_suffix, "1111");
+  assert.ok(!line.includes(SID_A), "a full account SID must never be logged");
+});
+
+test("mismatch log flags a request from a different Twilio account than the configured one", async () => {
+  const { json, line } = await mismatchLog({ CallSid: SID, To: TO, AccountSid: SID_A }, SID_B);
+  assert.equal(json.account_sid_matches_config, false);
+  assert.equal(json.request_account_sid_suffix, "1111");
+  assert.equal(json.configured_account_sid_suffix, "2222");
+  assert.ok(!line.includes(SID_A) && !line.includes(SID_B));
+});
+
+test("mismatch log reports null when the account cannot be compared", async () => {
+  const noConfigured = await mismatchLog({ CallSid: SID, To: TO, AccountSid: SID_A });
+  assert.equal(noConfigured.json.account_sid_matches_config, null);
+  const noRequestSid = await mismatchLog({ CallSid: SID, To: TO }, SID_B);
+  assert.equal(noRequestSid.json.account_sid_matches_config, null);
+  assert.equal(noRequestSid.json.request_account_sid_suffix, null);
+});
