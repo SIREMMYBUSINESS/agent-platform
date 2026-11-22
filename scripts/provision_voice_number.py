@@ -16,7 +16,7 @@ def main():
         if not b: p.error("Business does not belong to selected tenant")
         r=s.exec(select(VoiceNumberRoute).where(VoiceNumberRoute.e164==a.number)).first()
         if r and (r.tenant_id!=a.tenant_id or r.business_id!=a.business_id) and not a.reassign: p.error("Number assigned elsewhere; use --reassign to confirm")
-        if r: r.tenant_id,r.business_id,r.enabled=a.tenant_id,a.business_id,True
+        if r: r.tenant_id,r.business_id,r.status=a.tenant_id,a.business_id,"active"
         else: s.add(VoiceNumberRoute(e164=a.number,tenant_id=a.tenant_id,business_id=a.business_id))
         s.commit()
     print("Voice route provisioned (number hidden from output).")
