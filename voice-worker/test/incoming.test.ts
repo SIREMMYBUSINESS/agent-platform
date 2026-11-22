@@ -142,6 +142,47 @@ for (const [name, respond] of [
 }
 
 
+test("number lookup emits safe failure categories without leaking request or response data", async () => {
+  const cases: Array<{ reason: string; fetcher: typeof fetch }> = [
+    { reason: "http_error", fetcher: (async () => new Response("secret backend body", { status: 401 })) as typeof fetch },
+    { reason: "invalid_json", fetcher: (async () => new Response("not-json", { status: 200 })) as typeof fetch },
+    { reason: "missing_or_non_string_scope", fetcher: (async () => Response.json({ tenant_id: 123, business_id: "biz_1" })) as typeof fetch },
+    { reason: "invalid_scope_format", fetcher: (async () => Response.json({ tenant_id: "tenant/unsafe", business_id: "biz_1" })) as typeof fetch },
+    { reason: "network_error", fetcher: (async () => { throw new Error("secret error details"); }) as typeof fetch },
+  ];
+  for (const item of cases) {
+    const captured: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => { captured.push(args.map(String).join(" ")); };
+    try {
+      const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), ENV, item.fetcher);
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /<Hangup\/>/);
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.equal(captured.length, 1, item.reason);
+    assert.equal(JSON.parse(captured[0]).reason, item.reason);
+    assert.doesNotMatch(captured[0], /15550001111|secret backend body|secret error details|svc-key|twilio-token/);
+  }
+});
+
+test("successful number lookup logs a safe success event", async () => {
+  const captured: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => { captured.push(args.map(String).join(" ")); };
+  try {
+    const p = platform(ok);
+    const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), ENV, p.fetchImpl);
+    assert.equal(res.status, 200);
+  } finally {
+    console.info = originalInfo;
+  }
+  assert.equal(captured.length, 1);
+  assert.match(captured[0], /voice_number_lookup_success/);
+  assert.doesNotMatch(captured[0], /tenant-1|biz_1|15550001111|svc-key|twilio-token/);
+});
+
 test("missing webhook configuration returns 500 before signature validation", async () => {
   const p = platform(ok);
   const missingOrigin = { ...ENV, PUBLIC_ORIGIN: "" } as IncomingEnv;
