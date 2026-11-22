@@ -12,10 +12,10 @@ def db():
     yield s
     s.close(); e.dispose()
 def test_exact_number_and_disabled_route(db):
-    db.add(VoiceNumberRoute(phone_number="+15555550123",tenant_id="t",business_id="b")); db.commit()
+    db.add(VoiceNumberRoute(e164="+15555550123",tenant_id="t",business_id="b")); db.commit()
     service=VoiceNumberLookupService(db)
     assert service.resolve(dialed_number="+15555550123")=={"tenant_id":"t","business_id":"b"}
-    r=db.exec(select(VoiceNumberRoute)).one(); r.enabled=False; db.commit()
+    r=db.exec(select(VoiceNumberRoute)).one(); r.status="disabled"; db.commit()
     assert service.resolve(dialed_number="+15555550123") is None
 def test_invalid_number(db):
     with pytest.raises(ValueError): VoiceNumberLookupService(db).resolve(dialed_number="invalid")

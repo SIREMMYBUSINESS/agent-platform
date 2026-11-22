@@ -10,6 +10,6 @@ class VoiceNumberLookupService:
         if not isinstance(dialed_number, str) or not _E164.fullmatch(dialed_number):
             raise ValueError("number must be E.164")
         row = self.session.exec(select(VoiceNumberRoute).where(
-            VoiceNumberRoute.phone_number == dialed_number, VoiceNumberRoute.enabled == True  # noqa: E712
+            VoiceNumberRoute.e164 == dialed_number, VoiceNumberRoute.status == "active"  # noqa: E712
         )).first()
         return None if row is None else {"tenant_id": row.tenant_id, "business_id": row.business_id}

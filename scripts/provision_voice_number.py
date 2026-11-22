@@ -14,10 +14,10 @@ def main():
         if not s.get(Tenant,a.tenant_id): p.error("Tenant not found")
         b=s.exec(select(Business).where(Business.id==a.business_id,Business.tenant_id==a.tenant_id)).first()
         if not b: p.error("Business does not belong to selected tenant")
-        r=s.exec(select(VoiceNumberRoute).where(VoiceNumberRoute.phone_number==a.number)).first()
+        r=s.exec(select(VoiceNumberRoute).where(VoiceNumberRoute.e164==a.number)).first()
         if r and (r.tenant_id!=a.tenant_id or r.business_id!=a.business_id) and not a.reassign: p.error("Number assigned elsewhere; use --reassign to confirm")
         if r: r.tenant_id,r.business_id,r.enabled=a.tenant_id,a.business_id,True
-        else: s.add(VoiceNumberRoute(phone_number=a.number,tenant_id=a.tenant_id,business_id=a.business_id))
+        else: s.add(VoiceNumberRoute(e164=a.number,tenant_id=a.tenant_id,business_id=a.business_id))
         s.commit()
     print("Voice route provisioned (number hidden from output).")
 if __name__=="__main__": main()

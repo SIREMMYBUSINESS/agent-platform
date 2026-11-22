@@ -61,7 +61,7 @@ def resolve_inbound_number(
     try:
         with session_factory() as session:
             row = session.exec(select(VoiceNumberRoute).where(
-                VoiceNumberRoute.phone_number == to, VoiceNumberRoute.enabled == True  # noqa: E712
+                VoiceNumberRoute.e164 == to, VoiceNumberRoute.status == "active"  # noqa: E712
             )).first()
             if row is None:
                 raise HTTPException(404, "Voice number is not configured")
@@ -96,6 +96,5 @@ def request_outbound_call(
 
 __all__ = [
     "get_voice_delivery_service",
-    "get_voice_number_lookup_service",
-    "router",
+        "router",
 ]
