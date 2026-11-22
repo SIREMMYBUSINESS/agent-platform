@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     tenant_region_routing_enabled: bool = False
     redis_url_file: Path | None = None
     provider_secrets_dir: Path | None = None
-    # Dedicated platform-wide bearer token for GET /voice/resolve-number (voice gateway Worker only).
+    # SHA-256 digest of dedicated voice gateway bearer credential.
+    voice_gateway_key_sha256: str | None = Field(default=None, repr=False)
+    # Legacy setting retained during migration only.
     voice_number_lookup_token: str | None = Field(default=None, repr=False)
     worker_bootstrap_module: str | None = None
     cors_allowed_origins: list[str] = Field(default_factory=list)

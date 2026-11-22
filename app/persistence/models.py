@@ -232,6 +232,23 @@ class Business(SQLModel, table=True):
     )
 
 
+class VoiceNumberRoute(SQLModel, table=True):
+    __tablename__ = "voice_number_routes"
+    __table_args__ = (
+        ForeignKeyConstraint(["tenant_id"], ["tenants.id"], name="fk_voice_number_routes_tenant"),
+        ForeignKeyConstraint(["tenant_id", "business_id"], ["businesses.tenant_id", "businesses.id"], name="fk_voice_number_routes_business"),
+        UniqueConstraint("phone_number", name="uq_voice_number_routes_phone"),
+        Index("ix_voice_number_routes_scope", "tenant_id", "business_id", "enabled"),
+    )
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    phone_number: str = Field(max_length=16)
+    tenant_id: str = Field(max_length=160)
+    business_id: str = Field(max_length=160)
+    enabled: bool = True
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
 class BusinessVerticalProfile(SQLModel, table=True):
     """Tenant-owned vertical configuration used by guided workflows."""
     __tablename__ = "business_vertical_profiles"
@@ -1531,6 +1548,7 @@ __all__ = [
     "Appointment",
     "AppointmentSlot",
     "Business",
+    "VoiceNumberRoute",
     "BusinessVerticalProfile",
     "Campaign",
     "CampaignEnrollment",

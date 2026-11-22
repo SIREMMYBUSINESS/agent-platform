@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
 import re
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -9,17 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth.dependencies import require_role, require_tenant_home_region
 from app.config import settings
-from app.integrations.provider_support import DirectoryTenantConfigResolver
 from app.persistence.session import session_factory
 from app.persistence.unit_of_work import UnitOfWork
+from app.persistence.models import VoiceNumberRoute
+from sqlmodel import select
 from app.queue.contracts import QueueTaskView
 from app.queue.service import QueueTaskConflict, QueueAuthorizationError
 from app.security import AuthenticatedPrincipal
 from app.services.voice_delivery_service import VoiceDeliveryBlocked, VoiceDeliveryService
-from app.services.voice_number_lookup_service import (
-    VoiceNumberLookupAmbiguous,
-    VoiceNumberLookupService,
-)
 
 router = APIRouter(prefix="/voice", tags=["voice"])
 _E164_PATTERN = r"^\+[1-9][0-9]{6,14}$"
@@ -43,25 +41,13 @@ def get_voice_delivery_service() -> VoiceDeliveryService:
     )
 
 
-def get_voice_number_lookup_service() -> VoiceNumberLookupService:
-    if settings.provider_secrets_dir is None:
-        raise HTTPException(503, "Voice number lookup is not configured")
-    return VoiceNumberLookupService(
-        uow_factory=lambda: UnitOfWork(session_factory),
-        config_resolver=DirectoryTenantConfigResolver(settings.provider_secrets_dir),
-    )
-
-
-def _authorize_voice_number_lookup(authorization: str | None) -> None:
-    """Require a dedicated platform-wide secret; tenant API keys are not global."""
-    expected = settings.voice_number_lookup_token
-    scheme, separator, supplied = (authorization or "").partition(" ")
-    if (
-        not expected
-        or not separator
-        or scheme.casefold() != "bearer"
-        or not hmac.compare_digest(supplied, expected)
-    ):
+def _authorize_voice_gateway(authorization: str | None) -> None:
+    expected = settings.voice_gateway_key_sha256
+    scheme, sep, raw = (authorization or "").partition(" ")
+    if not expected or len(expected) != 64 or not sep or scheme.casefold() != "bearer" or not raw:
+        raise HTTPException(401, "Invalid credential", headers={"WWW-Authenticate": "Bearer"})
+    supplied_digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(supplied_digest, expected.lower()):
         raise HTTPException(401, "Invalid credential", headers={"WWW-Authenticate": "Bearer"})
 
 
@@ -69,31 +55,23 @@ def _authorize_voice_number_lookup(authorization: str | None) -> None:
 def resolve_inbound_number(
     to: str = Query(pattern=_E164_PATTERN, min_length=8, max_length=16),
     authorization: str | None = Header(default=None, alias="Authorization"),
-    service: VoiceNumberLookupService = Depends(get_voice_number_lookup_service),
 ) -> VoiceNumberMappingResponse:
-    """Resolve an exact Twilio E.164 destination from trusted business config.
-
-    This endpoint is for the Cloudflare voice Worker only. Its dedicated
-    platform-wide token is configured as VOICE_NUMBER_LOOKUP_TOKEN; a normal
-    tenant API key cannot safely perform cross-tenant number resolution.
-    """
-    _authorize_voice_number_lookup(authorization)
+    """Resolve an exact enabled E.164 route for the voice gateway."""
+    _authorize_voice_gateway(authorization)
     try:
-        mapping = service.resolve(dialed_number=to)
-    except VoiceNumberLookupAmbiguous:
-        raise HTTPException(503, "Voice number mapping is unavailable") from None
-    except ValueError:
-        raise HTTPException(422, "Invalid dialed number") from None
+        with session_factory() as session:
+            row = session.exec(select(VoiceNumberRoute).where(
+                VoiceNumberRoute.phone_number == to, VoiceNumberRoute.enabled == True  # noqa: E712
+            )).first()
+            if row is None:
+                raise HTTPException(404, "Voice number is not configured")
+            result = {"tenant_id": row.tenant_id, "business_id": row.business_id}
+    except HTTPException:
+        raise
     except Exception:
-        # Do not expose database, secret-file, or tenant details to the caller.
-        raise HTTPException(503, "Voice number lookup is unavailable") from None
-
-    if mapping is None:
-        raise HTTPException(404, "Voice number is not configured")
-
-    # Honor the platform's tenant home-region guard before exposing the mapping.
-    require_tenant_home_region(mapping["tenant_id"])
-    return VoiceNumberMappingResponse.model_validate(mapping)
+        raise HTTPException(503, "Voice number lookup unavailable") from None
+    require_tenant_home_region(result["tenant_id"])
+    return VoiceNumberMappingResponse.model_validate(result)
 
 
 @router.post("/calls", response_model=QueueTaskView, status_code=202)
