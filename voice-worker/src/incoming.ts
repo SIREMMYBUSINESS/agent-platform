@@ -15,7 +15,7 @@ import {
 export type IncomingEnv = Pick<
   Env,
   "PUBLIC_ORIGIN" | "PLATFORM_API_URL" | "PLATFORM_API_KEY" | "TWILIO_AUTH_TOKEN" | "STREAM_SECRET"
->;
+> & { TWILIO_ACCOUNT_SID?: string };
 
 const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
 const MAX_WEBHOOK_BYTES = 10_000;
@@ -83,6 +83,8 @@ export async function handleIncoming(
     req.headers.get("X-Twilio-Signature"),
   );
   if (!ok) {
+    const requestSid = String(form.get("AccountSid") ?? "");
+    const configuredSid = env.TWILIO_ACCOUNT_SID ?? "";
     // Safe diagnostics: no query values, form values, token, or signatures.
     console.warn(JSON.stringify({
       event: "twilio_signature_mismatch",
@@ -91,6 +93,10 @@ export async function handleIncoming(
       param_names: pairs.map(([k]) => k).sort(),
       signature_header_present: Boolean(req.headers.get("X-Twilio-Signature")),
       token_present: Boolean(env.TWILIO_AUTH_TOKEN),
+      // Compare account identifiers without logging the full SID.
+      account_sid_matches_config: requestSid && configuredSid ? requestSid === configuredSid : null,
+      request_account_sid_suffix: requestSid ? requestSid.slice(-4) : null,
+      configured_account_sid_suffix: configuredSid ? configuredSid.slice(-4) : null,
     }));
     return new Response("Forbidden", { status: 403 });
   }
