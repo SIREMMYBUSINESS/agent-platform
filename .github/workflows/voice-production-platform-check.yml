@@ -1,0 +1,48 @@
+name: Voice production platform validation
+
+on:
+  push:
+    branches:
+      - fix/voice-production-platform-integration
+  pull_request:
+    branches:
+      - feat/agent-workspace-dashboard
+    paths:
+      - "app/**"
+      - "migrations/**"
+      - "tests/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/voice-production-platform-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: Python tests and migration graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install runtime and test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check '.[test]'
+      - name: Validate Alembic migration graph
+        run: alembic -c alembic.ini heads
+      - name: Compile application
+        run: python -m compileall -q app
+      - name: Run full test suite
+        run: python -m pytest -q
+      - name: Build staging container (no deployment)
+        run: docker build --tag agent-platform-voice-ci .
+
