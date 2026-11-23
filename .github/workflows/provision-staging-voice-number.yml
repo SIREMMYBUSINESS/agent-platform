@@ -18,6 +18,8 @@ concurrency:
 jobs:
   provision:
     name: Provision one fixed staging voice route
+    environment:
+      name: STAGING
     if: ${{ inputs.approval == 'PROVISION +16282835034' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -40,11 +42,11 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${DATABASE_URL}" ]]; then
-            echo "::error::Repository secret STAGING_DATABASE_URL is not configured."
+            echo "::error::GitHub Environment secret STAGING_DATABASE_URL is not available to this job. Check the STAGING environment secret and deployment restrictions."
             exit 1
           fi
           if [[ "${TENANT_REGION_ROUTING_ENABLED,,}" == "true" && -z "${CONTROL_DATABASE_URL}" ]]; then
-            echo "::error::Tenant region routing is enabled, but STAGING_CONTROL_DATABASE_URL is not configured."
+            echo "::error::Tenant region routing is enabled, but STAGING_CONTROL_DATABASE_URL is not configured in the STAGING environment."
             exit 1
           fi
           if [[ "${TENANT_REGION_ROUTING_ENABLED,,}" != "true" && "${TENANT_REGION_ROUTING_ENABLED,,}" != "false" ]]; then
@@ -63,7 +65,7 @@ jobs:
             --tenant-id staging-queue-smoke-45c0655207074c0296ca853a4f32fbe3 \
             --business-id staging-queue-smoke-45c0655207074c0296ca853a4f32fbe3
 
-      - name: Verify route through the authenticated resolver
+      - name: Report provisioning result
         if: success()
         run: |
-          echo "Provisioning command completed. Confirm the resolver returns HTTP 200 before any Twilio test."
+          echo "Provisioning command completed. Confirm the authenticated resolver returns HTTP 200 before any Twilio test."
