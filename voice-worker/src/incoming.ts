@@ -37,8 +37,15 @@ type Scope = { tenantId: string; businessId: string };
  * 200 -> { "tenant_id": "...", "business_id": "..." }; anything else -> fail closed.
  */
 async function resolveNumber(env: IncomingEnv, to: string, fetchImpl: typeof fetch): Promise<Scope | null> {
-  const fail = (reason: string, status?: number) => {
-    console.warn(JSON.stringify({ event: "voice_number_lookup_failed", reason, ...(status === undefined ? {} : { http_status: status }) }));
+  // Logs only fixed codes: the reason, the HTTP status, and the exception class and code. Never the URL,
+  // the dialed number, the key, or any message text (messages can echo the URL).
+  const fail = (reason: string, status?: number, error?: { name: string; code?: string }) => {
+    console.warn(JSON.stringify({
+      event: "voice_number_lookup_failed",
+      reason,
+      ...(status === undefined ? {} : { http_status: status }),
+      ...(error ? { error_name: error.name, ...(error.code ? { error_code: error.code } : {}) } : {}),
+    }));
     return null;
   };
 
@@ -51,8 +58,13 @@ async function resolveNumber(env: IncomingEnv, to: string, fetchImpl: typeof fet
       signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
     });
   } catch (error) {
-    const name = error instanceof Error ? error.name : "";
-    return fail(name === "TimeoutError" || name === "AbortError" ? "timeout" : "network_error");
+    const name = error instanceof Error ? error.name : "unknown";
+    // Undici puts the socket error code (ECONNREFUSED, ENOTFOUND, ...) on error.cause.
+    const cause = (error as { cause?: { code?: unknown } } | null)?.cause;
+    const rawCode = (cause?.code ?? (error as { code?: unknown } | null)?.code) as unknown;
+    const code = typeof rawCode === "string" && /^[A-Z_0-9]{2,40}$/.test(rawCode) ? rawCode : undefined;
+    const reason = name === "TimeoutError" || name === "AbortError" ? "timeout" : "network_error";
+    return fail(reason, undefined, { name, code });
   }
 
   if (!res.ok) return fail("http_error", res.status);
@@ -81,7 +93,7 @@ export async function handleIncoming(
 ): Promise<Response> {
   const url = new URL(req.url);
 
-  const missing = (["PUBLIC_ORIGIN", "TWILIO_AUTH_TOKEN"] as const).filter((key) => !env[key]);
+  const missing = (["PUBLIC_ORIGIN", "TWILIO_AUTH_TOKEN", "STREAM_SECRET", "PLATFORM_API_KEY", "PLATFORM_API_URL"] as const).filter((key) => !env[key]);
   if (missing.length) {
     console.error(`voice webhook misconfigured; missing: ${missing.join(", ")}`);
     return new Response("Service misconfigured", { status: 500 });
