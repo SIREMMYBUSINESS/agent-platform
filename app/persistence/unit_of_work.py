@@ -60,6 +60,7 @@ from app.persistence.optimization_repositories import SQLOptimizationRepository
 from app.persistence.region_repositories import SQLRegionRepository
 from app.persistence.vertical_repositories import SQLVerticalRepository
 from app.persistence.directory_repositories import SQLTenantDatabaseAssignmentRepository
+from app.persistence.voice_number_repositories import SQLVoiceNumberRouteRepository
 
 
 class UnitOfWork:
@@ -89,6 +90,7 @@ class UnitOfWork:
         self.provider_interactions: SQLProviderInteractionRepository | None = None
         self.tenants: SQLTenantRepository | None = None
         self.tenant_database_assignments: SQLTenantDatabaseAssignmentRepository | None = None
+        self.voice_number_routes: SQLVoiceNumberRouteRepository | None = None
         self.businesses: SQLBusinessRepository | None = None
         self.contacts: SQLContactRepository | None = None
         self.conversations: SQLConversationRepository | None = None
@@ -153,6 +155,7 @@ class UnitOfWork:
             self.provider_interactions = SQLProviderInteractionRepository(self._session)
             self.tenants = SQLTenantRepository(self._session)
             self.tenant_database_assignments = SQLTenantDatabaseAssignmentRepository(self._session)
+            self.voice_number_routes = SQLVoiceNumberRouteRepository(self._session)
             self.businesses = SQLBusinessRepository(self._session)
             self.contacts = SQLContactRepository(self._session)
             self.conversations = SQLConversationRepository(self._session)

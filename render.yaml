@@ -20,5 +20,8 @@ services:
         sync: false
       - key: PROVIDER_SECRETS_DIR
         value: /etc/secrets
+      # SHA-256 hex digest of the voice gateway Worker's service key (never the key itself).
+      - key: VOICE_GATEWAY_KEY_SHA256
+        sync: false
       - key: WORKER_BOOTSTRAP_MODULE
         value: app.integrations.bootstrap_example

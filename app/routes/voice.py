@@ -1,28 +1,21 @@
-"""Authenticated outbound voice call requests and platform number lookup."""
+"""Authenticated, tenant-scoped outbound voice call requests."""
 from __future__ import annotations
 
-import hmac
-import re
-
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.auth.dependencies import require_role, require_tenant_home_region
-from app.config import settings
-from app.integrations.provider_support import DirectoryTenantConfigResolver
+from app.auth.dependencies import get_auth_uow_factory, require_role, require_tenant_home_region
+from app.auth.voice_gateway import require_voice_gateway
 from app.persistence.session import session_factory
 from app.persistence.unit_of_work import UnitOfWork
 from app.queue.contracts import QueueTaskView
 from app.queue.service import QueueTaskConflict, QueueAuthorizationError
 from app.security import AuthenticatedPrincipal
 from app.services.voice_delivery_service import VoiceDeliveryBlocked, VoiceDeliveryService
-from app.services.voice_number_lookup_service import (
-    VoiceNumberLookupAmbiguous,
-    VoiceNumberLookupService,
-)
+from app.services.voice_number_resolver import VoiceNumberNotFound, VoiceNumberResolver
+
 
 router = APIRouter(prefix="/voice", tags=["voice"])
-_E164_PATTERN = r"^\+[1-9][0-9]{6,14}$"
 
 
 class OutboundCallRequest(BaseModel):
@@ -31,69 +24,27 @@ class OutboundCallRequest(BaseModel):
     contact_id: str = Field(min_length=1, max_length=160)
 
 
-class VoiceNumberMappingResponse(BaseModel):
+class ResolveNumberResponse(BaseModel):
+    """Server-resolved scope for a dialed number; nothing else is returned."""
     model_config = ConfigDict(extra="forbid")
-    tenant_id: str = Field(min_length=1, max_length=160)
-    business_id: str = Field(min_length=1, max_length=160)
+    tenant_id: str
+    business_id: str
+
+
+def get_voice_number_resolver(
+    directory_uow_factory=Depends(get_auth_uow_factory),
+) -> VoiceNumberResolver:
+    return VoiceNumberResolver(
+        directory_uow_factory=directory_uow_factory,
+        business_uow_factory=lambda: UnitOfWork(session_factory),
+        region_guard=lambda tenant_id: require_tenant_home_region(tenant_id),
+    )
 
 
 def get_voice_delivery_service() -> VoiceDeliveryService:
     return VoiceDeliveryService(
         uow_factory=lambda: UnitOfWork(session_factory), provider=None,
     )
-
-
-def get_voice_number_lookup_service() -> VoiceNumberLookupService:
-    if settings.provider_secrets_dir is None:
-        raise HTTPException(503, "Voice number lookup is not configured")
-    return VoiceNumberLookupService(
-        uow_factory=lambda: UnitOfWork(session_factory),
-        config_resolver=DirectoryTenantConfigResolver(settings.provider_secrets_dir),
-    )
-
-
-def _authorize_voice_number_lookup(authorization: str | None) -> None:
-    """Require a dedicated platform-wide secret; tenant API keys are not global."""
-    expected = settings.voice_number_lookup_token
-    scheme, separator, supplied = (authorization or "").partition(" ")
-    if (
-        not expected
-        or not separator
-        or scheme.casefold() != "bearer"
-        or not hmac.compare_digest(supplied, expected)
-    ):
-        raise HTTPException(401, "Invalid credential", headers={"WWW-Authenticate": "Bearer"})
-
-
-@router.get("/resolve-number", response_model=VoiceNumberMappingResponse)
-def resolve_inbound_number(
-    to: str = Query(pattern=_E164_PATTERN, min_length=8, max_length=16),
-    authorization: str | None = Header(default=None, alias="Authorization"),
-    service: VoiceNumberLookupService = Depends(get_voice_number_lookup_service),
-) -> VoiceNumberMappingResponse:
-    """Resolve an exact Twilio E.164 destination from trusted business config.
-
-    This endpoint is for the Cloudflare voice Worker only. Its dedicated
-    platform-wide token is configured as VOICE_NUMBER_LOOKUP_TOKEN; a normal
-    tenant API key cannot safely perform cross-tenant number resolution.
-    """
-    _authorize_voice_number_lookup(authorization)
-    try:
-        mapping = service.resolve(dialed_number=to)
-    except VoiceNumberLookupAmbiguous:
-        raise HTTPException(503, "Voice number mapping is unavailable") from None
-    except ValueError:
-        raise HTTPException(422, "Invalid dialed number") from None
-    except Exception:
-        # Do not expose database, secret-file, or tenant details to the caller.
-        raise HTTPException(503, "Voice number lookup is unavailable") from None
-
-    if mapping is None:
-        raise HTTPException(404, "Voice number is not configured")
-
-    # Honor the platform's tenant home-region guard before exposing the mapping.
-    require_tenant_home_region(mapping["tenant_id"])
-    return VoiceNumberMappingResponse.model_validate(mapping)
 
 
 @router.post("/calls", response_model=QueueTaskView, status_code=202)
@@ -116,8 +67,23 @@ def request_outbound_call(
         raise HTTPException(403, "Call is not permitted for this tenant and business scope") from exc
 
 
-__all__ = [
-    "get_voice_delivery_service",
-    "get_voice_number_lookup_service",
-    "router",
-]
+@router.get(
+    "/resolve-number", response_model=ResolveNumberResponse,
+    responses={404: {"description": "Number is not provisioned for voice"}},
+)
+def resolve_number(
+    response: Response,
+    to: str = Query(pattern=r"^\+[1-9][0-9]{6,14}$", description="Dialed number in E.164 format"),
+    _gateway: None = Depends(require_voice_gateway),
+    resolver: VoiceNumberResolver = Depends(get_voice_number_resolver),
+) -> ResolveNumberResponse:
+    """Resolve a dialed number to its tenant and business for the voice gateway."""
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        resolved = resolver.resolve(to)
+    except VoiceNumberNotFound:
+        raise HTTPException(404, "Voice number is not provisioned") from None
+    return ResolveNumberResponse(tenant_id=resolved.tenant_id, business_id=resolved.business_id)
+
+
+__all__ = ["get_voice_delivery_service", "get_voice_number_resolver", "router"]
