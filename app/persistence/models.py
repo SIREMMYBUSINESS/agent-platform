@@ -108,6 +108,32 @@ class TenantDatabaseAssignment(SQLModel, table=True):
     )
 
 
+class VoiceNumberRoute(SQLModel, table=True):
+    """Control-directory mapping from one dialed E.164 number to one tenant business."""
+    __tablename__ = "voice_number_routes"
+    __table_args__ = (
+        PrimaryKeyConstraint("e164", name="pk_voice_number_routes"),
+        CheckConstraint("status IN ('active', 'disabled')", name="ck_voice_number_routes_status"),
+        Index("ix_voice_number_routes_scope", "tenant_id", "business_id"),
+    )
+
+    # Like TenantDatabaseAssignment, deliberately no FKs: the directory may live in the
+    # control database while tenants/businesses live in regional databases. The resolver
+    # re-checks the business in the runtime database before returning a scope.
+    e164: str = Field(max_length=16)
+    tenant_id: str = Field(max_length=160)
+    business_id: str = Field(max_length=160)
+    status: str = Field(default="active", max_length=16)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+    updated_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
 class TenantRegionConfig(SQLModel, table=True):
     """Reviewed tenant-scoped deployment, residency, and localization settings."""
     __tablename__ = "tenant_region_configs"
@@ -1569,6 +1595,7 @@ __all__ = [
     "RegionFeatureFlag",
     "RegionPolicyOverride",
     "TenantRegionConfig",
+    "VoiceNumberRoute",
     "OptimizationAuditLog",
     "OptimizationMetric",
     "OptimizationRecommendation",

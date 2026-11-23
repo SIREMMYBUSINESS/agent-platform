@@ -36,8 +36,9 @@ class Settings(BaseSettings):
     tenant_region_routing_enabled: bool = False
     redis_url_file: Path | None = None
     provider_secrets_dir: Path | None = None
-    # Dedicated platform-wide bearer token for GET /voice/resolve-number (voice gateway Worker only).
-    voice_number_lookup_token: str | None = Field(default=None, repr=False)
+    # SHA-256 (hex) of the voice gateway service key. Only the hash is stored here; the
+    # gateway Worker holds the key. Unset disables /voice/resolve-number (503).
+    voice_gateway_key_sha256: str | None = Field(default=None, repr=False)
     worker_bootstrap_module: str | None = None
     cors_allowed_origins: list[str] = Field(default_factory=list)
     workflow_dry_run: bool = False
@@ -64,14 +65,14 @@ class Settings(BaseSettings):
         value = value.strip()
         return value or None
 
-    @field_validator("voice_number_lookup_token")
+    @field_validator("voice_gateway_key_sha256")
     @classmethod
-    def validate_voice_number_lookup_token(cls, value: str | None) -> str | None:
+    def validate_voice_gateway_key_sha256(cls, value: str | None) -> str | None:
         if value is None or not value.strip():
             return None
-        value = value.strip()
-        if len(value) < 32:
-            raise ValueError("must be at least 32 characters")
+        value = value.strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("must be a 64-character hexadecimal SHA-256 digest")
         return value
 
     @field_validator("worker_bootstrap_module")
