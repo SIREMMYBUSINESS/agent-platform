@@ -255,3 +255,32 @@ test("mismatch log reports null when the account cannot be compared", async () =
   assert.equal(noRequestSid.json.account_sid_matches_config, null);
   assert.equal(noRequestSid.json.request_account_sid_suffix, null);
 });
+
+
+test("network failure logs the error class and socket code, never the URL, number, key or message", async () => {
+  const warned: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warned.push(args.map(String).join(" ")); };
+  try {
+    const socket = Object.assign(new Error("connect ECONNREFUSED 10.0.0.1:443 at https://platform.example.com/voice/resolve-number?to=%2B15550001111"), { code: "ECONNREFUSED" });
+    const failing = Object.assign(new TypeError("fetch failed"), { cause: socket });
+    const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), ENV, (async () => { throw failing; }) as typeof fetch);
+    assert.match(await res.text(), /<Hangup\/>/);
+  } finally {
+    console.warn = originalWarn;
+  }
+  assert.equal(warned.length, 1);
+  const line = warned[0];
+  const json = JSON.parse(line);
+  assert.equal(json.reason, "network_error");
+  assert.equal(json.error_name, "TypeError");
+  assert.equal(json.error_code, "ECONNREFUSED");
+  assert.doesNotMatch(line, /platform\.example\.com|15550001111|svc-key|10\.0\.0\.1|ECONNREFUSED 10/);
+});
+
+test("a missing PLATFORM_API_URL is a logged 500 with no lookup", async () => {
+  const p = platform(ok);
+  const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), { ...ENV, PLATFORM_API_URL: "" } as IncomingEnv, p.fetchImpl);
+  assert.equal(res.status, 500);
+  assert.equal(p.calls.length, 0);
+});
