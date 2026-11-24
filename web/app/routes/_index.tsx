@@ -73,7 +73,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       accessError: missingRole
         ? "You are signed in, but this key lacks the business_onboarder role required to configure a business. Ask an administrator to add that grant."
         : unauthorized
-          ? "The staging API rejected this workspace session. Request a new email sign-in link."
+          ? "Your workspace session has expired or was revoked. Request a new email sign-in link."
           : denied
             ? "The staging API denied this request because of the tenant's access or region policy. Ask an administrator to review the staging grant and region configuration."
             : "The staging API could not be reached for onboarding. Check that the API is available, then reload this page.",
