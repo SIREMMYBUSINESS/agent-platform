@@ -37,7 +37,20 @@ Set `SESSION_ENCRYPTION_KEY` as a Cloudflare Worker secret (for example, from `w
 
 The dashboard uses passwordless email sign-in for provisioned workspace identities. A one-time link is stored only as a SHA-256 digest, expires after a short interval, and is consumed only by an explicit POST confirmation (not by an email client opening the link). After verification, a short-lived login ticket is held in a separate encrypted HttpOnly cookie while the user chooses an invited or active tenant membership. The selected workspace receives a revocable, tenant-bound opaque session; its raw token is never exposed to browser JavaScript or written to localStorage. API-key authentication remains supported for integrations and automation.
 
-Workspace identities and memberships are provisioned by a trusted administrator. Workspace roles (`owner`, `admin`, `manager`, `agent`, `viewer`) are mapped server-side to the API's existing permission names. Role changes, membership suspension, user disablement, session revocation and expiry are rechecked against PostgreSQL on protected API requests. Platform magic-link email delivery uses a separate SendGrid API key (`AUTH_EMAIL_API_KEY`) and sender (`AUTH_EMAIL_FROM_EMAIL`); do not reuse a tenant's outreach credential. Set `AUTH_PUBLIC_ORIGIN` to the exact HTTPS frontend origin and keep `SESSION_ENCRYPTION_KEY` configured on the Cloudflare Worker.
+Workspace identities and memberships are provisioned by a trusted administrator. Workspace roles (`owner`, `admin`, `manager`, `agent`, `viewer`) are mapped server-side to the API's existing permission names. Role changes, membership suspension, user disablement, session revocation and expiry are rechecked against PostgreSQL on protected API requests. A temporary staging owner bypass is available only when explicitly enabled with
+STAGING_AUTH_BYPASS_ENABLED=true, a high-entropy STAGING_AUTH_BYPASS_TOKEN,
+STAGING_AUTH_BYPASS_EMAIL, and STAGING_AUTH_BYPASS_TENANT_ID. The API rejects
+this route whenever ENVIRONMENT=production and only grants an owner membership
+matching the exact configured email and tenant. The Render API must have ENVIRONMENT=staging, and the staging web build must also
+set VITE_STAGING_AUTH_BYPASS_ENABLED=true to display the access-code form. Set
+that Vite flag only in the staging Worker's build environment; do not set it
+for production. The backend endpoint remains unavailable unless its own
+staging-only environment flag and allowlist are configured.
+The access code is submitted server-side by the Worker and is never stored in a
+browser cookie. Keep all bypass settings unset/disabled outside the staging
+smoke test, rotate the token after use, and disable the bypass after validation.
+
+Platform magic-link email delivery uses a separate SendGrid API key (`AUTH_EMAIL_API_KEY`) and sender (`AUTH_EMAIL_FROM_EMAIL`); do not reuse a tenant's outreach credential. Set `AUTH_PUBLIC_ORIGIN` to the exact HTTPS frontend origin and keep `SESSION_ENCRYPTION_KEY` configured on the Cloudflare Worker.
 
 Provision an invited workspace user from an interactive, trusted backend terminal after setting `WORKSPACE_USER_PROVISIONING_ENABLED=true`:
 

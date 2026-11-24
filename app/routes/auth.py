@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -36,6 +36,17 @@ class MagicLinkRequest(BaseModel):
         if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", normalized):
             raise ValueError("Enter a valid email address")
         return normalized
+
+
+class StagingAuthBypassRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=254)
+    tenant_id: str = Field(min_length=1, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        return MagicLinkRequest.normalize_email(value)
 
 
 class MagicLinkVerifyRequest(BaseModel):
@@ -123,6 +134,69 @@ def request_magic_link(
         })
         return {"message": GENERIC_SENT_MESSAGE}
     return {"message": GENERIC_SENT_MESSAGE}
+
+
+@router.post("/staging-owner-session")
+def create_staging_owner_session(
+    body: StagingAuthBypassRequest,
+    staging_access_code: str | None = Header(default=None, alias="X-Staging-Auth-Bypass"),
+    uow_factory=Depends(get_auth_uow_factory),
+):
+    """Temporary, explicitly gated owner access available only in the staging environment."""
+    if settings.environment.strip().lower() != "staging" or not settings.staging_auth_bypass_enabled:
+        raise HTTPException(404, "Not found")
+    expected_code = settings.staging_auth_bypass_token or ""
+    if (
+        not expected_code
+        or not staging_access_code
+        or not secrets.compare_digest(staging_access_code, expected_code)
+    ):
+        raise HTTPException(401, "Staging access code is invalid")
+    if (
+        not settings.staging_auth_bypass_email
+        or not settings.staging_auth_bypass_tenant_id
+        or body.email != settings.staging_auth_bypass_email
+        or body.tenant_id != settings.staging_auth_bypass_tenant_id
+    ):
+        raise HTTPException(403, "Staging workspace access is unavailable")
+
+    now = _now()
+    raw_session_token = _token("ws")
+    session_expires_at = now + timedelta(seconds=settings.auth_session_ttl_seconds)
+    with uow_factory() as uow:
+        user = uow.workspace_identity.get_user_by_email(body.email)
+        if user is None or user.status not in {"invited", "active"}:
+            raise HTTPException(403, "Staging workspace access is unavailable")
+        membership = next(
+            (
+                item for item in uow.workspace_identity.list_login_memberships(user.id)
+                if item.tenant_id == body.tenant_id and item.role == "owner"
+            ),
+            None,
+        )
+        if membership is None or membership.status not in {"invited", "active"}:
+            raise HTTPException(403, "Staging workspace access is unavailable")
+        user.status = "active"
+        user.email_verified_at = user.email_verified_at or now
+        if membership.status == "invited":
+            membership.status = "active"
+            membership.updated_at = now
+        uow.workspace_identity.create_workspace_session(
+            user_id=user.id,
+            tenant_id=membership.tenant_id,
+            membership_id=membership.id,
+            token_hash=_digest(raw_session_token),
+            issued_at=now,
+            expires_at=session_expires_at,
+        )
+    return JSONResponse(
+        {
+            "session_token": raw_session_token,
+            "tenant_id": body.tenant_id,
+            "expires_at": session_expires_at.isoformat(),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/magic-link/verify")

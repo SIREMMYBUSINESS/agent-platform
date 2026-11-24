@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     auth_email_api_key: str | None = Field(default=None, repr=False)
     auth_email_from_email: str | None = None
     auth_public_origin: str | None = None
+    # Temporary staging-only owner access; disabled unless every guard is configured.
+    staging_auth_bypass_enabled: bool = False
+    staging_auth_bypass_token: str | None = Field(default=None, repr=False)
+    staging_auth_bypass_email: str | None = None
+    staging_auth_bypass_tenant_id: str | None = None
     auth_magic_link_ttl_seconds: int = Field(default=600, ge=120, le=1800)
     auth_login_ticket_ttl_seconds: int = Field(default=300, ge=60, le=900)
     auth_session_ttl_seconds: int = Field(default=43200, ge=3600, le=604800)
@@ -153,6 +158,33 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.query or parsed.fragment:
             raise ValueError("must be an HTTP(S) application URL without query or fragment")
         return value.rstrip("/")
+
+    @field_validator("staging_auth_bypass_token")
+    @classmethod
+    def validate_staging_auth_bypass_token(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if len(value) < 32:
+            raise ValueError("must contain at least 32 characters")
+        return value
+
+    @field_validator("staging_auth_bypass_email")
+    @classmethod
+    def validate_staging_auth_bypass_email(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip().casefold()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+            raise ValueError("must be a valid email address")
+        return value
+
+    @field_validator("staging_auth_bypass_tenant_id")
+    @classmethod
+    def validate_staging_auth_bypass_tenant_id(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return value.strip()
 
     @field_validator("auth_email_api_key")
     @classmethod
