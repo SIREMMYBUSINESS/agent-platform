@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.auth.api_keys import ApiKeyVerifier
+from app.auth.workspace_roles import CompositeCredentialVerifier, CompositeGrantLookup, WorkspaceSessionCredentialVerifier
 from app.auth.principal_resolver import AuthenticationError, AuthorizationError, PrincipalResolver
 from app.persistence.session import control_session_factory, session_factory
 from app.persistence.unit_of_work import UnitOfWork
@@ -64,8 +65,15 @@ def get_authenticated_principal(
                 if settings.tenant_region_routing_enabled else uow.tenants
             )
             principal = PrincipalResolver(
-                credentials=ApiKeyVerifier(uow.api_keys),
-                tenants=tenant_lookup, grants=uow.api_key_grants,
+                credentials=CompositeCredentialVerifier(
+                    api_keys=ApiKeyVerifier(uow.api_keys),
+                    workspace_sessions=WorkspaceSessionCredentialVerifier(uow.workspace_identity),
+                ),
+                tenants=tenant_lookup,
+                grants=CompositeGrantLookup(
+                    api_key_grants=uow.api_key_grants,
+                    workspace_identity=uow.workspace_identity,
+                ),
             ).resolve(credential.credentials)
             if settings.tenant_region_routing_enabled:
                 assignment = tenant_lookup.get(tenant_id=principal.tenant_id)
