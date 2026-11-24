@@ -48,8 +48,8 @@ function safeFetchErrorCode(error: unknown) {
 
 function accessFailure(path: string, error: unknown) {
   if (error instanceof PlatformApiError) {
-    if (error.status === 401) return `${path} rejected the API key (HTTP 401). Check that this exact key was inserted in the staging database, and that it is unexpired and not revoked.`;
-    if (error.status === 403) return `${path} denied tenant access (HTTP 403). Check the enabled, unexpired grant for this key in the database used by the staging API.`;
+    if (error.status === 401) return `${path} rejected the workspace session (HTTP 401). Request a new email sign-in link.`;
+    if (error.status === 403) return `${path} denied this workspace membership (HTTP 403). Ask a workspace owner to review your role and tenant access.`;
     return `${path} returned HTTP ${error.status}. Check the staging API deployment and its database connection.`;
   }
   if (error instanceof PlatformRequestError) {
@@ -140,6 +140,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       error: null as string | null,
     };
   } catch (error) {
+    if (error instanceof PlatformApiError && error.status === 401) {
+      return redirect("/login?reason=expired");
+    }
     return {
       configured: true,
       connected: false,
@@ -147,10 +150,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       conversations: [] as Conversation[],
       error: error instanceof PlatformApiError || error instanceof PlatformRequestError
         ? accessFailure(error.path, error)
-        : "Your session could not access the workspace. Sign in again.",
+        : "The workspace could not be loaded. Try again or ask an administrator to review access.",
     };
-  }
-}
+  }}
 
 export async function action({ request, context }: Route.ActionArgs) {
   if (!originMatches(request)) return { error: "Request origin could not be verified." };
