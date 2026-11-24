@@ -59,12 +59,22 @@ class WorkspaceSessionCredentialVerifier:
         if result is None:
             return None
         session, user, _membership = result
+        from datetime import UTC
+
+        issued_at = (
+            session.issued_at.replace(tzinfo=UTC)
+            if session.issued_at.tzinfo is None else session.issued_at.astimezone(UTC)
+        )
+        expires_at = (
+            session.expires_at.replace(tzinfo=UTC)
+            if session.expires_at.tzinfo is None else session.expires_at.astimezone(UTC)
+        )
         return VerifiedCredential(
             principal_id=f"workspace-user:{user.id}",
             tenant_id=session.tenant_id,
             auth_source="email_magic_link",
-            issued_at=session.issued_at,
-            expires_at=session.expires_at,
+            issued_at=issued_at,
+            expires_at=expires_at,
         )
 
 
