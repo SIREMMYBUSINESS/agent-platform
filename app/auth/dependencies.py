@@ -16,7 +16,7 @@ from app.regions.service import RegionAccessDenied, RegionService
 from app.regions.catalog import get_region
 
 
-bearer = HTTPBearer(auto_error=False, scheme_name="ApiKey", description="Provisioned API key")
+bearer = HTTPBearer(auto_error=False, scheme_name="ApiKey", description="Provisioned API key or passwordless workspace session")
 
 
 def get_auth_uow_factory():
