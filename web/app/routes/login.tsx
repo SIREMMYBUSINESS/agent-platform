@@ -104,6 +104,7 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
             Check your inbox. If an eligible workspace account exists for that email, a sign-in link has been sent.
           </div>
         ) : (
+          <>
           <Form method="post" className="key-form">
             <label htmlFor="workspace-email">Work email</label>
             <div className="key-entry">
@@ -127,6 +128,8 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
             <Form method="post" className="key-form">
               <input type="hidden" name="intent" value="staging-bypass" />
               <h2>Temporary staging owner access</h2>
+              <label htmlFor="staging-owner-email">Workspace owner email</label>
+              <input id="staging-owner-email" name="email" type="email" required autoComplete="email" maxLength={254} />
               <label htmlFor="staging-tenant-id">Staging tenant ID</label>
               <input id="staging-tenant-id" name="tenantId" type="text" required autoComplete="off" />
               <label htmlFor="staging-access-code">Staging access code</label>
@@ -135,6 +138,7 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
               <p className="helper">Temporary staging-only access. Do not use production credentials.</p>
             </Form>
           )}
+          </>
         )}
         <p className="helper"><Link to="/">Back to Agent Platform</Link></p>
       </section>
