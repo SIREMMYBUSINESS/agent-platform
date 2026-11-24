@@ -8,6 +8,7 @@ from app.auth.dependencies import get_authenticated_principal, require_role
 from app.security import AuthenticatedPrincipal
 from app.auth.principal_resolver import AuthorizationError
 from app.routes.conversations import router as conversation_router
+from app.routes.auth import router as workspace_auth_router
 from app.routes.provider_webhooks import router as provider_webhook_router
 from app.routes.provider_ingress import router as provider_ingress_router
 from app.routes.voice import router as voice_router
@@ -81,6 +82,7 @@ install_openapi_contract(app)
 app.include_router(lead_router)
 app.include_router(campaign_router)
 app.include_router(conversation_router)
+app.include_router(workspace_auth_router)
 app.include_router(provider_webhook_router)
 app.include_router(provider_ingress_router)
 app.include_router(voice_router)
