@@ -41,8 +41,11 @@ Workspace identities and memberships are provisioned by a trusted administrator.
 STAGING_AUTH_BYPASS_ENABLED=true, a high-entropy STAGING_AUTH_BYPASS_TOKEN,
 STAGING_AUTH_BYPASS_EMAIL, and STAGING_AUTH_BYPASS_TENANT_ID. The API rejects
 this route whenever ENVIRONMENT=production and only grants an owner membership
-matching the exact configured email and tenant. The staging web build must also
-set VITE_STAGING_AUTH_BYPASS_ENABLED=true to display the access-code form.
+matching the exact configured email and tenant. The Render API must have ENVIRONMENT=staging, and the staging web build must also
+set VITE_STAGING_AUTH_BYPASS_ENABLED=true to display the access-code form. Set
+that Vite flag only in the staging Worker's build environment; do not set it
+for production. The backend endpoint remains unavailable unless its own
+staging-only environment flag and allowlist are configured.
 The access code is submitted server-side by the Worker and is never stored in a
 browser cookie. Keep all bypass settings unset/disabled outside the staging
 smoke test, rotate the token after use, and disable the bypass after validation.
