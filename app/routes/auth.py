@@ -142,7 +142,7 @@ def create_staging_owner_session(
     staging_access_code: str | None = Header(default=None, alias="X-Staging-Auth-Bypass"),
     uow_factory=Depends(get_auth_uow_factory),
 ):
-    """Temporary, explicitly gated staging-only owner access; never available in production."""
+    """Temporary, explicitly gated owner access available only in the staging environment."""
     if settings.environment.strip().lower() != "staging" or not settings.staging_auth_bypass_enabled:
         raise HTTPException(404, "Not found")
     expected_code = settings.staging_auth_bypass_token or ""
