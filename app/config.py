@@ -159,6 +159,33 @@ class Settings(BaseSettings):
             raise ValueError("must be an HTTP(S) application URL without query or fragment")
         return value.rstrip("/")
 
+    @field_validator("staging_auth_bypass_token")
+    @classmethod
+    def validate_staging_auth_bypass_token(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if len(value) < 32:
+            raise ValueError("must contain at least 32 characters")
+        return value
+
+    @field_validator("staging_auth_bypass_email")
+    @classmethod
+    def validate_staging_auth_bypass_email(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip().casefold()
+        if not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", value):
+            raise ValueError("must be a valid email address")
+        return value
+
+    @field_validator("staging_auth_bypass_tenant_id")
+    @classmethod
+    def validate_staging_auth_bypass_tenant_id(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return value.strip()
+
     @field_validator("auth_email_api_key")
     @classmethod
     def validate_auth_email_api_key(cls, value: str | None) -> str | None:
