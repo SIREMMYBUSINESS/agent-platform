@@ -82,6 +82,22 @@ jobs:
                   email="andyingram1234@gmail.com",
                   role="owner",
               )
+          except ValueError as exc:
+              safe_messages = {
+                  "tenant ID cannot be blank",
+                  "unsupported workspace role",
+                  "a valid email address is required",
+                  "set WORKSPACE_USER_PROVISIONING_ENABLED=true to enable this operation",
+                  "tenant is not active in the workspace directory",
+                  "tenant does not exist",
+                  "this workspace identity is disabled",
+                  "this email already has an active membership in the tenant",
+                  "a suspended membership must be reviewed by an administrator",
+                  "an invitation already exists for this email and tenant",
+              }
+              detail = str(exc) if str(exc) in safe_messages else "Unexpected ValueError; message suppressed."
+              print(f"Provisioning validation failed: {detail}", file=sys.stderr)
+              sys.exit(1)
           except Exception as exc:
               print(f"Provisioning failed ({type(exc).__name__}). No credentials or connection details will be printed.", file=sys.stderr)
               sys.exit(1)
