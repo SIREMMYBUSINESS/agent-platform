@@ -1608,3 +1608,109 @@ __all__ = [
     "WorkflowStateRecord",
     "VerticalIntakeSession",
 ]
+
+
+class WorkspaceUser(SQLModel, table=True):
+    """A verified email identity provisioned by a trusted workspace administrator."""
+    __tablename__ = "workspace_users"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_workspace_users"),
+        UniqueConstraint("email", name="uq_workspace_users_email"),
+        CheckConstraint("status IN ('invited', 'active', 'disabled')",
+                        name="ck_workspace_users_status"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    email: str = Field(max_length=254)
+    display_name: str = Field(default="", max_length=160)
+    status: str = "invited"
+    email_verified_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class TenantMembership(SQLModel, table=True):
+    """Provisioned user access to one tenant; tenant IDs may live in a control DB."""
+    __tablename__ = "tenant_memberships"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_tenant_memberships"),
+        ForeignKeyConstraint(["user_id"], ["workspace_users.id"], name="fk_tenant_memberships_user"),
+        UniqueConstraint("tenant_id", "user_id", name="uq_tenant_memberships_tenant_user"),
+        UniqueConstraint("tenant_id", "user_id", "id", name="uq_tenant_memberships_scope_id"),
+        CheckConstraint("role IN ('owner', 'admin', 'manager', 'agent', 'viewer')",
+                        name="ck_tenant_memberships_role"),
+        CheckConstraint("status IN ('invited', 'active', 'suspended')",
+                        name="ck_tenant_memberships_status"),
+        Index("ix_tenant_memberships_user_status", "user_id", "status"),
+        Index("ix_tenant_memberships_tenant_status", "tenant_id", "status"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID
+    tenant_id: str = Field(max_length=160)
+    workspace_label: str = Field(default="Workspace", max_length=200)
+    role: str = Field(max_length=16)
+    status: str = "invited"
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+    updated_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class MagicLinkChallenge(SQLModel, table=True):
+    """A one-time emailed link; only its SHA-256 token digest is stored."""
+    __tablename__ = "magic_link_challenges"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_magic_link_challenges"),
+        ForeignKeyConstraint(["user_id"], ["workspace_users.id"], name="fk_magic_link_challenges_user"),
+        UniqueConstraint("token_hash", name="uq_magic_link_challenges_token_hash"),
+        Index("ix_magic_link_challenges_user_created", "user_id", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID
+    token_hash: str = Field(max_length=64, repr=False)
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    consumed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class AuthLoginTicket(SQLModel, table=True):
+    """Short-lived exchange ticket used after link verification and workspace selection."""
+    __tablename__ = "auth_login_tickets"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_auth_login_tickets"),
+        ForeignKeyConstraint(["user_id"], ["workspace_users.id"], name="fk_auth_login_tickets_user"),
+        UniqueConstraint("token_hash", name="uq_auth_login_tickets_token_hash"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID
+    token_hash: str = Field(max_length=64, repr=False)
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    consumed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(default_factory=utc_now, sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()))
+
+
+class WorkspaceSession(SQLModel, table=True):
+    """Revocable tenant-bound opaque bearer session; only its digest is persisted."""
+    __tablename__ = "workspace_sessions"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_workspace_sessions"),
+        ForeignKeyConstraint(["user_id"], ["workspace_users.id"], name="fk_workspace_sessions_user"),
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id", "membership_id"],
+            ["tenant_memberships.tenant_id", "tenant_memberships.user_id", "tenant_memberships.id"],
+            name="fk_workspace_sessions_membership",
+        ),
+        UniqueConstraint("token_hash", name="uq_workspace_sessions_token_hash"),
+        CheckConstraint("expires_at > issued_at", name="ck_workspace_sessions_expiry"),
+        Index("ix_workspace_sessions_user_tenant", "user_id", "tenant_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    user_id: UUID
+    tenant_id: str = Field(max_length=160)
+    membership_id: UUID
+    token_hash: str = Field(max_length=64, repr=False)
+    issued_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    revoked_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
