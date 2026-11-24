@@ -71,7 +71,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       canOnboard: false,
       requiresOnboardRole: missingRole,
       accessError: missingRole
-        ? "You are signed in, but this key lacks the business_onboarder role required to configure a business. Ask an administrator to add that grant."
+        ? "Your email is verified, but your workspace membership does not have the business_onboarder permission required to configure a business. Ask a workspace owner to review your role."
         : unauthorized
           ? "Your workspace session has expired or was revoked. Request a new email sign-in link."
           : denied
