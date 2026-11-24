@@ -167,7 +167,7 @@ class Settings(BaseSettings):
         if value is None or not value.strip():
             return None
         value = value.strip()
-        if not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", value):
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
             raise ValueError("must be a valid sender email address")
         return value
 
