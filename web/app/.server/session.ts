@@ -1,8 +1,9 @@
-const COOKIE_NAME = "__Host-agent_session";
-const SESSION_TTL_SECONDS = 60 * 60;
-const SESSION_TTL_MS = SESSION_TTL_SECONDS * 1000;
+const SESSION_COOKIE_NAME = "__Host-agent_session";
+const LOGIN_COOKIE_NAME = "__Host-agent_login";
+const SESSION_TTL_SECONDS = 60 * 60 * 12;
+const LOGIN_TICKET_TTL_SECONDS = 60 * 5;
 
-type Session = { apiKey: string; expiresAt: number };
+type EncryptedPayload = { value: string; expiresAt: number };
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
@@ -16,40 +17,47 @@ function decodeBase64(value: string): Uint8Array {
   const raw = atob(padded);
   return Uint8Array.from(raw, (char) => char.charCodeAt(0));
 }
+
 function encodeBase64Url(value: Uint8Array): string {
   let raw = "";
   for (const byte of value) raw += String.fromCharCode(byte);
   return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
+
 async function importSessionKey(secret: string): Promise<CryptoKey> {
   const bytes = decodeBase64(secret);
   if (bytes.byteLength !== 32) throw new Error("SESSION_ENCRYPTION_KEY must decode to 32 bytes.");
   return crypto.subtle.importKey("raw", toArrayBuffer(bytes), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
-function cookieValue(request: Request): string | null {
+
+function cookieValue(request: Request, cookieName: string): string | null {
   const header = request.headers.get("Cookie");
   if (!header) return null;
   for (const entry of header.split(";")) {
     const [name, ...parts] = entry.trim().split("=");
-    if (name === COOKIE_NAME) return parts.join("=") || null;
+    if (name === cookieName) return parts.join("=") || null;
   }
   return null;
 }
 
-export async function createSessionCookie(apiKey: string, secret: string): Promise<string> {
+async function createEncryptedCookie(
+  cookieName: string, value: string, secret: string, maxAge: number,
+): Promise<string> {
   const key = await importSessionKey(secret);
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const session: Session = { apiKey, expiresAt: Date.now() + SESSION_TTL_MS };
-  const plaintext = new TextEncoder().encode(JSON.stringify(session));
+  const payload: EncryptedPayload = { value, expiresAt: Date.now() + maxAge * 1000 };
+  const plaintext = new TextEncoder().encode(JSON.stringify(payload));
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: toArrayBuffer(iv) }, key, toArrayBuffer(plaintext),
   ));
-  const value = encodeBase64Url(iv) + "." + encodeBase64Url(ciphertext);
-  return COOKIE_NAME + "=" + value + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + SESSION_TTL_SECONDS;
+  const encoded = encodeBase64Url(iv) + "." + encodeBase64Url(ciphertext);
+  return cookieName + "=" + encoded + "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" + maxAge;
 }
 
-export async function readSessionApiKey(request: Request, secret: string): Promise<string | null> {
-  const value = cookieValue(request);
+async function readEncryptedCookie(
+  request: Request, cookieName: string, secret: string,
+): Promise<string | null> {
+  const value = cookieValue(request, cookieName);
   if (!value || !secret) return null;
   try {
     const [encodedIv, encodedCiphertext, extra] = value.split(".");
@@ -62,13 +70,51 @@ export async function readSessionApiKey(request: Request, secret: string): Promi
       key,
       toArrayBuffer(decodeBase64(encodedCiphertext)),
     );
-    const session = JSON.parse(new TextDecoder().decode(plaintext)) as Session;
-    if (typeof session.apiKey !== "string"
-      || !/^ap_[A-Za-z0-9_-]{43}$/.test(session.apiKey)
-      || typeof session.expiresAt !== "number"
-      || session.expiresAt <= Date.now()) return null;
-    return session.apiKey;
+    const payload = JSON.parse(new TextDecoder().decode(plaintext)) as EncryptedPayload;
+    if (typeof payload.value !== "string"
+      || typeof payload.expiresAt !== "number"
+      || payload.expiresAt <= Date.now()) return null;
+    return payload.value;
   } catch {
     return null;
   }
+}
+
+export async function createSessionCookie(
+  credential: string, secret: string, expiresAt?: number,
+): Promise<string> {
+  if (!/^(ap|ws)_[A-Za-z0-9_-]{43}$/.test(credential)) {
+    throw new Error("Workspace credential format is invalid.");
+  }
+  const ttl = expiresAt === undefined
+    ? SESSION_TTL_SECONDS
+    : Math.max(1, Math.min(SESSION_TTL_SECONDS, Math.floor((expiresAt - Date.now()) / 1000)));
+  return createEncryptedCookie(SESSION_COOKIE_NAME, credential, secret, ttl);
+}
+
+export async function readSessionCredential(request: Request, secret: string): Promise<string | null> {
+  const value = await readEncryptedCookie(request, SESSION_COOKIE_NAME, secret);
+  return value && /^(ap|ws)_[A-Za-z0-9_-]{43}$/.test(value) ? value : null;
+}
+
+export async function readSessionApiKey(request: Request, secret: string): Promise<string | null> {
+  return readSessionCredential(request, secret);
+}
+
+export async function createPendingLoginCookie(ticket: string, secret: string): Promise<string> {
+  if (!/^lt_[A-Za-z0-9_-]{43}$/.test(ticket)) throw new Error("Login ticket format is invalid.");
+  return createEncryptedCookie(LOGIN_COOKIE_NAME, ticket, secret, LOGIN_TICKET_TTL_SECONDS);
+}
+
+export async function readPendingLoginTicket(request: Request, secret: string): Promise<string | null> {
+  const ticket = await readEncryptedCookie(request, LOGIN_COOKIE_NAME, secret);
+  return ticket && /^lt_[A-Za-z0-9_-]{43}$/.test(ticket) ? ticket : null;
+}
+
+export function clearSessionCookie(): string {
+  return SESSION_COOKIE_NAME + "=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0";
+}
+
+export function clearPendingLoginCookie(): string {
+  return LOGIN_COOKIE_NAME + "=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0";
 }
