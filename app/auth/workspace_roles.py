@@ -26,7 +26,7 @@ ROLE_PERMISSIONS = {
         "business_onboarder", "workflow_executor",
     ),
     "agent": (
-        "conversation_reader", "conversation_writer",
+        "lead_reader", "conversation_reader", "conversation_writer",
         "inbound_writer", "workflow_executor",
     ),
     "viewer": (
