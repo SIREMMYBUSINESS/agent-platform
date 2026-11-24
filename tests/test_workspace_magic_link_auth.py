@@ -209,3 +209,58 @@ def test_workspace_role_maps_to_existing_permission_contract(passwordless_client
     assert "conversation_reader" in roles
     assert "business_onboarder" not in roles
     assert "campaign_writer" not in roles
+
+
+def test_staging_owner_bypass_requires_secret_and_creates_scoped_session(passwordless_client, monkeypatch):
+    client, _engine, mailer, tenant_id, _user_id, membership_id = passwordless_client
+    monkeypatch.setattr("app.routes.auth.settings.environment", "staging")
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_enabled", True)
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_token", "test-only-high-entropy-secret")
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_email", "owner@example.test")
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_tenant_id", tenant_id)
+
+    denied = client.post("/auth/staging-owner-session", json={
+        "email": "owner@example.test", "tenant_id": tenant_id,
+    })
+    assert denied.status_code == 401
+
+    response = client.post(
+        "/auth/staging-owner-session",
+        headers={"X-Staging-Auth-Bypass": "test-only-high-entropy-secret"},
+        json={"email": "OWNER@example.test", "tenant_id": tenant_id},
+    )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json()["tenant_id"] == tenant_id
+    assert response.json()["session_token"].startswith("ws_")
+    assert mailer.deliveries == []
+
+    me = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {response.json()['session_token']}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["tenant_id"] == tenant_id
+    assert "owner" in me.json()["roles"] or "business_onboarder" in me.json()["roles"]
+
+    wrong_tenant = client.post(
+        "/auth/staging-owner-session",
+        headers={"X-Staging-Auth-Bypass": "test-only-high-entropy-secret"},
+        json={"email": "owner@example.test", "tenant_id": "another-tenant"},
+    )
+    assert wrong_tenant.status_code == 403
+
+
+def test_staging_owner_bypass_is_unavailable_in_production(passwordless_client, monkeypatch):
+    client, *_ = passwordless_client
+    monkeypatch.setattr("app.routes.auth.settings.environment", "production")
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_enabled", True)
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_token", "test-only-high-entropy-secret")
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_email", "owner@example.test")
+    monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_tenant_id", "workspace-auth-tenant")
+    response = client.post(
+        "/auth/staging-owner-session",
+        headers={"X-Staging-Auth-Bypass": "test-only-high-entropy-secret"},
+        json={"email": "owner@example.test", "tenant_id": "workspace-auth-tenant"},
+    )
+    assert response.status_code == 404
