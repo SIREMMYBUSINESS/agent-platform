@@ -35,9 +35,17 @@ Set `SESSION_ENCRYPTION_KEY` as a Cloudflare Worker secret (for example, from `w
 
 ## Workspace session security
 
-The dashboard posts a provisioned tenant API key to a React Router server action. The Worker validates tenant-scoped read access against the configured API, encrypts the key with AES-GCM, and keeps it only in an HttpOnly, Secure, SameSite=Strict cookie that expires after one hour. Server loaders/actions proxy dashboard and onboarding requests; browser JavaScript never receives the stored key and no API credential is written to localStorage. Onboarding additionally requires the `business_onboarder` grant. The key is encrypted but remains a tenant credential, so use appropriately limited grants and rotate/revoke it when needed.
+The dashboard uses passwordless email sign-in for provisioned workspace identities. A one-time link is stored only as a SHA-256 digest, expires after a short interval, and is consumed only by an explicit POST confirmation (not by an email client opening the link). After verification, a short-lived login ticket is held in a separate encrypted HttpOnly cookie while the user chooses an invited or active tenant membership. The selected workspace receives a revocable, tenant-bound opaque session; its raw token is never exposed to browser JavaScript or written to localStorage. API-key authentication remains supported for integrations and automation.
 
-The current backend uses tenant-scoped `ap_` API keys. The dashboard requires both `lead_reader` and `conversation_reader` grants; the backend does not expose the proposed `read:seo_pages` or `create:seo_lead_submissions` scopes. The backend has no public SEO-page data endpoint or anonymous lead-submission endpoint yet.
+Workspace identities and memberships are provisioned by a trusted administrator. Workspace roles (`owner`, `admin`, `manager`, `agent`, `viewer`) are mapped server-side to the API's existing permission names. Role changes, membership suspension, user disablement, session revocation and expiry are rechecked against PostgreSQL on protected API requests. Platform magic-link email delivery uses a separate SendGrid API key (`AUTH_EMAIL_API_KEY`) and sender (`AUTH_EMAIL_FROM_EMAIL`); do not reuse a tenant's outreach credential. Set `AUTH_PUBLIC_ORIGIN` to the exact HTTPS frontend origin and keep `SESSION_ENCRYPTION_KEY` configured on the Cloudflare Worker.
+
+Provision an invited workspace user from an interactive, trusted backend terminal after setting `WORKSPACE_USER_PROVISIONING_ENABLED=true`:
+
+```bash
+python -m app.runtime_entry provision-workspace-user --tenant-id <tenant-id> --email <user@company.com> --role owner --display-name "Workspace Owner"
+```
+
+The command creates an invitation but does not send email, deploy, or change provider settings. The invited user can then request a sign-in link at `/login`. API-key integrations continue using their existing `ap_` credentials and grants.
 
 ## Public SEO routes
 
@@ -50,6 +58,8 @@ The site includes:
 - `/ai-customer-service/`
 - `/ai-sales-outreach/`
 - `/onboarding` — existing onboarding flow
+- `/login` — passwordless email sign-in
+- `/auth/verify` — one-time link confirmation and workspace selection
 - `/dashboard` — authenticated tenant workspace
 
 Pages provide unique titles/descriptions, canonical links when `VITE_SITE_URL` is set, social metadata, relevant internal links, FAQ structured data, and sitemap/robots routes. Copy describes configurable workflows and avoids unsupported outcome, provider, and compliance claims.

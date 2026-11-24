@@ -1,5 +1,5 @@
 import type { Route } from "./+types/api-onboarding";
-import { readSessionApiKey } from "../.server/session";
+import { readSessionCredential } from "../.server/session";
 
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
 
@@ -26,7 +26,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (!matchesOrigin(request)) {
     return Response.json({ detail: "Request origin could not be verified." }, { status: 403 });
   }
-  const apiKey = await readSessionApiKey(request, context.cloudflare.env.SESSION_ENCRYPTION_KEY);
+  const apiKey = await readSessionCredential(request, context.cloudflare.env.SESSION_ENCRYPTION_KEY);
   if (!apiKey) {
     return Response.json({ detail: "Your workspace session has expired. Sign in again." }, { status: 401 });
   }

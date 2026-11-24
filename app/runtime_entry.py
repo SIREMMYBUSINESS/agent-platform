@@ -127,12 +127,16 @@ def main() -> None:
 
         run()
         return
+    if process_type == "provision-workspace-user":
+        from app.admin.provision_workspace_user import main as provision_workspace_user
+
+        raise SystemExit(provision_workspace_user(sys.argv[2:]))
     if process_type == "provision-api-key":
         from app.admin.provision_api_key import main as provision_api_key
 
         raise SystemExit(provision_api_key(sys.argv[2:]))
     raise SystemExit(
-        "usage: python -m app.runtime_entry [api|worker|migrate|staging-queue-smoke|provision-api-key]"
+        "usage: python -m app.runtime_entry [api|worker|migrate|staging-queue-smoke|provision-api-key|provision-workspace-user]"
     )
 
 
