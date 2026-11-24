@@ -1,7 +1,6 @@
-import { Form } from "react-router";
-import { Link } from "react-router";
+import { Form, Link, redirect } from "react-router";
 import type { Route } from "./+types/dashboard";
-import { createSessionCookie, readSessionApiKey } from "../.server/session";
+import { clearSessionCookie, readSessionCredential } from "../.server/session";
 
 type Lead = {
   id: string;
@@ -126,16 +125,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       error: "Workspace authentication is not configured yet.",
     };
   }
-  const apiKey = await readSessionApiKey(request, sessionSecret);
-  if (!apiKey) {
-    return {
-      configured: true,
-      connected: false,
-      leads: [] as Lead[],
-      conversations: [] as Conversation[],
-      error: null as string | null,
-    };
-  }
+  const apiKey = await readSessionCredential(request, sessionSecret);
+  if (!apiKey) return redirect("/login");
   try {
     const [leadResult, conversationResult] = await Promise.all([
       fetchPlatform<ListResponse<Lead>>("/leads?offset=0&limit=25", apiKey),
@@ -164,53 +155,30 @@ export async function loader({ request, context }: Route.LoaderArgs) {
 export async function action({ request, context }: Route.ActionArgs) {
   if (!originMatches(request)) return { error: "Request origin could not be verified." };
   const form = await request.formData();
-  const intent = String(form.get("intent") || "");
-
-  if (intent === "logout") {
-    return new Response(null, {
-      status: 303,
-      headers: {
-        Location: "/dashboard",
-        "Set-Cookie": "__Host-agent_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0",
-        "Cache-Control": "private, no-store",
-      },
-    });
+  if (String(form.get("intent") || "") !== "logout") {
+    return { error: "Use email sign-in to connect to your workspace." };
   }
-
-  const returnTo = new URL(request.url).searchParams.get("returnTo");
-  const postLoginPath = returnTo === "/onboarding" ? returnTo : "/dashboard";
-
-  const apiKey = String(form.get("apiKey") || "").trim();
-  if (!/^ap_[A-Za-z0-9_-]{43}$/.test(apiKey)) {
-    return { error: "Enter a valid provisioned platform API key." };
+  const credential = await readSessionCredential(
+    request, context.cloudflare.env.SESSION_ENCRYPTION_KEY,
+  );
+  if (credential && API_BASE) {
+    try {
+      await fetch(API_BASE + "/auth/logout", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + credential, Accept: "application/json" },
+      });
+    } catch {
+      // Always clear the browser session; an expired server session is already unusable.
+    }
   }
-  const sessionSecret = context.cloudflare.env.SESSION_ENCRYPTION_KEY;
-  if (!sessionSecret) return { error: "Workspace authentication is not configured yet." };
-
-  const checks = await Promise.allSettled([
-      fetchPlatform<ListResponse<Lead>>("/leads?offset=0&limit=1", apiKey),
-      fetchPlatform<ListResponse<Conversation>>("/conversations?offset=0&limit=1", apiKey),
-  ]);
-  const failures = checks.flatMap((check) => check.status === "rejected" ? [check.reason] : []);
-  if (failures.length) {
-    return {
-      error: [...new Set(failures.map((failure) => failure instanceof PlatformApiError || failure instanceof PlatformRequestError
-        ? accessFailure(failure.path, failure)
-        : "Could not reach the staging API. Check its configured URL and availability."))].join(" "),
-    };
-  }
-  try {
-    return new Response(null, {
-      status: 303,
-      headers: {
-        Location: postLoginPath,
-        "Set-Cookie": await createSessionCookie(apiKey, sessionSecret),
-        "Cache-Control": "private, no-store",
-      },
-    });
-  } catch {
-    return { error: "Workspace session could not be created. Check the Worker session encryption configuration." };
-  }
+  return new Response(null, {
+    status: 303,
+    headers: {
+      Location: "/login",
+      "Set-Cookie": clearSessionCookie(),
+      "Cache-Control": "private, no-store",
+    },
+  });
 }
 
 export default function DashboardRoute({ loaderData, actionData }: Route.ComponentProps) {
@@ -220,7 +188,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
         <div>
           <p className="eyebrow">Tenant workspace</p>
           <h1>Your receptionist activity</h1>
-          <p className="workspace-description">Review recent leads and conversations. The API scopes each result to the tenant assigned to your key.</p>
+          <p className="workspace-description">Review recent leads and conversations. Your workspace membership determines tenant access and permissions.</p>
         </div>
         {loaderData.connected && <div className="workspace-actions"><Link className="secondary-button" to="/onboarding">Configure receptionist</Link><Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form></div>}
       </header>
@@ -229,18 +197,9 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
         <section className="card workspace-credentials">
           <div className="section-heading">
             <span className="number">1</span>
-            <div><h2>Connect to your workspace</h2><p>Your key is sent to the Worker and kept in an encrypted, one-hour HttpOnly session.</p></div>
+            <div><h2>Workspace unavailable</h2><p>{loaderData.error || "Sign in to continue to your workspace."}</p></div>
           </div>
-          {(actionData?.error || loaderData.error) && <p className="notice error-notice" role="alert">{actionData?.error || loaderData.error}</p>}
-          <Form method="post" className="key-form">
-            <input type="hidden" name="intent" value="login" />
-            <label htmlFor="workspace-api-key">Provisioned API key</label>
-            <div className="key-entry">
-              <input id="workspace-api-key" name="apiKey" type="password" autoComplete="off" spellCheck={false} required placeholder="ap_…" />
-              <button className="primary-button" type="submit">Connect</button>
-            </div>
-            <p className="helper">The browser never receives the key from the server. The key stays out of browser storage and is removed when the session expires or you sign out. Use a provisioned key with lead_reader and conversation_reader access.</p>
-          </Form>
+          <Link className="primary-button" to="/login">Sign in with email</Link>
         </section>
       ) : (
         <>
