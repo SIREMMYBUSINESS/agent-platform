@@ -74,6 +74,11 @@ EXPECTED_TABLES = {
     "worker_heartbeats",
     "tenant_database_assignments",
     "voice_number_routes",
+    "workspace_users",
+    "tenant_memberships",
+    "magic_link_challenges",
+    "auth_login_tickets",
+    "workspace_sessions",
 }
 
 
@@ -84,7 +89,10 @@ def test_all_persistence_models_share_one_metadata_registry():
 
 
 def test_every_tenant_owned_table_carries_tenant_id():
-    for table_name in EXPECTED_TABLES - {"tenants", "country_policies", "worker_heartbeats"}:
+    for table_name in EXPECTED_TABLES - {
+        "tenants", "country_policies", "worker_heartbeats",
+        "workspace_users", "magic_link_challenges", "auth_login_tickets",
+    }:
         assert "tenant_id" in SQLModel.metadata.tables[table_name].columns
 
 
@@ -175,6 +183,11 @@ def test_persistence_timestamps_are_timezone_aware():
         "campaign_event_logs": ("created_at",),
         "campaign_replies": ("created_at",),
         "outreach_messages": ("scheduled_at", "sent_at", "delivered_at", "failed_at", "created_at", "updated_at"),
+        "workspace_users": ("email_verified_at", "created_at", "updated_at"),
+        "tenant_memberships": ("created_at", "updated_at"),
+        "magic_link_challenges": ("expires_at", "consumed_at", "created_at"),
+        "auth_login_tickets": ("expires_at", "consumed_at", "created_at"),
+        "workspace_sessions": ("issued_at", "expires_at", "revoked_at"),
     }
 
     for table_name, column_names in timestamp_columns.items():
