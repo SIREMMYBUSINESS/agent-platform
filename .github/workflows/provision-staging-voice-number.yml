@@ -1,0 +1,71 @@
+name: Provision staging voice number
+
+on:
+  workflow_dispatch:
+    inputs:
+      approval:
+        description: 'Type exactly: PROVISION +16282835034'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provision-staging-voice-number
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Provision one fixed staging voice route
+    environment:
+      name: STAGING
+    if: ${{ inputs.approval == 'PROVISION +16282835034' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ENVIRONMENT: staging
+      DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      CONTROL_DATABASE_URL: ${{ secrets.STAGING_CONTROL_DATABASE_URL }}
+      TENANT_REGION_ROUTING_ENABLED: ${{ vars.STAGING_TENANT_REGION_ROUTING_ENABLED || 'false' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate staging database configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${DATABASE_URL}" ]]; then
+            echo "::error::GitHub Environment secret STAGING_DATABASE_URL is not available to this job. Check the STAGING environment secret and deployment restrictions."
+            exit 1
+          fi
+          if [[ "${TENANT_REGION_ROUTING_ENABLED,,}" == "true" && -z "${CONTROL_DATABASE_URL}" ]]; then
+            echo "::error::Tenant region routing is enabled, but STAGING_CONTROL_DATABASE_URL is not configured in the STAGING environment."
+            exit 1
+          fi
+          if [[ "${TENANT_REGION_ROUTING_ENABLED,,}" != "true" && "${TENANT_REGION_ROUTING_ENABLED,,}" != "false" ]]; then
+            echo "::error::STAGING_TENANT_REGION_ROUTING_ENABLED must be true or false."
+            exit 1
+          fi
+          echo "Staging database configuration checks passed; credentials are not printed."
+
+      - name: Install application dependencies
+        run: python -m pip install --disable-pip-version-check .
+
+      - name: Provision the explicitly approved staging number
+        run: |
+          python -m scripts.provision_voice_number \
+            --number +16282835034 \
+            --tenant-id staging-queue-smoke-45c0655207074c0296ca853a4f32fbe3 \
+            --business-id staging-queue-smoke-45c0655207074c0296ca853a4f32fbe3
+
+      - name: Report provisioning result
+        if: success()
+        run: |
+          echo "Provisioning command completed. Confirm the authenticated resolver returns HTTP 200 before any Twilio test."

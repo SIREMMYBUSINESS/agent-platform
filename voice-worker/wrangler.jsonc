@@ -10,10 +10,9 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
   "vars": {
-    // Set this to the exact deployed public origin, without a trailing slash.
     "PUBLIC_ORIGIN": "https://agent-platform-voice.olaoluwaemmanuel6.workers.dev",
     "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com"
   }
-  // Set secrets in Cloudflare, never here:
-  // TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, STREAM_SECRET, PLATFORM_API_KEY
+  // Runtime secrets are provisioned separately in the staging Worker:
+  // PLATFORM_API_KEY, TWILIO_AUTH_TOKEN, STREAM_SECRET
 }
