@@ -38,15 +38,15 @@ class SendGridMagicLinkMailer:
                     "type": "text/plain",
                     "value": (
                         "Use this one-time link to sign in to Agent Platform. "
-                        "It expires shortly and can only be used once.\\n\\n"
-                        f"{link}\\n\\nIf you did not request this link, you can ignore this email."
+                        "It expires shortly and can only be used once.\n\n"
+                        f"{link}\n\nIf you did not request this link, you can ignore this email."
                     ),
                 },
                 {
                     "type": "text/html",
                     "value": (
                         "<p>Use this one-time link to sign in to Agent Platform.</p>"
-                        "<p><a href=\\"" + link + "\\">Sign in to Agent Platform</a></p>"
+                        f'<p><a href="{link}">Sign in to Agent Platform</a></p>'
                         "<p>This link expires shortly and can only be used once. "
                         "If you did not request it, you can ignore this email.</p>"
                     ),
