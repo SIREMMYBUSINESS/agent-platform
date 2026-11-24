@@ -1,0 +1,93 @@
+name: Staging workspace owner provisioning
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type PROVISION-STAGING-OWNER to invite the fixed staging owner"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-workspace-owner-provision
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Provision fixed staging owner
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 10
+    steps:
+      - name: Require explicit confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$CONFIRMATION" != "PROVISION-STAGING-OWNER" ]; then
+            echo "::error::Confirmation did not match. No database operation was attempted."
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install application dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Provision invited staging owner
+        env:
+          ENVIRONMENT: staging
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          TENANT_REGION_ROUTING_ENABLED: "false"
+          WORKSPACE_USER_PROVISIONING_ENABLED: "true"
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from urllib.parse import urlsplit
+
+          if not os.environ.get("DATABASE_URL"):
+              print("STAGING_DATABASE_URL is not configured in the staging environment.", file=sys.stderr)
+              sys.exit(1)
+
+          from app.config import settings
+
+          if settings.environment.lower() != "staging":
+              print("Safety check failed: ENVIRONMENT must be staging.", file=sys.stderr)
+              sys.exit(1)
+          if settings.tenant_region_routing_enabled:
+              print("Safety check failed: this workflow requires tenant region routing to be disabled.", file=sys.stderr)
+              sys.exit(1)
+          if not settings.database_url or not urlsplit(settings.database_url).hostname:
+              print("Safety check failed: staging database URL is invalid.", file=sys.stderr)
+              sys.exit(1)
+
+          from app.admin.provision_workspace_user import provision_workspace_user
+
+          try:
+              user_id, membership_id = provision_workspace_user(
+                  tenant_id="staging-queue-smoke-45c0655207074c0296ca853a4f32fbe3",
+                  email="andyingram1234@gmail.com",
+                  role="owner",
+              )
+          except Exception as exc:
+              print(f"Provisioning failed ({type(exc).__name__}). No credentials or connection details will be printed.", file=sys.stderr)
+              sys.exit(1)
+
+          print("Staging invitation provisioned successfully.")
+          print(f"User ID: {user_id}")
+          print(f"Membership ID: {membership_id}")
+          print("No email was sent. No deployment or Twilio operation was performed.")
+          PY
