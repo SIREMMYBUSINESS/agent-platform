@@ -65,7 +65,6 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   private sttMessageQueue: Promise<void> = Promise.resolve();
   private utteranceQueue: Promise<void> = Promise.resolve();
   private finalTranscriptDeduplicator = new FinalTranscriptDeduplicator();
-  private speakStartedAt = 0;
   private history: ChatMsg[] = [];
   private turn = 0;
   private speaking = false;
