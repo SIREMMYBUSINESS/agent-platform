@@ -119,7 +119,6 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
               />
               <button className="primary-button" type="submit">Email me a sign-in link</button>
             </div>
-            {actionData?.error && <p className="notice error-notice" role="alert">{actionData.error}</p>}
             <p className="helper">
               Access is available to users invited by a workspace administrator. Sign-in links expire and can only be used once.
             </p>
@@ -138,6 +137,7 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
               <p className="helper">Temporary staging-only access. Do not use production credentials.</p>
             </Form>
           )}
+          {actionData?.error && <p className="notice error-notice" role="alert">{actionData.error}</p>}
           </>
         )}
         <p className="helper"><Link to="/">Back to Agent Platform</Link></p>
