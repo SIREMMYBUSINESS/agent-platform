@@ -93,10 +93,8 @@ def request_magic_link(
         if user is None or user.status not in {"invited", "active"}:
             return {"message": GENERIC_SENT_MESSAGE}
         memberships = uow.workspace_identity.list_login_memberships(user.id)
-        if not memberships or mailer is None or not settings.auth_public_origin:
-            if not memberships:
-                return {"message": GENERIC_SENT_MESSAGE}
-            raise HTTPException(503, "Workspace email delivery is not configured")
+        if not memberships:
+            return {"message": GENERIC_SENT_MESSAGE}
         if uow.workspace_identity.count_recent_magic_links(
             user_id=user.id, since=now - timedelta(hours=1),
         ) >= 5:
@@ -136,6 +134,9 @@ def verify_magic_link(
         raise HTTPException(401, "This sign-in link is invalid or expired")
     now = _now()
     login_ticket = _token("lt")
+    invalid_identity = False
+    choices = []
+    display_name = ""
     with uow_factory() as uow:
         challenge = uow.workspace_identity.get_magic_link(_digest(body.token), for_update=True)
         if (
@@ -147,30 +148,33 @@ def verify_magic_link(
         memberships = uow.workspace_identity.list_login_memberships(challenge.user_id)
         if user is None or user.status not in {"invited", "active"} or not memberships:
             challenge.consumed_at = now
-            raise HTTPException(401, "This sign-in link is invalid or expired")
-        challenge.consumed_at = now
-        user.status = "active"
-        user.email_verified_at = user.email_verified_at or now
-        for membership in memberships:
-            if membership.status == "invited":
-                membership.status = "active"
-                membership.updated_at = now
-        uow.workspace_identity.create_login_ticket(
-            user_id=user.id,
-            token_hash=_digest(login_ticket),
-            expires_at=now + timedelta(seconds=settings.auth_login_ticket_ttl_seconds),
-            created_at=now,
-        )
-        choices = [
-            {
-                "membership_id": str(item.id),
-                "tenant_id": item.tenant_id,
-                "workspace_label": item.workspace_label,
-                "role": item.role,
-            }
-            for item in memberships
-        ]
-        display_name = user.display_name
+            invalid_identity = True
+        else:
+            challenge.consumed_at = now
+            user.status = "active"
+            user.email_verified_at = user.email_verified_at or now
+            for membership in memberships:
+                if membership.status == "invited":
+                    membership.status = "active"
+                    membership.updated_at = now
+            uow.workspace_identity.create_login_ticket(
+                user_id=user.id,
+                token_hash=_digest(login_ticket),
+                expires_at=now + timedelta(seconds=settings.auth_login_ticket_ttl_seconds),
+                created_at=now,
+            )
+            choices = [
+                {
+                    "membership_id": str(item.id),
+                    "tenant_id": item.tenant_id,
+                    "workspace_label": item.workspace_label,
+                    "role": item.role,
+                }
+                for item in memberships
+            ]
+            display_name = user.display_name
+    if invalid_identity:
+        raise HTTPException(401, "This sign-in link is invalid or expired")
     return JSONResponse(
         {"login_ticket": login_ticket, "display_name": display_name, "memberships": choices},
         headers={"Cache-Control": "no-store"},
@@ -186,6 +190,9 @@ def create_workspace_session(
         raise HTTPException(401, "Workspace sign-in has expired. Request a new link.")
     now = _now()
     raw_session_token = _token("ws")
+    session_expires_at = now + timedelta(seconds=settings.auth_session_ttl_seconds)
+    invalid_user = False
+    tenant_id = ""
     with uow_factory() as uow:
         ticket = uow.workspace_identity.get_login_ticket(_digest(body.login_ticket), for_update=True)
         if (
@@ -193,37 +200,35 @@ def create_workspace_session(
             or _as_utc(ticket.expires_at) <= now
         ):
             raise HTTPException(401, "Workspace sign-in has expired. Request a new link.")
-        membership = uow.workspace_identity.get_membership(
-            membership_id=body.membership_id,
-            user_id=ticket.user_id,
-            tenant_id=next(
-                (item.tenant_id for item in uow.workspace_identity.list_login_memberships(ticket.user_id)
-                 if item.id == body.membership_id),
-                "",
-            ),
-            for_update=True,
-        )
-        if membership is None or membership.status not in {"active", "invited"}:
+        user = uow.workspace_identity.get_user(ticket.user_id)
+        memberships = uow.workspace_identity.list_login_memberships(ticket.user_id)
+        membership = next((item for item in memberships if item.id == body.membership_id), None)
+        if user is None or user.status != "active" or user.email_verified_at is None:
+            ticket.consumed_at = now
+            invalid_user = True
+        elif membership is None or membership.status not in {"active", "invited"}:
             raise HTTPException(403, "Workspace access is unavailable")
-        if membership.status == "invited":
-            membership.status = "active"
-            membership.updated_at = now
-        ticket.consumed_at = now
-        uow.workspace_identity.create_workspace_session(
-            user_id=ticket.user_id,
-            tenant_id=membership.tenant_id,
-            membership_id=membership.id,
-            token_hash=_digest(raw_session_token),
-            issued_at=now,
-            expires_at=now + timedelta(seconds=settings.auth_session_ttl_seconds),
-        )
-        expires_at = now + timedelta(seconds=settings.auth_session_ttl_seconds)
-        tenant_id = membership.tenant_id
+        else:
+            if membership.status == "invited":
+                membership.status = "active"
+                membership.updated_at = now
+            ticket.consumed_at = now
+            uow.workspace_identity.create_workspace_session(
+                user_id=ticket.user_id,
+                tenant_id=membership.tenant_id,
+                membership_id=membership.id,
+                token_hash=_digest(raw_session_token),
+                issued_at=now,
+                expires_at=session_expires_at,
+            )
+            tenant_id = membership.tenant_id
+    if invalid_user:
+        raise HTTPException(403, "Workspace access is unavailable")
     return JSONResponse(
         {
             "session_token": raw_session_token,
             "tenant_id": tenant_id,
-            "expires_at": expires_at.isoformat(),
+            "expires_at": session_expires_at.isoformat(),
         },
         headers={"Cache-Control": "no-store"},
     )
