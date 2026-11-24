@@ -38,6 +38,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id || vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID || '9253289fc33ead6f56f6e19f26ee940b' }}
       VITE_PLATFORM_API_URL: ${{ inputs.api_origin || vars.STAGING_API_ORIGIN || 'https://agent-platform-staging.onrender.com' }}
       VITE_SITE_URL: ${{ inputs.site_origin || vars.STAGING_SITE_ORIGIN || 'https://agent-platform-web-staging.olaoluwaemmanuel6.workers.dev' }}
+      VITE_STAGING_AUTH_BYPASS_ENABLED: ${{ vars.VITE_STAGING_AUTH_BYPASS_ENABLED || 'false' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
