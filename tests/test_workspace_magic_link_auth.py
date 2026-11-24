@@ -241,7 +241,8 @@ def test_staging_owner_bypass_requires_secret_and_creates_scoped_session(passwor
     )
     assert me.status_code == 200
     assert me.json()["tenant_id"] == tenant_id
-    assert "owner" in me.json()["roles"] or "business_onboarder" in me.json()["roles"]
+    assert "business_onboarder" in me.json()["roles"]
+    assert "campaign_writer" in me.json()["roles"]
 
     wrong_tenant = client.post(
         "/auth/staging-owner-session",
