@@ -10,16 +10,13 @@ from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlmodel import select
 
 from app.auth.dependencies import bearer, get_auth_uow_factory, get_authenticated_principal
 from app.auth.magic_link_mailer import SendGridMagicLinkMailer
 from app.config import settings
-from app.persistence.models import TenantMembership
-from app.persistence.session import session_factory
-from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 
 router = APIRouter(prefix="/auth", tags=["workspace-auth"])
@@ -64,6 +61,10 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
 def get_magic_link_mailer():
     api_key = settings.auth_email_api_key
     from_email = settings.auth_email_from_email
@@ -80,7 +81,6 @@ def _no_store(response):
 @router.post("/magic-link", status_code=202)
 def request_magic_link(
     body: MagicLinkRequest,
-    request: Request,
     mailer=Depends(get_magic_link_mailer),
     uow_factory=Depends(get_auth_uow_factory),
 ):
@@ -140,7 +140,7 @@ def verify_magic_link(
         challenge = uow.workspace_identity.get_magic_link(_digest(body.token), for_update=True)
         if (
             challenge is None or challenge.consumed_at is not None
-            or challenge.expires_at <= now
+            or _as_utc(challenge.expires_at) <= now
         ):
             raise HTTPException(401, "This sign-in link is invalid or expired")
         user = uow.workspace_identity.get_user(challenge.user_id)
@@ -171,7 +171,10 @@ def verify_magic_link(
             for item in memberships
         ]
         display_name = user.display_name
-    return {"login_ticket": login_ticket, "display_name": display_name, "memberships": choices}
+    return JSONResponse(
+        {"login_ticket": login_ticket, "display_name": display_name, "memberships": choices},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/session")
@@ -187,7 +190,7 @@ def create_workspace_session(
         ticket = uow.workspace_identity.get_login_ticket(_digest(body.login_ticket), for_update=True)
         if (
             ticket is None or ticket.consumed_at is not None
-            or ticket.expires_at <= now
+            or _as_utc(ticket.expires_at) <= now
         ):
             raise HTTPException(401, "Workspace sign-in has expired. Request a new link.")
         membership = uow.workspace_identity.get_membership(
@@ -216,23 +219,29 @@ def create_workspace_session(
         )
         expires_at = now + timedelta(seconds=settings.auth_session_ttl_seconds)
         tenant_id = membership.tenant_id
-    return {
-        "session_token": raw_session_token,
-        "tenant_id": tenant_id,
-        "expires_at": expires_at.isoformat(),
-    }
+    return JSONResponse(
+        {
+            "session_token": raw_session_token,
+            "tenant_id": tenant_id,
+            "expires_at": expires_at.isoformat(),
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/me")
 def current_workspace_identity(
     principal: AuthenticatedPrincipal = Depends(get_authenticated_principal),
 ):
-    return {
-        "principal_id": principal.principal_id,
-        "tenant_id": principal.tenant_id,
-        "roles": list(principal.roles),
-        "auth_source": principal.auth_source,
-    }
+    return JSONResponse(
+        {
+            "principal_id": principal.principal_id,
+            "tenant_id": principal.tenant_id,
+            "roles": list(principal.roles),
+            "auth_source": principal.auth_source,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post("/logout", status_code=204)
@@ -246,4 +255,4 @@ def logout_workspace_session(
             uow.workspace_identity.revoke_workspace_session(
                 _digest(credential.credentials), revoked_at=_now(),
             )
-    return _no_store(__import__("fastapi").Response(status_code=204))
+    return Response(status_code=204, headers={"Cache-Control": "no-store"})
