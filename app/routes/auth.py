@@ -84,6 +84,8 @@ def request_magic_link(
     mailer=Depends(get_magic_link_mailer),
     uow_factory=Depends(get_auth_uow_factory),
 ):
+    if mailer is None or not settings.auth_public_origin:
+        raise HTTPException(503, "Workspace email delivery is not configured")
     now = _now()
     raw_token = None
     with uow_factory() as uow:
@@ -121,7 +123,7 @@ def request_magic_link(
             "component": "workspace_auth", "operation": "magic_link_delivery",
             "outcome": "failed", "error_type": type(exc).__name__,
         })
-        raise HTTPException(503, "Workspace email delivery is temporarily unavailable") from None
+        return {"message": GENERIC_SENT_MESSAGE}
     return {"message": GENERIC_SENT_MESSAGE}
 
 
