@@ -7,6 +7,8 @@ import os
 import sys
 from uuid import uuid4
 
+from sqlmodel import select
+
 from app.auth.workspace_roles import WORKSPACE_ROLES
 from app.persistence.models import TenantMembership, WorkspaceUser
 from app.persistence.session import control_session_factory, session_factory
@@ -61,7 +63,7 @@ def provision_workspace_user(
         if existing is not None:
             raise ValueError("this email already has an active membership in the tenant")
         pending = uow.session.exec(
-            __import__("sqlmodel").select(TenantMembership).where(
+            select(TenantMembership).where(
                 TenantMembership.user_id == user.id,
                 TenantMembership.tenant_id == tenant_id,
             )
