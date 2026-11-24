@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { Route } from "./+types/_index";
-import { readSessionApiKey } from "../.server/session";
+import { readSessionCredential } from "../.server/session";
 
 type Question = { key: string; prompt: string; answer_type: string; required: boolean };
 type Hour = { weekday: number; opens_at: string; closes_at: string; active: boolean };
@@ -52,7 +52,7 @@ async function callPlatform(path: string, apiKey: string, method = "GET", body?:
 }
 
 export async function loader({ request, context }: Route.LoaderArgs) {
-  const apiKey = await readSessionApiKey(request, context.cloudflare.env.SESSION_ENCRYPTION_KEY);
+  const apiKey = await readSessionCredential(request, context.cloudflare.env.SESSION_ENCRYPTION_KEY);
   if (!apiKey) return {
     authenticated: false, canOnboard: false, requiresOnboardRole: false,
     accessError: null as string | null,
@@ -73,7 +73,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       accessError: missingRole
         ? "You are signed in, but this key lacks the business_onboarder role required to configure a business. Ask an administrator to add that grant."
         : unauthorized
-          ? "The staging API rejected the key in this session. Sign out and connect with the staging workspace key again."
+          ? "The staging API rejected this workspace session. Request a new email sign-in link."
           : denied
             ? "The staging API denied this request because of the tenant's access or region policy. Ask an administrator to review the staging grant and region configuration."
             : "The staging API could not be reached for onboarding. Check that the API is available, then reload this page.",
@@ -232,7 +232,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         <div className="section-heading"><span className="number">1</span><div><h3>{loaderData.authenticated ? loaderData.requiresOnboardRole ? "Onboarding permission needed" : "Onboarding unavailable" : "Sign in to your workspace"}</h3><p>{loaderData.accessError || "Use your workspace session to continue onboarding."}</p></div></div>
         {loaderData.authenticated
           ? loaderData.requiresOnboardRole && <p className="helper">Your active sign-in is recognized. The administrator can add the <code>business_onboarder</code> role to the same tenant key.</p>
-          : <Link className="primary-button" to="/dashboard?returnTo=%2Fonboarding">Go to workspace sign in</Link>}
+          : <Link className="primary-button" to="/login?returnTo=%2Fonboarding">Sign in with email</Link>}
       </section> : <>
         <section className="card credentials-card">
           <div className="section-heading"><span className="number">1</span><div><h3>Workspace connected</h3><p>Onboarding uses your encrypted workspace session.</p></div></div>
