@@ -36,6 +36,16 @@ type CallState = {
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
 
+function logStreamFailure(stage: string, error: unknown) {
+  const err = error instanceof Error ? error : new Error(String(error));
+  console.warn(JSON.stringify({
+    event: "stream_stage_failed",
+    stage,
+    error_name: err.name,
+    error_message: err.message.slice(0, 200),
+  }));
+}
+
 export class ReceptionistAgent extends Agent<Env, CallState> {
   // Keep the DO resident for the life of the call (it holds an outbound STT socket).
   static options = { hibernate: false };
@@ -88,8 +98,16 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
         await this.schedule(MAX_CALL_SECONDS, "hangup", {});
         try {
           await this.openStt(conn);
+          console.log(JSON.stringify({ event: "stream_stt_open_ok" }));
+        } catch (e) {
+          logStreamFailure("stt_open", e);
+          await this.fallback(conn);
+          break;
+        }
+        try {
           await this.say(conn, GREETING);
         } catch (e) {
+          logStreamFailure("greeting", e);
           await this.fallback(conn);
         }
         break;
@@ -126,7 +144,7 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     const generation = ++this.socketGeneration;
     socket.addEventListener("message", (message) => {
       if (generation !== this.socketGeneration) return;
-      void this.handleSttMessage(conn, message.data).catch(() => this.fallback(conn));
+      void this.handleSttMessage(conn, message.data).catch((e) => { logStreamFailure("stt_message", e); return this.fallback(conn); });
     });
   }
 
@@ -189,7 +207,8 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
         }
       }
       reader.releaseLock();
-    } catch {
+    } catch (e) {
+      logStreamFailure("tts", e);
       await this.fallback(conn);
     } finally {
       this.setState({ ...this.state, speaking: false });
