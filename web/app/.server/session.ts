@@ -70,11 +70,12 @@ async function readEncryptedCookie(
       key,
       toArrayBuffer(decodeBase64(encodedCiphertext)),
     );
-    const payload = JSON.parse(new TextDecoder().decode(plaintext)) as EncryptedPayload;
-    if (typeof payload.value !== "string"
+    const payload = JSON.parse(new TextDecoder().decode(plaintext)) as EncryptedPayload & { apiKey?: string };
+    const storedValue = typeof payload.value === "string" ? payload.value : payload.apiKey;
+    if (typeof storedValue !== "string"
       || typeof payload.expiresAt !== "number"
       || payload.expiresAt <= Date.now()) return null;
-    return payload.value;
+    return storedValue;
   } catch {
     return null;
   }
