@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     optimization_confidence_threshold: float = Field(default=0.75, ge=0.5, le=1.0)
     optimization_dry_run: bool = False
     public_app_url: str = "http://localhost:3000"
+
+    # Platform-owned magic-link delivery; never use tenant outreach credentials.
+    auth_email_api_key: str | None = Field(default=None, repr=False)
+    auth_email_from_email: str | None = None
+    auth_public_origin: str | None = None
+    auth_magic_link_ttl_seconds: int = Field(default=600, ge=120, le=1800)
+    auth_login_ticket_ttl_seconds: int = Field(default=300, ge=60, le=900)
+    auth_session_ttl_seconds: int = Field(default=43200, ge=3600, le=604800)
     # Deprecated local compatibility setting. The production worker no longer uses Redis.
     redis_url: str = "redis://localhost:6379/0"
 
@@ -145,6 +153,42 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.query or parsed.fragment:
             raise ValueError("must be an HTTP(S) application URL without query or fragment")
         return value.rstrip("/")
+
+    @field_validator("auth_email_api_key")
+    @classmethod
+    def validate_auth_email_api_key(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return value.strip()
+
+    @field_validator("auth_email_from_email")
+    @classmethod
+    def validate_auth_email_from_email(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", value):
+            raise ValueError("must be a valid sender email address")
+        return value
+
+    @field_validator("auth_public_origin")
+    @classmethod
+    def validate_auth_public_origin(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value.strip())
+        try:
+            parsed.port
+        except ValueError:
+            raise ValueError("must be a valid public HTTP(S) origin") from None
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username or parsed.password or parsed.path not in {"", "/"}
+                or parsed.query or parsed.fragment):
+            raise ValueError("must be an exact public HTTP(S) origin without a path")
+        if parsed.scheme == "http" and parsed.hostname.lower() not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("non-local authentication origins must use HTTPS")
+        return f"{parsed.scheme.lower()}://{parsed.netloc}".rstrip("/")
 
     @field_validator("cors_allowed_origins")
     @classmethod
