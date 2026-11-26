@@ -15,4 +15,7 @@ export interface Env {
   TWILIO_AUTH_TOKEN: string;
   TWILIO_ACCOUNT_SID?: string;
   STREAM_SECRET: string;
+  CF_ACCOUNT_ID: string;
+  AI_GATEWAY_NAME: string;
+  AI_GATEWAY_AUTH_TOKEN: string;
 }
