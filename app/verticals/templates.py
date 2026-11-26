@@ -74,7 +74,76 @@ DENTAL_CLINIC = VerticalTemplate(
     optional_providers=("email", "crm"),
 )
 
-_TEMPLATES = {DENTAL_CLINIC.vertical_id: DENTAL_CLINIC}
+
+def _general_template(vertical_id: str, display_name: str, service_names: tuple[str, ...],
+                      intake_label: str) -> VerticalTemplate:
+    """Create a neutral front-desk template without importing dental clinical policy."""
+    questions = (
+        IntakeQuestion("service_type", f"What {intake_label} are you interested in?"),
+        IntakeQuestion("reason", "What would you like our team to know?"),
+        IntakeQuestion("preferred_date", "What date or time works best for you?", required=False),
+    )
+    return VerticalTemplate(
+        vertical_id=vertical_id,
+        display_name=display_name,
+        intake_questions=questions,
+        business_hours=tuple(
+            {"weekday": day, "opens_at": "09:00", "closes_at": "17:00", "active": day < 5}
+            for day in range(7)
+        ),
+        services=tuple(ServiceTemplate(name, 30) for name in service_names),
+        message_templates={
+            "greeting": "Hello {{contact_name}}, thanks for contacting our team.",
+            "ask_reason": "How can our team help you today?",
+            "propose_slots": "Available times for {{service_type}}: {{slot_1}}, {{slot_2}}, {{slot_3}}. Reply with your choice.",
+            "confirmation": "Your {{service_type}} consultation is confirmed for {{appointment_time}}.",
+            "reminder": "Reminder: your appointment is {{appointment_time}}.",
+            "follow_up": "Thanks for contacting our team. How can we help further?",
+            "outreach": "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue.",
+        },
+        escalation_rules={},
+        success_metrics=("response_rate", "booking_rate", "customer_satisfaction"),
+        required_providers=("sms", "calendar"),
+        optional_providers=("email", "crm"),
+    )
+
+
+REAL_ESTATE = _general_template(
+    "real_estate", "Real estate", ("Property viewing", "Buyer consultation", "Rental enquiry"),
+    "property or service",
+)
+MEDICAL_CLINIC = _general_template(
+    "healthcare_medical", "Medical clinic", ("General consultation", "Follow-up visit", "Clinic enquiry"),
+    "appointment or service",
+)
+LEGAL_SERVICES = _general_template(
+    "legal_services", "Legal services", ("Initial consultation", "Case review", "Document consultation"),
+    "legal service",
+)
+HOME_SERVICES = _general_template(
+    "home_services", "Home services", ("Inspection", "Repair visit", "Installation"),
+    "home service",
+)
+AUTOMOTIVE = _general_template(
+    "automotive", "Automotive", ("Vehicle service", "Diagnostic appointment", "Repair consultation"),
+    "vehicle service",
+)
+HOSPITALITY = _general_template(
+    "hospitality", "Hospitality", ("Reservation enquiry", "Guest assistance", "Event enquiry"),
+    "booking or service",
+)
+RETAIL = _general_template(
+    "retail", "Retail", ("Product enquiry", "Store consultation", "Order assistance"),
+    "product or service",
+)
+
+_TEMPLATES = {
+    template.vertical_id: template
+    for template in (
+        REAL_ESTATE, DENTAL_CLINIC, MEDICAL_CLINIC, LEGAL_SERVICES,
+        HOME_SERVICES, AUTOMOTIVE, HOSPITALITY, RETAIL,
+    )
+}
 
 
 def list_vertical_templates() -> list[VerticalTemplate]:
