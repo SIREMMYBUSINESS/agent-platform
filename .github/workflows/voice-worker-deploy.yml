@@ -1,0 +1,99 @@
+name: Voice Worker staging deployment
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "voice-worker/**"
+      - ".github/workflows/voice-worker-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      confirm_deploy:
+        description: "Type deploy-voice-worker to authorize the staging deployment job"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-worker-staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate voice Worker (no deployment)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: voice-worker
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voice-worker/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: TypeScript typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Wrangler staging-config dry run (no deployment)
+        run: npx wrangler deploy --config wrangler.jsonc --dry-run --outdir dist
+
+  deploy-staging:
+    name: Deploy voice Worker to protected staging environment
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: voice-staging
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: voice-worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      VOICE_DEPLOY_ENABLED: ${{ vars.VOICE_DEPLOY_ENABLED }}
+      DEPLOY_CONFIRMATION: ${{ inputs.confirm_deploy }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Enforce explicit deployment gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "::error::Voice staging deployment is permitted only from main."
+            exit 1
+          fi
+          if [[ "${VOICE_DEPLOY_ENABLED}" != "true" ]]; then
+            echo "::error::Set VOICE_DEPLOY_ENABLED=true in the protected voice-staging environment to enable deployment."
+            exit 1
+          fi
+          if [[ "${DEPLOY_CONFIRMATION}" != "deploy-voice-worker" ]]; then
+            echo "::error::The exact confirmation phrase is required."
+            exit 1
+          fi
+          if [[ -z "${CLOUDFLARE_API_TOKEN}" || -z "${CLOUDFLARE_ACCOUNT_ID}" ]]; then
+            echo "::error::Cloudflare staging credentials are not configured in the protected environment."
+            exit 1
+          fi
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: voice-worker/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Deploy approved staging Worker
+        run: npx wrangler deploy --config wrangler.jsonc
