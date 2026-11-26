@@ -152,7 +152,8 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         ? accessFailure(error.path, error)
         : "Your API key could not access the workspace. Check its tenant grant and permissions.",
     };
-  }}
+  }
+}
 
 export async function action({ request }: Route.ActionArgs) {
   if (!originMatches(request)) return { error: "Request origin could not be verified." };
@@ -170,7 +171,7 @@ export async function action({ request }: Route.ActionArgs) {
   });
 }
 
-export default function DashboardRoute({ loaderData, actionData }: Route.ComponentProps) {
+export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
   return (
     <main className="workspace-shell">
       <header className="workspace-heading">
@@ -188,7 +189,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
             <span className="number">1</span>
             <div><h2>Workspace unavailable</h2><p>{loaderData.error || "Sign in to continue to your workspace."}</p></div>
           </div>
-          <Link className="primary-button" to="/login">Sign in with email</Link>
+          <Link className="primary-button" to="/login">Connect with API key</Link>
         </section>
       ) : (
         <>
