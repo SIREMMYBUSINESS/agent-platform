@@ -19,10 +19,13 @@ export type IncomingEnv = Pick<
 
 const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
 const MAX_WEBHOOK_BYTES = 10_000;
-const LOOKUP_TIMEOUT_MS = 3000;\nconst RATE_LIMITED = () =>\n  xml(`<Response><Say>We are receiving too many calls right now. Please try again later.</Say><Hangup/></Response>`);
+const LOOKUP_TIMEOUT_MS = 3000;
+const RATE_LIMITED = () =>
+  xml(`<Response><Say>We are receiving too many calls right now. Please try again later.</Say><Hangup/></Response>`);
 
 const xml = (body: string) =>
-  new Response(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`, {
+  new Response(`<?xml version="1.0" encoding="UTF-8"?>
+${body}`, {
     headers: { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" },
   });
 
@@ -140,7 +143,29 @@ export async function handleIncoming(
   }
 
   // Tenant scope comes only from the platform, keyed by the (signed) dialed number.
-  try {\n    const incomingLimit = await env.INCOMING_RATE_LIMITER.limit({ key: to });\n    if (!incomingLimit.success) return RATE_LIMITED();\n    const lookupLimit = await env.NUMBER_LOOKUP_RATE_LIMITER.limit({ key: to });\n    if (!lookupLimit.success) return RATE_LIMITED();\n  } catch (error) {\n    const name = error instanceof Error ? error.name : "unknown";\n    console.error(JSON.stringify({ event: "voice_rate_limit_unavailable", error_name: name }));\n    return UNAVAILABLE();\n  }\n\n  const scope = await resolveNumber(env, to, fetchImpl);
+  try {
+    const incomingLimit = await env.INCOMING_RATE_LIMITER.limit({ key: to });
+    if (!incomingLimit.success) return RATE_LIMITED();
+    const lookupLimit = await env.NUMBER_LOOKUP_RATE_LIMITER.limit({ key: to });
+    if (!lookupLimit.success) return RATE_LIMITED();
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "unknown";
+    console.error(JSON.stringify({ event: "voice_rate_limit_unavailable", error_name: name }));
+    return UNAVAILABLE();
+  }
+
+  try {
+    const incomingLimit = await env.INCOMING_RATE_LIMITER.limit({ key: to });
+    if (!incomingLimit.success) return RATE_LIMITED();
+    const lookupLimit = await env.NUMBER_LOOKUP_RATE_LIMITER.limit({ key: to });
+    if (!lookupLimit.success) return RATE_LIMITED();
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "unknown";
+    console.error(JSON.stringify({ event: "voice_rate_limit_unavailable", error_name: name }));
+    return UNAVAILABLE();
+  }
+
+  const scope = await resolveNumber(env, to, fetchImpl);
   if (!scope) return UNAVAILABLE();
 
   const exp = Math.floor(Date.now() / 1000) + STREAM_TOKEN_TTL_SECONDS;
