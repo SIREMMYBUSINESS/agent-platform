@@ -65,6 +65,8 @@ jobs:
       VOICE_DEPLOY_ENABLED: ${{ vars.VOICE_DEPLOY_ENABLED }}
       DEPLOY_CONFIRMATION: ${{ inputs.confirm_deploy }}
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
       - name: Enforce explicit deployment gates
         shell: bash
         run: |
@@ -85,8 +87,6 @@ jobs:
             echo "::error::Cloudflare staging credentials are not configured in the protected environment."
             exit 1
           fi
-      - name: Check out source
-        uses: actions/checkout@v4
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
