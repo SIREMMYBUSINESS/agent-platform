@@ -52,7 +52,47 @@ function platform(respond: (url: URL, init?: RequestInit) => Response | Promise<
 
 const ok = () => Response.json({ tenant_id: "tenant-1", business_id: "biz_1" });
 
-test("valid call resolves tenant from the dialed number and issues a scoped stream URL", async () => {
+
+test("incoming-call rate limit rejects excess calls before number lookup", async () => {
+  let incomingKeys: string[] = [];
+  const env = {
+    ...ENV,
+    INCOMING_RATE_LIMITER: { limit: async ({ key }: { key: string }) => { incomingKeys.push(key); return { success: false }; } },
+  } as IncomingEnv;
+  const p = platform(ok);
+  const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), env, p.fetchImpl);
+  assert.equal(res.status, 429);
+  assert.match(await res.text(), /<Hangup\\/>/);
+  assert.deepEqual(incomingKeys, [TO]);
+  assert.equal(p.calls.length, 0);
+});
+
+test("number-lookup rate limit rejects excess resolution requests", async () => {
+  const lookupKeys: string[] = [];
+  const env = {
+    ...ENV,
+    NUMBER_LOOKUP_RATE_LIMITER: { limit: async ({ key }: { key: string }) => { lookupKeys.push(key); return { success: false }; } },
+  } as IncomingEnv;
+  const p = platform(ok);
+  const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), env, p.fetchImpl);
+  assert.equal(res.status, 429);
+  assert.match(await res.text(), /<Hangup\\/>/);
+  assert.deepEqual(lookupKeys, [TO]);
+  assert.equal(p.calls.length, 0);
+});
+
+test("rate-limit binding errors fail closed without calling the platform", async () => {
+  const env = {
+    ...ENV,
+    INCOMING_RATE_LIMITER: { limit: async () => { throw new Error("binding unavailable"); } },
+  } as IncomingEnv;
+  const p = platform(ok);
+  const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), env, p.fetchImpl);
+  assert.equal(res.status, 200);
+  assert.match(await res.text(), /<Hangup\\/>/);
+  assert.equal(p.calls.length, 0);
+});
+\ntest("valid call resolves tenant from the dialed number and issues a scoped stream URL", async () => {
   const p = platform(ok);
   const res = await handleIncoming(await webhook({ CallSid: SID, From: "+15552223333", To: TO }), ENV, p.fetchImpl);
   assert.equal(res.status, 200);
