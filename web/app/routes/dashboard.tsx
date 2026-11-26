@@ -1,5 +1,5 @@
 import { Link, redirect, useNavigate, useRevalidator } from "react-router";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Route } from "./+types/dashboard";
 import { clearSessionCookie, readSessionApiKey } from "../.server/session";
 
@@ -195,15 +195,39 @@ function matchesQuery(values: Array<string | undefined>, query: string) {
 
 export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
   const [query, setQuery] = useState("");
+  const [conversationFilter, setConversationFilter] = useState("all");
+  const [conversationSort, setConversationSort] = useState<"updated" | "status" | "channel">("updated");
+  const searchRef = useRef<HTMLInputElement>(null);
   const revalidator = useRevalidator();
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const inField = event.target instanceof HTMLElement && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName);
+      if (event.key === "/" && !inField && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); searchRef.current?.focus(); }
+      if (event.key === "Escape" && document.activeElement === searchRef.current) { setQuery(""); searchRef.current?.blur(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const navigate = useNavigate();
   const filteredLeads = useMemo(() => loaderData.leads.filter((lead) =>
     matchesQuery([lead.id, lead.contact_id, lead.status], query)
   ), [loaderData.leads, query]);
-  const filteredConversations = useMemo(() => loaderData.conversations.filter((conversation) =>
-    matchesQuery([conversation.id, conversation.contact_id, conversation.channel, conversation.status, conversation.workflow_state], query)
-  ), [loaderData.conversations, query]);
+  const filteredConversations = useMemo(() => loaderData.conversations
+    .filter((conversation) => matchesQuery([conversation.id, conversation.contact_id, conversation.channel, conversation.status, conversation.workflow_state], query))
+    .filter((conversation) => {
+      const blocked = /blocked/i.test(conversation.workflow_state);
+      const closed = /(closed|resolved|complete)/i.test(conversation.status);
+      if (conversationFilter === "blocked") return blocked;
+      if (conversationFilter === "open") return !blocked && !closed;
+      if (conversationFilter === "closed") return closed;
+      return true;
+    })
+    .sort((a,b) => conversationSort === "updated" ? new Date(b.updated_at).getTime()-new Date(a.updated_at).getTime()
+      : conversationSort === "channel" ? a.channel.localeCompare(b.channel) : a.status.localeCompare(b.status)),
+    [loaderData.conversations, query, conversationFilter, conversationSort]);
   const channels = new Set(loaderData.conversations.map((conversation) => conversation.channel)).size;
+  const blockedCount = loaderData.conversations.filter((conversation) => /blocked/i.test(conversation.workflow_state)).length;
+  const plural = (n: number, singular: string, pluralForm = singular + "s") => n === 1 ? singular : pluralForm;
 
   return (
     <main className="workspace-shell workspace-dashboard">
@@ -236,8 +260,8 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
       ) : (
         <>
           <section className="workspace-stats dashboard-metrics" aria-label="Workspace data summary">
-            <article className="stat-card metric-leads"><span>Leads loaded</span><strong>{loaderData.leads.length}</strong><small>From up to 25 recent records</small></article>
-            <article className="stat-card metric-conversations"><span>Conversations loaded</span><strong>{loaderData.conversations.length}</strong><small>Most recent records · maximum 25</small></article>
+            <article className="stat-card metric-leads"><span>Leads loaded</span><strong>{loaderData.leads.length}</strong><small>{loaderData.leads.length} of 25 records</small><div className="stat-progress" role="progressbar" aria-label="Lead limit" aria-valuenow={loaderData.leads.length} aria-valuemin={0} aria-valuemax={25}><span style={{width: `${Math.min(loaderData.leads.length / 25 * 100, 100)}%`}} /></div></article>
+            <article className="stat-card metric-conversations"><span>Conversations loaded</span><strong>{loaderData.conversations.length}</strong><small>{loaderData.conversations.length} of 25 records</small><div className="stat-progress" role="progressbar" aria-label="Conversation limit" aria-valuenow={loaderData.conversations.length} aria-valuemin={0} aria-valuemax={25}><span style={{width: `${Math.min(loaderData.conversations.length / 25 * 100, 100)}%`}} /></div></article>
             <article className="stat-card metric-channels"><span>Channels represented</span><strong>{channels}</strong><small>From up to 25 recent conversations</small></article>
           </section>
 
@@ -249,7 +273,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
             </div>
             <label className="workspace-search">
               <span className="sr-only">Search leads and conversations</span>
-              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search leads and conversations…" />
+              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search leads and conversations…  /" ref={searchRef} aria-keyshortcuts="/" />
               {query && <button type="button" onClick={() => setQuery("")} aria-label="Clear search">Clear</button>}
             </label>
           </section>
@@ -262,7 +286,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
             {filteredLeads.length === 0 ? <div className="empty-state">
               <strong>{loaderData.leads.length === 0 ? "No leads yet" : "No matching leads"}</strong>
               <p>{loaderData.leads.length === 0 ? "New leads will appear here when they enter your workspace." : "Try a different search term or clear the search."}</p>
-              {loaderData.leads.length === 0 && <Link className="empty-state-link" to="/onboarding">Configure your workspace to connect a channel</Link>}
+              {loaderData.leads.length === 0 && <div className="lead-setup-checklist"><strong>Get started</strong><ol><li className={loaderData.connected ? "complete" : ""}><span>{loaderData.connected ? "✓" : "1"}</span> Create workspace</li><li className={channels > 0 ? "complete" : ""}><span>{channels > 0 ? "✓" : "2"}</span> <Link to="/onboarding">Connect a channel</Link></li><li><span>3</span> Receive first lead</li></ol></div>}
             </div> : (
               <div className="table-scroll"><table><thead><tr><th scope="col">Lead</th><th scope="col">Status</th><th scope="col">Priority score</th><th scope="col">Created</th></tr></thead>
                 <tbody>{filteredLeads.map((lead) => <tr key={lead.id}>
@@ -275,15 +299,17 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
             )}
           </section>
 
-          <section className="card data-card dashboard-data-card">
+          {blockedCount > 0 && <section className="attention-bar" aria-live="polite"><span aria-hidden="true">!</span><strong>{blockedCount} blocked {plural(blockedCount, "conversation")} need{blockedCount === 1 ? "s" : ""} review</strong><button type="button" onClick={() => setConversationFilter("blocked")}>Review blocked</button></section>}
+          <section id="recent-conversations" className="card data-card dashboard-data-card">
             <div className="data-heading">
               <div><p className="eyebrow">Receptionist inbox</p><h2>Recent conversations</h2><p className="data-subtitle">Latest conversations across connected channels.</p></div>
-              <div className="data-heading-actions"><span className="data-count data-count-label" aria-label={`${filteredConversations.length} matching conversations`}>{filteredConversations.length} conversations</span><Link className="view-all-link" to="/conversations">View all</Link></div>
+              <div className="data-heading-actions"><span className="data-count data-count-label" aria-label={`${filteredConversations.length} matching conversations`}>{filteredConversations.length} {plural(filteredConversations.length, "conversation")}</span><Link className="view-all-link" to="/conversations">View all</Link></div>
             </div>
             {filteredConversations.length === 0 ? <div className="empty-state">
               <strong>{loaderData.conversations.length === 0 ? "No conversations yet" : "No matching conversations"}</strong>
               <p>{loaderData.conversations.length === 0 ? "Customer conversations will appear here as your receptionist handles them." : "Try a different search term or clear the search."}</p>
             </div> : (
+              <div className="conversation-filter-bar" role="group" aria-label="Filter conversations">{(["all","open","blocked","closed"] as const).map((filter) => <button key={filter} type="button" className={conversationFilter === filter ? "filter-chip active" : "filter-chip"} aria-pressed={conversationFilter === filter} onClick={() => setConversationFilter(filter)}>{filter[0].toUpperCase()+filter.slice(1)}</button>)}<label className="sort-control">Sort <select value={conversationSort} onChange={e=>setConversationSort(e.target.value as typeof conversationSort)}><option value="updated">Last updated</option><option value="status">Status</option><option value="channel">Channel</option></select></label></div>
               <div className="table-scroll"><table><thead><tr><th scope="col">Conversation</th><th scope="col">Channel</th><th scope="col">Status</th><th scope="col">Last updated</th></tr></thead>
                 <tbody>{filteredConversations.map((conversation) => {
                   const isBlocked = /blocked/i.test(conversation.workflow_state);
