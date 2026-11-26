@@ -204,6 +204,8 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
           <button className="secondary-button refresh-button" type="button" onClick={() => revalidator.revalidate()} disabled={revalidator.state !== "idle"}>
             {revalidator.state !== "idle" ? "Refreshing…" : "Refresh data"}
           </button>
+          <Link className="secondary-button" to="/leads">Leads</Link>
+          <Link className="secondary-button" to="/conversations">Conversations</Link>
           <Link className="primary-button" to="/onboarding">Configure workspace</Link>
           <Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form>
         </div>}
