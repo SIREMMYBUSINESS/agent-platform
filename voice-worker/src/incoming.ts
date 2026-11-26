@@ -14,12 +14,12 @@ import {
 
 export type IncomingEnv = Pick<
   Env,
-  "PUBLIC_ORIGIN" | "PLATFORM_API_URL" | "PLATFORM_API_KEY" | "TWILIO_AUTH_TOKEN" | "STREAM_SECRET"
+  "PUBLIC_ORIGIN" | "PLATFORM_API_URL" | "PLATFORM_API_KEY" | "TWILIO_AUTH_TOKEN" | "STREAM_SECRET" | "INCOMING_RATE_LIMITER" | "NUMBER_LOOKUP_RATE_LIMITER"
 > & { TWILIO_ACCOUNT_SID?: string };
 
 const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
 const MAX_WEBHOOK_BYTES = 10_000;
-const LOOKUP_TIMEOUT_MS = 3000;
+const LOOKUP_TIMEOUT_MS = 3000;\nconst RATE_LIMITED = () =>\n  xml(`<Response><Say>We are receiving too many calls right now. Please try again later.</Say><Hangup/></Response>`);
 
 const xml = (body: string) =>
   new Response(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`, {
