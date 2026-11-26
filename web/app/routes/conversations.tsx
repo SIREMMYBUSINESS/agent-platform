@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, redirect } from "react-router";
+import { Link, redirect, useNavigation } from "react-router";
 import { readSessionApiKey } from "../.server/session";
 import type { Route } from "./+types/conversations";
 
@@ -54,6 +54,8 @@ function shortId(value: string) { return value.length > 16 ? value.slice(0, 8) +
 function readable(value: string) { return value.replaceAll("_", " ").replaceAll("-", " "); }
 
 export default function ConversationsRoute({ loaderData }: Route.ComponentProps) {
+  const navigation = useNavigation();
+  const isLoading = navigation.state === "loading";
   const [query, setQuery] = useState("");
   const [channel, setChannel] = useState("all");
   const [status, setStatus] = useState("all");
@@ -68,8 +70,9 @@ export default function ConversationsRoute({ loaderData }: Route.ComponentProps)
   const previous = Math.max(0, loaderData.offset - loaderData.limit);
   const next = loaderData.offset + loaderData.limit;
   return (
-    <main className="workspace-shell workspace-list-page">
+    <main className="workspace-shell workspace-list-page" aria-busy={isLoading}>
       <header className="workspace-heading"><div><p className="eyebrow">Tenant workspace · Inbox</p><h1>Conversations</h1><p className="workspace-description">Review recent customer conversations, channels, statuses, and workflow states.</p></div><div className="workspace-actions"><Link className="secondary-button" to="/dashboard">Overview</Link><Link className="secondary-button" to="/leads">Leads</Link></div></header>
+      {isLoading && <p className="submit-status" role="status">Loading conversations…</p>}
       {loaderData.error ? <section className="card workspace-credentials" role="alert"><h2>Inbox unavailable</h2><p>{loaderData.error}</p><Link className="primary-button" to="/dashboard">Return to workspace</Link></section> : <>
         <section className="card list-toolbar" aria-label="Conversation filters">
           <label className="workspace-search"><span className="sr-only">Search this page of conversations</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ID, contact, workflow…" /></label>
