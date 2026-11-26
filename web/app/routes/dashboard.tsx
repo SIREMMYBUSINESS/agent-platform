@@ -309,6 +309,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
               <strong>{loaderData.conversations.length === 0 ? "No conversations yet" : "No matching conversations"}</strong>
               <p>{loaderData.conversations.length === 0 ? "Customer conversations will appear here as your receptionist handles them." : "Try a different search term or clear the search."}</p>
             </div> : (
+              <>
               <div className="conversation-filter-bar" role="group" aria-label="Filter conversations">{(["all","open","blocked","closed"] as const).map((filter) => <button key={filter} type="button" className={conversationFilter === filter ? "filter-chip active" : "filter-chip"} aria-pressed={conversationFilter === filter} onClick={() => setConversationFilter(filter)}>{filter[0].toUpperCase()+filter.slice(1)}</button>)}<label className="sort-control">Sort <select value={conversationSort} onChange={e=>setConversationSort(e.target.value as typeof conversationSort)}><option value="updated">Last updated</option><option value="status">Status</option><option value="channel">Channel</option></select></label></div>
               <div className="table-scroll"><table><thead><tr><th scope="col">Conversation</th><th scope="col">Channel</th><th scope="col">Status</th><th scope="col">Last updated</th><th scope="col">Actions</th></tr></thead>
                 <tbody>{filteredConversations.map((conversation) => {
@@ -324,7 +325,8 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
                   </tr>;
                 })}</tbody>
               </table></div>
-            )}
+
+              </>            )}
           </section>
         </>
       )}
