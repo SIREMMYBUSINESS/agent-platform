@@ -1,4 +1,5 @@
-import { Form, Link, redirect } from "react-router";
+import { Form, Link, redirect, useRevalidator } from "react-router";
+import { useMemo, useState } from "react";
 import type { Route } from "./+types/dashboard";
 import { clearSessionCookie, readSessionApiKey } from "../.server/session";
 
@@ -171,41 +172,85 @@ export async function action({ request }: Route.ActionArgs) {
   });
 }
 
+function readableStatus(value: string) {
+  return value.replaceAll("_", " ").replaceAll("-", " ");
+}
+
+function matchesQuery(values: Array<string | undefined>, query: string) {
+  const normalized = query.trim().toLocaleLowerCase();
+  return !normalized || values.some((value) => value?.toLocaleLowerCase().includes(normalized));
+}
+
 export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
+  const [query, setQuery] = useState("");
+  const revalidator = useRevalidator();
+  const filteredLeads = useMemo(() => loaderData.leads.filter((lead) =>
+    matchesQuery([lead.id, lead.contact_id, lead.status], query)
+  ), [loaderData.leads, query]);
+  const filteredConversations = useMemo(() => loaderData.conversations.filter((conversation) =>
+    matchesQuery([conversation.id, conversation.contact_id, conversation.channel, conversation.status, conversation.workflow_state], query)
+  ), [loaderData.conversations, query]);
+  const channels = new Set(loaderData.conversations.map((conversation) => conversation.channel)).size;
+
   return (
-    <main className="workspace-shell">
-      <header className="workspace-heading">
+    <main className="workspace-shell workspace-dashboard">
+      <header className="workspace-heading dashboard-hero">
         <div>
-          <p className="eyebrow">Tenant workspace</p>
-          <h1>Your receptionist activity</h1>
-          <p className="workspace-description">Review recent leads and conversations. The API scopes each result to the tenant assigned to your key.</p>
+          <p className="eyebrow">Tenant workspace · Overview</p>
+          <h1>Good to have you back.</h1>
+          <p className="workspace-description">A live view of the latest leads and customer conversations available to this workspace.</p>
         </div>
-        {loaderData.connected && <div className="workspace-actions"><Link className="secondary-button" to="/onboarding">Configure receptionist</Link><Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form></div>}
+        {loaderData.connected && <div className="workspace-actions">
+          <button className="secondary-button refresh-button" type="button" onClick={() => revalidator.revalidate()} disabled={revalidator.state !== "idle"}>
+            {revalidator.state !== "idle" ? "Refreshing…" : "Refresh data"}
+          </button>
+          <Link className="primary-button" to="/onboarding">Configure workspace</Link>
+          <Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form>
+        </div>}
       </header>
 
       {!loaderData.connected ? (
         <section className="card workspace-credentials">
           <div className="section-heading">
-            <span className="number">1</span>
-            <div><h2>Workspace unavailable</h2><p>{loaderData.error || "Sign in to continue to your workspace."}</p></div>
+            <span className="number">!</span>
+            <div><h2>Workspace unavailable</h2><p>{loaderData.error || "Connect with your provisioned API key to load workspace data."}</p></div>
           </div>
           <Link className="primary-button" to="/login">Connect with API key</Link>
         </section>
       ) : (
         <>
-          <section className="workspace-stats" aria-label="Workspace summary">
-            <article className="stat-card"><span>Recent leads</span><strong>{loaderData.leads.length}</strong><small>Up to 25 most recent</small></article>
-            <article className="stat-card"><span>Conversations</span><strong>{loaderData.conversations.length}</strong><small>Up to 25 most recent</small></article>
-            <article className="stat-card"><span>Connection</span><strong className="connection-ready">Connected</strong><small>Platform API data loaded</small></article>
+          <section className="workspace-stats dashboard-metrics" aria-label="Workspace data summary">
+            <article className="stat-card metric-leads"><span>Leads loaded</span><strong>{loaderData.leads.length}</strong><small>Most recent records · maximum 25</small></article>
+            <article className="stat-card metric-conversations"><span>Conversations loaded</span><strong>{loaderData.conversations.length}</strong><small>Most recent records · maximum 25</small></article>
+            <article className="stat-card metric-channels"><span>Channels represented</span><strong>{channels}</strong><small>Across the loaded conversations</small></article>
           </section>
 
-          <section className="card data-card">
-            <div className="data-heading"><div><p className="eyebrow">Lead management</p><h2>Recent leads</h2></div><span className="data-count">{loaderData.leads.length}</span></div>
-            {loaderData.leads.length === 0 ? <p className="empty-state">No leads are available for this tenant yet.</p> : (
-              <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Status</th><th>Priority</th><th>Created</th></tr></thead>
-                <tbody>{loaderData.leads.map((lead) => <tr key={lead.id}>
+          <section className="dashboard-toolbar" aria-label="Workspace data controls">
+            <div>
+              <p className="eyebrow">Activity overview</p>
+              <h2>Recent activity</h2>
+              <p>Search the latest records by ID, contact, status, or channel.</p>
+            </div>
+            <label className="workspace-search">
+              <span className="sr-only">Search leads and conversations</span>
+              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search workspace…" />
+              {query && <button type="button" onClick={() => setQuery("")} aria-label="Clear search">Clear</button>}
+            </label>
+          </section>
+
+          <section className="card data-card dashboard-data-card">
+            <div className="data-heading">
+              <div><p className="eyebrow">Lead management</p><h2>Recent leads</h2><p className="data-subtitle">Latest leads assigned to this tenant.</p></div>
+              <span className="data-count" aria-label={`${filteredLeads.length} matching leads`}>{filteredLeads.length}</span>
+            </div>
+            {filteredLeads.length === 0 ? <div className="empty-state">
+              <strong>{loaderData.leads.length === 0 ? "No leads yet" : "No matching leads"}</strong>
+              <p>{loaderData.leads.length === 0 ? "New leads will appear here when they enter your workspace." : "Try a different search term or clear the search."}</p>
+            </div> : (
+              <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Status</th><th>Priority score</th><th>Created</th></tr></thead>
+                <tbody>{filteredLeads.map((lead) => <tr key={lead.id}>
                   <td><strong>{shortId(lead.id)}</strong><small>Contact {shortId(lead.contact_id)}</small></td>
-                  <td><span className="status-chip">{lead.status.replaceAll("_", " ")}</span></td>
+                  <td><span className="status-chip">{readableStatus(lead.status)}</span></td>
                   <td>{typeof lead.scores?.priority_score === "number" ? lead.scores.priority_score : "—"}</td>
                   <td>{formatDate(lead.created_at)}</td>
                 </tr>)}</tbody>
@@ -213,14 +258,20 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
             )}
           </section>
 
-          <section className="card data-card">
-            <div className="data-heading"><div><p className="eyebrow">Receptionist inbox</p><h2>Recent conversations</h2></div><span className="data-count">{loaderData.conversations.length}</span></div>
-            {loaderData.conversations.length === 0 ? <p className="empty-state">No conversations are available for this tenant yet.</p> : (
-              <div className="table-scroll"><table><thead><tr><th>Conversation</th><th>Channel</th><th>Status</th><th>Updated</th></tr></thead>
-                <tbody>{loaderData.conversations.map((conversation) => <tr key={conversation.id}>
+          <section className="card data-card dashboard-data-card">
+            <div className="data-heading">
+              <div><p className="eyebrow">Receptionist inbox</p><h2>Recent conversations</h2><p className="data-subtitle">Latest conversations across connected channels.</p></div>
+              <span className="data-count" aria-label={`${filteredConversations.length} matching conversations`}>{filteredConversations.length}</span>
+            </div>
+            {filteredConversations.length === 0 ? <div className="empty-state">
+              <strong>{loaderData.conversations.length === 0 ? "No conversations yet" : "No matching conversations"}</strong>
+              <p>{loaderData.conversations.length === 0 ? "Customer conversations will appear here as your receptionist handles them." : "Try a different search term or clear the search."}</p>
+            </div> : (
+              <div className="table-scroll"><table><thead><tr><th>Conversation</th><th>Channel</th><th>Status</th><th>Last updated</th></tr></thead>
+                <tbody>{filteredConversations.map((conversation) => <tr key={conversation.id}>
                   <td><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></td>
-                  <td>{conversation.channel}</td>
-                  <td><span className="status-chip">{conversation.status.replaceAll("_", " ")}</span><small>{conversation.workflow_state.replaceAll("_", " ")}</small></td>
+                  <td><span className="channel-label">{readableStatus(conversation.channel)}</span></td>
+                  <td><span className="status-chip">{readableStatus(conversation.status)}</span><small>{readableStatus(conversation.workflow_state)}</small></td>
                   <td>{formatDate(conversation.updated_at)}</td>
                 </tr>)}</tbody>
               </table></div>
@@ -228,7 +279,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
           </section>
         </>
       )}
-      <footer className="workspace-footer">For setup and provider checks, use onboarding. Outreach actions remain subject to provider readiness and tenant policy.</footer>
+      <footer className="workspace-footer">Data is tenant-scoped by the platform API. This view displays up to 25 recent records per section; use the platform's dedicated management tools for complete history and workflow actions.</footer>
     </main>
   );
 }
