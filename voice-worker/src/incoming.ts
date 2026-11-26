@@ -142,18 +142,7 @@ export async function handleIncoming(
     return new Response("Bad Request", { status: 400 });
   }
 
-  // Tenant scope comes only from the platform, keyed by the (signed) dialed number.
-  try {
-    const incomingLimit = await env.INCOMING_RATE_LIMITER.limit({ key: to });
-    if (!incomingLimit.success) return RATE_LIMITED();
-    const lookupLimit = await env.NUMBER_LOOKUP_RATE_LIMITER.limit({ key: to });
-    if (!lookupLimit.success) return RATE_LIMITED();
-  } catch (error) {
-    const name = error instanceof Error ? error.name : "unknown";
-    console.error(JSON.stringify({ event: "voice_rate_limit_unavailable", error_name: name }));
-    return UNAVAILABLE();
-  }
-
+  // Rate limits are applied to the signed destination number before platform resolution.
   const scope = await resolveNumber(env, to, fetchImpl);
   if (!scope) return UNAVAILABLE();
 
