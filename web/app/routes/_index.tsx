@@ -89,6 +89,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
   const [template, setTemplate] = useState<Template | null>(null);
   const [verticals, setVerticals] = useState<Array<{ vertical_id: string; display_name?: string }>>([]);
   const [selectedVerticalId, setSelectedVerticalId] = useState("");
+  const [loadingVerticals, setLoadingVerticals] = useState(false);
   const [businessName, setBusinessName] = useState("");
   const [timezone, setTimezone] = useState("UTC");
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -122,12 +123,16 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
   }
 
   async function loadVerticals() {
+    setLoadingVerticals(true);
     try {
       const choices = await api<{ items: Array<{ vertical_id: string; display_name?: string }> }>("/verticals");
       setVerticals(choices.items);
       setSelectedVerticalId((current) => current || choices.items.find((item) => item.vertical_id === "healthcare_dental")?.vertical_id || choices.items[0]?.vertical_id || "");
+      if (choices.items.length === 0) setNotice("No business templates are available for this workspace yet.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load business types.");
+    } finally {
+      setLoadingVerticals(false);
     }
   }
 
@@ -255,14 +260,16 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
       </section>
 
       {!loaderData.canOnboard ? <section className="card credentials-card">
-        <div className="section-heading"><span className="number">1</span><div><h3>{loaderData.authenticated ? loaderData.requiresOnboardRole ? "Onboarding permission needed" : "Onboarding unavailable" : "Sign in to your workspace"}</h3><p>{loaderData.accessError || "Use your workspace session to continue onboarding."}</p></div></div>
+        <div className="section-heading"><span className="number">1</span><div><h3>{loaderData.authenticated ? loaderData.requiresOnboardRole ? "Onboarding permission needed" : "Onboarding unavailable" : "Connect to your workspace"}</h3><p>{loaderData.accessError || "Use your workspace session to continue onboarding."}</p></div></div>
         {loaderData.authenticated
-          ? loaderData.requiresOnboardRole && <p className="helper">Your active sign-in is recognized. The administrator can add the <code>business_onboarder</code> role to the same tenant key.</p>
+          ? loaderData.requiresOnboardRole && <p className="helper">Your API-key session is valid. A workspace owner can add the <code>business_onboarder</code> permission to this tenant key.</p>
           : <Link className="primary-button" to="/login?returnTo=%2Fonboarding">Connect with API key</Link>}
       </section> : <>
         <section className="card credentials-card">
           <div className="section-heading"><span className="number">1</span><div><h3>Workspace connected</h3><p>Onboarding uses your encrypted workspace session.</p></div></div>
           <p className="helper">Provider credentials belong in the protected secret manager, not this page.</p>
+          {loadingVerticals && <p className="notice" role="status">Loading available business types…</p>}
+          {notice && !template && !loadingVerticals && <p className="notice" role="status">{notice}</p>}
           <div className="field-grid">
             <label>Business type
               <select value={selectedVerticalId} onChange={(event) => setSelectedVerticalId(event.target.value)} disabled={busy || verticals.length === 0}>
@@ -319,9 +326,9 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         </section>
 
         <section className="card">
-          <div className="section-heading"><span className="number">6</span><div><h3>Customer messages</h3><p>Use variables such as <code>{"{{contact_name}}"}</code> and <code>{"{{clinic_name}}"}</code>.</p></div></div>
+          <div className="section-heading"><span className="number">6</span><div><h3>Customer messages</h3><p>Use the supported variables provided by the selected business template.</p></div></div>
           <label>Greeting<textarea value={messages.greeting || ""} onChange={(event) => setMessages((current) => ({ ...current, greeting: event.target.value }))} rows={2} /></label>
-          <label>Recall outreach<textarea value={messages.outreach || ""} onChange={(event) => setMessages((current) => ({ ...current, outreach: event.target.value }))} rows={3} /></label>
+          <label>Follow-up message<textarea value={messages.outreach || ""} onChange={(event) => setMessages((current) => ({ ...current, outreach: event.target.value }))} rows={3} /></label>
         </section>
 
         <section className="card">
