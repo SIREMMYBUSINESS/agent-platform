@@ -10,6 +10,8 @@ const ENV: IncomingEnv = {
   PLATFORM_API_KEY: "svc-key",
   TWILIO_AUTH_TOKEN: "twilio-token",
   STREAM_SECRET: "stream-secret",
+  INCOMING_RATE_LIMITER: { limit: async () => ({ success: true }) },
+  NUMBER_LOOKUP_RATE_LIMITER: { limit: async () => ({ success: true }) },
 };
 const SID = "CA" + "c".repeat(32);
 const TO = "+15550001111";
@@ -62,7 +64,7 @@ test("incoming-call rate limit rejects excess calls before number lookup", async
   const p = platform(ok);
   const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), env, p.fetchImpl);
   assert.equal(res.status, 429);
-  assert.match(await res.text(), /<Hangup\\/>/);
+  assert.match(await res.text(), /<Hangup\/>/);
   assert.deepEqual(incomingKeys, [TO]);
   assert.equal(p.calls.length, 0);
 });
@@ -76,7 +78,7 @@ test("number-lookup rate limit rejects excess resolution requests", async () => 
   const p = platform(ok);
   const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), env, p.fetchImpl);
   assert.equal(res.status, 429);
-  assert.match(await res.text(), /<Hangup\\/>/);
+  assert.match(await res.text(), /<Hangup\/>/);
   assert.deepEqual(lookupKeys, [TO]);
   assert.equal(p.calls.length, 0);
 });
@@ -89,10 +91,11 @@ test("rate-limit binding errors fail closed without calling the platform", async
   const p = platform(ok);
   const res = await handleIncoming(await webhook({ CallSid: SID, To: TO }), env, p.fetchImpl);
   assert.equal(res.status, 200);
-  assert.match(await res.text(), /<Hangup\\/>/);
+  assert.match(await res.text(), /<Hangup\/>/);
   assert.equal(p.calls.length, 0);
 });
-\ntest("valid call resolves tenant from the dialed number and issues a scoped stream URL", async () => {
+
+test("valid call resolves tenant from the dialed number and issues a scoped stream URL", async () => {
   const p = platform(ok);
   const res = await handleIncoming(await webhook({ CallSid: SID, From: "+15552223333", To: TO }), ENV, p.fetchImpl);
   assert.equal(res.status, 200);
