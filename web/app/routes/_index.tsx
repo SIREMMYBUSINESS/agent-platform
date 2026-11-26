@@ -22,6 +22,16 @@ type ProviderSelection = { sms: string; calendar: string; email?: string; crm?: 
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
+const ALLOWED_TEMPLATE_VARIABLES = new Set(["contact_name", "clinic_name", "service_type", "slot_1", "slot_2", "slot_3", "appointment_time", "reason", "insurance_provider"]);
+function validateMessageTemplate(template: string): string[] {
+  const variables = [...template.matchAll(/{{\s*([a-z][a-z0-9_]*)\s*}}/g)].map((match) => match[1]);
+  const residue = template.replace(/{{\s*[a-z][a-z0-9_]*\s*}}/g, "");
+  const errors: string[] = [];
+  if (residue.includes("{{") || residue.includes("}}")) errors.push("Malformed template variable syntax.");
+  const unsupported = [...new Set(variables.filter((name) => !ALLOWED_TEMPLATE_VARIABLES.has(name)))];
+  if (unsupported.length) errors.push("Unsupported variable(s): " + unsupported.map((name) => "{{" + name + "}}").join(", "));
+  return errors;
+}
 
 class PlatformApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -105,12 +115,15 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
   const [services, setServices] = useState<Service[]>([]);
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [providerSelection, setProviderSelection] = useState<ProviderSelection>({ sms: "twilio", calendar: "google" });
-  const [staff, setStaff] = useState<Staff[]>([{ display_name: "", email: "" }]);
+  const [staff, setStaff] = useState<Staff[]>([]);
   const [businessId, setBusinessId] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const readyLabel = useMemo(() => health?.ready ? "Ready for go-live" : "Setup needs attention", [health]);
+  const greetingErrors = validateMessageTemplate(messages.greeting || "");
+  const outreachErrors = validateMessageTemplate(messages.outreach || "");
+  const templateErrors = [...greetingErrors, ...outreachErrors];
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetch("/api/onboarding", {
@@ -337,8 +350,11 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
 
         <section className="card">
           <div className="section-heading"><span className="number">6</span><div><h3>Customer messages</h3><p>Use the supported variables provided by the selected business template.</p></div></div>
-          <label>Greeting<textarea value={messages.greeting || ""} onChange={(event) => setMessages((current) => ({ ...current, greeting: event.target.value }))} rows={2} /></label>
-          <label>Follow-up message<textarea value={messages.outreach || ""} onChange={(event) => setMessages((current) => ({ ...current, outreach: event.target.value }))} rows={3} /></label>
+          <label>Greeting<textarea spellCheck={false} aria-invalid={greetingErrors.length > 0} value={messages.greeting || ""} onChange={(event) => setMessages((current) => ({ ...current, greeting: event.target.value }))} rows={2} />
+            {greetingErrors.map((error) => <p className="field-error" role="alert" key={error}>{error}</p>)}</label>
+          <label>Follow-up message<textarea spellCheck={false} aria-invalid={outreachErrors.length > 0} value={messages.outreach || ""} onChange={(event) => setMessages((current) => ({ ...current, outreach: event.target.value }))} rows={3} />
+            {outreachErrors.map((error) => <p className="field-error" role="alert" key={error}>{error}</p>)}
+            {templateErrors.length === 0 && <p className="helper">Template variables pass validation.</p>}</label>
         </section>
 
         <section className="card">
@@ -354,17 +370,19 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
 
         <section className="card launch-card">
           <div className="section-heading"><span className="number">8</span><div><h3>Health check and launch</h3><p>Launch stays blocked until region policy, staff, hours, services, and required provider configuration are ready.</p></div></div>
-          {!businessId ? <button className="primary-button" disabled={busy} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create business and run health check"}</button> : <>
+          {!businessId ? <button className="primary-button" disabled={busy || templateErrors.length > 0} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create business and run health check"}</button> : <>
             <p className="business-id">Business ID <code>{businessId}</code></p>
             <button className="secondary-button" disabled={busy} onClick={runHealthCheck}>Refresh health check</button>
-            {health && <div className="health-panel"><h4>{readyLabel}</h4>{Object.entries(health.checks).map(([name, passed]) => <div className="health-row" key={name}><span>{name.replaceAll("_", " ")}</span><strong className={passed ? "pass" : "fail"}>{passed ? "Ready" : "Needs setup"}</strong></div>)}</div>}
+            {health && <div className="health-panel"><h4>{readyLabel}</h4>{Object.entries(health.checks).map(([name, passed]) => <div className="health-row" key={name}><span>{name.replaceAll("_", " ")}</span><strong className={passed ? "pass" : "fail"}>{passed ? "Ready" : "Needs setup"}</strong></div>)}
+              {!health.ready && <div className="health-blockers" role="status"><strong>Blocking checks</strong><ul>{Object.entries(health.checks).filter(([, passed]) => !passed).map(([name]) => <li key={name}>{name.replaceAll("_", " ")}</li>)}</ul></div>}
+            </div>}
             <button className="primary-button" disabled={busy || !health?.ready} onClick={goLive}>Bring business online</button>
           </>}
           {notice && <p className="notice" role="status">{notice}</p>}
         </section>
       </>}
       </>}
-      <footer className="onboarding-footer">Customer outreach must follow applicable consent and suppression policies. Configure human handoff for urgent or sensitive requests; automated agents should not replace qualified professional advice.</footer>
+
     </main>
   );
 }
