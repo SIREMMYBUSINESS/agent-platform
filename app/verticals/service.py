@@ -17,7 +17,7 @@ from app.schemas import (CampaignCreateRequest, CampaignEnrollRequest,
                          CampaignMessageTemplate, CampaignStepInput)
 from app.services.receptionist_intake_service import ReceptionistIntakeService
 from app.verticals.schemas import DentalOnboardingRequest
-from app.verticals.templates import get_vertical_template, render_message
+from app.verticals.templates import get_vertical_template, list_vertical_templates, render_message
 
 
 class VerticalAuthorizationError(PermissionError):
@@ -64,7 +64,7 @@ class VerticalOnboardingService:
             "display_name": template.display_name,
             "required_providers": list(template.required_providers),
             "optional_providers": list(template.optional_providers),
-        } for template in __import__("app.verticals.templates", fromlist=["list_vertical_templates"]).list_vertical_templates()]
+        } for template in list_vertical_templates()]
 
     def template(self, principal: AuthenticatedPrincipal, vertical_id: str) -> dict:
         self._require(principal, "business_onboarder")
@@ -406,7 +406,7 @@ class VerticalOnboardingService:
             ticket = self._escalations.create_ticket(
                 uow=uow, tenant_id=tenant.id, business_id=business.id,
                 contact_id=contact.id, conversation_id=conversation.id,
-                reason=f"dental_intake:{critical}", priority="urgent",
+                reason=f"vertical_intake:{critical}", priority="urgent",
             )
             session = uow.verticals.save_answer(
                 tenant_id=tenant.id, business_id=business.id, session_id=session.id,
