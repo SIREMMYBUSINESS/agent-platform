@@ -81,6 +81,14 @@ export async function loader({ request, context }: Route.LoaderArgs) {
   }
 }
 
+export function meta() {
+  return [
+    { title: "Workspace setup | Staging | Agent Platform" },
+    { name: "description", content: "Configure a tenant workspace and review staging readiness checks in Agent Platform." },
+    { name: "robots", content: "noindex, nofollow" },
+  ];
+}
+
 export function headers() {
   return { "Cache-Control": "private, no-store, max-age=0" };
 }
