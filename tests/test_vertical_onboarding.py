@@ -97,6 +97,18 @@ def test_catalog_exposes_all_eight_supported_business_types():
     }
 
 
+def test_authenticated_catalog_returns_all_eight_verticals():
+    service = VerticalOnboardingService(uow_factory=lambda: None)
+    catalog = service.catalog(principal("business_onboarder"))
+    assert len(catalog) == 8
+    assert {item["vertical_id"] for item in catalog} == {
+        "real_estate", "healthcare_dental", "healthcare_medical", "legal_services",
+        "home_services", "automotive", "hospitality", "retail",
+    }
+    with pytest.raises(PermissionError):
+        service.catalog(principal("workflow_executor"))
+
+
 def test_non_dental_templates_do_not_inherit_dental_escalation_rules():
     templates = {item.vertical_id: item for item in list_vertical_templates()}
     for vertical_id in (
