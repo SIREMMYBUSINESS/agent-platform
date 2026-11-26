@@ -18,7 +18,7 @@ from app.integrations.provider_support import MappingTenantConfig
 from app.verticals.outreach import DentalOutreachService
 from app.verticals.schemas import DentalOnboardingRequest
 from app.verticals.service import VerticalOnboardingService
-from app.verticals.templates import DENTAL_CLINIC, render_message
+from app.verticals.templates import DENTAL_CLINIC, list_vertical_templates, render_message
 
 
 @pytest.fixture
@@ -88,6 +88,23 @@ def add_contact(engine, business_id, *, last_visit_at=None):
         ConsentService().record(uow, tenant_id="tenant-dental", business_id=business_id,
             contact_id="patient-1", channel="sms", status="granted",
             source="trusted_patient_permission")
+
+
+def test_catalog_exposes_all_eight_supported_business_types():
+    assert {item.vertical_id for item in list_vertical_templates()} == {
+        "real_estate", "healthcare_dental", "healthcare_medical", "legal_services",
+        "home_services", "automotive", "hospitality", "retail",
+    }
+
+
+def test_non_dental_templates_do_not_inherit_dental_escalation_rules():
+    templates = {item.vertical_id: item for item in list_vertical_templates()}
+    for vertical_id in (
+        "real_estate", "healthcare_medical", "legal_services", "home_services",
+        "automotive", "hospitality", "retail",
+    ):
+        assert templates[vertical_id].escalation_rules == {}
+        assert templates[vertical_id].display_name
 
 
 def test_dental_template_has_sequential_questions_services_and_metrics():
