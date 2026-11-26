@@ -181,7 +181,7 @@ def create_staging_owner_session(
         if user.status not in {"invited", "active"}:
             _deny_staging_owner_session("user_ineligible_status")
         tenant_memberships = [
-            item for item in uow.workspace_identity.list_login_memberships(user.id)
+            item for item in uow.workspace_identity.list_memberships_for_user(user.id)
             if item.tenant_id == body.tenant_id
         ]
         if not tenant_memberships:
