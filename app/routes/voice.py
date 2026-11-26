@@ -25,10 +25,16 @@ class OutboundCallRequest(BaseModel):
 
 
 class ResolveNumberResponse(BaseModel):
-    """Server-resolved scope for a dialed number; nothing else is returned."""
+    """Server-resolved scope and inbound budget for a dialed number."""
     model_config = ConfigDict(extra="forbid")
     tenant_id: str
     business_id: str
+    voice_calls_per_minute: int = Field(ge=1, le=60)
+
+
+class VoiceRateLimitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    calls_per_minute: int = Field(ge=1, le=60)
 
 
 def get_voice_number_resolver(
@@ -83,7 +89,30 @@ def resolve_number(
         resolved = resolver.resolve(to)
     except VoiceNumberNotFound:
         raise HTTPException(404, "Voice number is not provisioned") from None
-    return ResolveNumberResponse(tenant_id=resolved.tenant_id, business_id=resolved.business_id)
+    return ResolveNumberResponse(
+        tenant_id=resolved.tenant_id, business_id=resolved.business_id,
+        voice_calls_per_minute=resolved.voice_calls_per_minute,
+    )
+
+
+@router.put("/businesses/{business_id}/voice-rate-limit")
+def set_business_voice_rate_limit(
+    business_id: str,
+    request: VoiceRateLimitRequest,
+    principal: AuthenticatedPrincipal = Depends(require_role("business_onboarder")),
+) -> dict[str, int | str]:
+    """Set the tenant-scoped per-business inbound call budget."""
+    with UnitOfWork(session_factory) as uow:
+        business = uow.businesses.get(
+            tenant_id=principal.tenant_id, business_id=business_id,
+        )
+        if business is None:
+            raise HTTPException(404, "Business not found")
+        business.voice_calls_per_minute = request.calls_per_minute
+    return {
+        "business_id": business_id,
+        "voice_calls_per_minute": request.calls_per_minute,
+    }
 
 
 __all__ = ["get_voice_delivery_service", "get_voice_number_resolver", "router"]

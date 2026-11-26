@@ -236,6 +236,8 @@ class Business(SQLModel, table=True):
         ),
         UniqueConstraint("tenant_id", "id", name="uq_businesses_tenant_id"),
         Index("ix_businesses_tenant_id", "tenant_id", "id"),
+        CheckConstraint("voice_calls_per_minute >= 1 AND voice_calls_per_minute <= 60",
+                        name="ck_businesses_voice_calls_per_minute"),
     )
 
     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
@@ -248,6 +250,7 @@ class Business(SQLModel, table=True):
     jurisdiction_code: str | None = Field(default=None, max_length=8)
     timezone: str = "UTC"
     default_language: str = "en"
+    voice_calls_per_minute: int = Field(default=10, ge=1, le=60)
     created_at: datetime = Field(
         default_factory=utc_now,
         sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
