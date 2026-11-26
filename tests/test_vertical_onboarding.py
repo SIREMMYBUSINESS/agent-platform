@@ -124,6 +124,26 @@ def test_template_rendering_only_accepts_declared_variables():
         render_message("{{unknown}}", {"unknown": "value"})
 
 
+def test_real_estate_onboarding_persists_selected_vertical(vertical_store):
+    service = VerticalOnboardingService(uow_factory=uow_factory(vertical_store))
+    request = onboarding_request(
+        business_name="Harbor Property Group",
+        vertical_id="real_estate",
+        staff=[{"display_name": "Alex Agent"}],
+    )
+    result = service.onboard(principal("business_onboarder"), request)
+    with UnitOfWork(lambda: Session(vertical_store)) as uow:
+        business = uow.businesses.get(
+            tenant_id="tenant-dental", business_id=result["business_id"],
+        )
+        profile = uow.verticals.profile(
+            tenant_id="tenant-dental", business_id=result["business_id"],
+        )
+        assert business.vertical == "real_estate"
+        assert profile.vertical_id == "real_estate"
+        assert profile.config["intake_questions"][0]["key"] == "service_type"
+
+
 def test_onboarding_persists_region_scoped_services_hours_staff_and_health(vertical_store):
     resolver = MappingTenantConfig({("tenant-dental", "unused"): {}})
     service, business_id = create_business(vertical_store, resolver=resolver)
