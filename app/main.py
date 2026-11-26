@@ -208,10 +208,9 @@ async def campaign_reply_not_found_handler(request: Request, exc: CampaignReplyN
 @app.get("/diagnostics/staging-owner-auth", include_in_schema=False)
 def staging_owner_auth_diagnostic():
     """TEMPORARY: expose only four allowlisted, non-secret staging diagnostics."""
-    owner_route_registered = any(
-        route.path == "/auth/staging-owner-session"
-        and "POST" in getattr(route, "methods", set())
-        for route in app.routes
+    owner_route_registered = (
+        "post"
+        in app.openapi().get("paths", {}).get("/auth/staging-owner-session", {})
     )
     revision = (
         os.environ.get("RENDER_GIT_COMMIT")
