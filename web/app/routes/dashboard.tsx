@@ -1,4 +1,4 @@
-import { Form, Link, redirect, useRevalidator } from "react-router";
+import { Link, redirect, useNavigate, useRevalidator } from "react-router";
 import { useMemo, useState } from "react";
 import type { Route } from "./+types/dashboard";
 import { clearSessionCookie, readSessionApiKey } from "../.server/session";
@@ -196,6 +196,7 @@ function matchesQuery(values: Array<string | undefined>, query: string) {
 export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
   const [query, setQuery] = useState("");
   const revalidator = useRevalidator();
+  const navigate = useNavigate();
   const filteredLeads = useMemo(() => loaderData.leads.filter((lead) =>
     matchesQuery([lead.id, lead.contact_id, lead.status], query)
   ), [loaderData.leads, query]);
@@ -287,8 +288,8 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
                 <tbody>{filteredConversations.map((conversation) => {
                   const isBlocked = /blocked/i.test(conversation.workflow_state);
                   const conversationUrl = `/conversations?search=${encodeURIComponent(conversation.id)}`;
-                  return <tr key={conversation.id}>
-                    <td><Link className="dashboard-row-link" to={conversationUrl} aria-label={`Open conversation ${shortId(conversation.id)}`}><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></Link></td>
+                  return <tr key={conversation.id} tabIndex={0} aria-label={`Open conversation ${shortId(conversation.id)}`} onClick={() => navigate(conversationUrl)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); navigate(conversationUrl); } }}>
+                    <td><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></td>
                     <td><span className="channel-label">{readableStatus(conversation.channel)}</span></td>
                     <td>{isBlocked
                       ? <span className="status-chip status-chip-blocked" title="This conversation is blocked in its workflow and needs a team member to review it.">Blocked: needs attention</span>
