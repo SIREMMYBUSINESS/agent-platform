@@ -267,8 +267,9 @@ def test_staging_owner_bypass_is_unavailable_in_production(passwordless_client, 
     assert response.status_code == 404
 
 
-
-def configure_staging_owner_bypass(monkeypatch, tenant_id: str, email: str = "owner@example.test") -> str:
+def configure_staging_owner_bypass(
+    monkeypatch, tenant_id: str, email: str = "owner@example.test",
+) -> str:
     secret = "test-only-high-entropy-secret"
     monkeypatch.setattr("app.routes.auth.settings.environment", "staging")
     monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_enabled", True)
@@ -278,7 +279,9 @@ def configure_staging_owner_bypass(monkeypatch, tenant_id: str, email: str = "ow
     return secret
 
 
-def assert_staging_owner_denial_is_generic(response, caplog, category: str, secret: str, *private_values: str):
+def assert_staging_owner_denial_is_generic(
+    response, caplog, category: str, secret: str, *private_values: str,
+):
     assert response.status_code == 403
     assert response.json() == {"detail": "Staging workspace access is unavailable"}
     for value in (*private_values, secret):
@@ -352,7 +355,9 @@ def test_staging_owner_bypass_logs_missing_user_without_disclosing_email(
     )
 
 
-def test_staging_owner_bypass_logs_ineligible_user_status(passwordless_client, monkeypatch, caplog):
+def test_staging_owner_bypass_logs_ineligible_user_status(
+    passwordless_client, monkeypatch, caplog,
+):
     client, engine, _mailer, tenant_id, user_id, *_ = passwordless_client
     with Session(engine) as session:
         session.get(WorkspaceUser, user_id).status = "suspended"
@@ -370,7 +375,9 @@ def test_staging_owner_bypass_logs_ineligible_user_status(passwordless_client, m
     )
 
 
-def test_staging_owner_bypass_logs_missing_tenant_membership(passwordless_client, monkeypatch, caplog):
+def test_staging_owner_bypass_logs_missing_tenant_membership(
+    passwordless_client, monkeypatch, caplog,
+):
     client, _engine, _mailer, _tenant_id, *_ = passwordless_client
     configured_tenant = "configured-but-unassigned-tenant"
     secret = configure_staging_owner_bypass(monkeypatch, configured_tenant)
@@ -404,7 +411,9 @@ def test_staging_owner_bypass_logs_missing_owner_role(passwordless_client, monke
     )
 
 
-def test_staging_owner_bypass_logs_ineligible_owner_membership(passwordless_client, monkeypatch, caplog):
+def test_staging_owner_bypass_logs_ineligible_owner_membership(
+    passwordless_client, monkeypatch, caplog,
+):
     client, engine, _mailer, tenant_id, _user_id, membership_id = passwordless_client
     with Session(engine) as session:
         session.get(TenantMembership, membership_id).status = "suspended"
@@ -423,7 +432,9 @@ def test_staging_owner_bypass_logs_ineligible_owner_membership(passwordless_clie
     )
 
 
-def test_staging_owner_bypass_logs_missing_identity_configuration(passwordless_client, monkeypatch, caplog):
+def test_staging_owner_bypass_logs_missing_identity_configuration(
+    passwordless_client, monkeypatch, caplog,
+):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
     monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_email", None)
