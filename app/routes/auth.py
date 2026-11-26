@@ -7,6 +7,7 @@ import logging
 import re
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import NoReturn
 from urllib.parse import quote
 from uuid import UUID
 
@@ -136,6 +137,17 @@ def request_magic_link(
     return {"message": GENERIC_SENT_MESSAGE}
 
 
+def _deny_staging_owner_session(category: str) -> NoReturn:
+    """Log a bounded internal denial category without exposing identity state to callers."""
+    logger.warning("staging owner session denied", extra={
+        "component": "workspace_auth",
+        "operation": "staging_owner_session",
+        "outcome": "denied",
+        "denial_category": category,
+    })
+    raise HTTPException(403, "Staging workspace access is unavailable")
+
+
 @router.post("/staging-owner-session")
 def create_staging_owner_session(
     body: StagingAuthBypassRequest,
@@ -152,30 +164,34 @@ def create_staging_owner_session(
         or not secrets.compare_digest(staging_access_code, expected_code)
     ):
         raise HTTPException(401, "Staging access code is invalid")
-    if (
-        not settings.staging_auth_bypass_email
-        or not settings.staging_auth_bypass_tenant_id
-        or body.email != settings.staging_auth_bypass_email
-        or body.tenant_id != settings.staging_auth_bypass_tenant_id
-    ):
-        raise HTTPException(403, "Staging workspace access is unavailable")
+    if not settings.staging_auth_bypass_email or not settings.staging_auth_bypass_tenant_id:
+        _deny_staging_owner_session("identity_configuration_missing")
+    if body.email != settings.staging_auth_bypass_email:
+        _deny_staging_owner_session("configured_email_mismatch")
+    if body.tenant_id != settings.staging_auth_bypass_tenant_id:
+        _deny_staging_owner_session("configured_tenant_mismatch")
 
     now = _now()
     raw_session_token = _token("ws")
     session_expires_at = now + timedelta(seconds=settings.auth_session_ttl_seconds)
     with uow_factory() as uow:
         user = uow.workspace_identity.get_user_by_email(body.email)
-        if user is None or user.status not in {"invited", "active"}:
-            raise HTTPException(403, "Staging workspace access is unavailable")
-        membership = next(
-            (
-                item for item in uow.workspace_identity.list_login_memberships(user.id)
-                if item.tenant_id == body.tenant_id and item.role == "owner"
-            ),
-            None,
-        )
-        if membership is None or membership.status not in {"invited", "active"}:
-            raise HTTPException(403, "Staging workspace access is unavailable")
+        if user is None:
+            _deny_staging_owner_session("user_not_found")
+        if user.status not in {"invited", "active"}:
+            _deny_staging_owner_session("user_ineligible_status")
+        tenant_memberships = [
+            item for item in uow.workspace_identity.list_memberships_for_user(user.id)
+            if item.tenant_id == body.tenant_id
+        ]
+        if not tenant_memberships:
+            _deny_staging_owner_session("tenant_membership_not_found")
+        owner_memberships = [item for item in tenant_memberships if item.role == "owner"]
+        if not owner_memberships:
+            _deny_staging_owner_session("owner_role_not_found")
+        membership = owner_memberships[0]
+        if membership.status not in {"invited", "active"}:
+            _deny_staging_owner_session("owner_membership_ineligible_status")
         user.status = "active"
         user.email_verified_at = user.email_verified_at or now
         if membership.status == "invited":
