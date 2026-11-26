@@ -17,8 +17,11 @@
   ],
   "vars": {
     "PUBLIC_ORIGIN": "https://agent-platform-voice.olaoluwaemmanuel6.workers.dev",
-    "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com"
+    "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com",
+    "TWILIO_ACCOUNT_SID": "AC30874b7dc66b3a0e5f177173d22eabce",
+    "CF_ACCOUNT_ID": "9253289fc33ead6f56f6e19f26ee940b",
+    "AI_GATEWAY_NAME": "voice-staging"
   }
   // Runtime secrets are provisioned separately in Cloudflare:
-  // PLATFORM_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_ACCOUNT_SID, STREAM_SECRET
+  // PLATFORM_API_KEY, TWILIO_AUTH_TOKEN, STREAM_SECRET, AI_GATEWAY_AUTH_TOKEN
 }
