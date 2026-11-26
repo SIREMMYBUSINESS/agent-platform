@@ -12,5 +12,6 @@ export interface Env {
   PLATFORM_API_KEY: string;
   TWILIO_AUTH_TOKEN: string;
   STREAM_SECRET: string;
-  INCOMING_RATE_LIMITER: RateLimiter;\n  NUMBER_LOOKUP_RATE_LIMITER: RateLimiter;
+  INCOMING_RATE_LIMITER: RateLimiter;
+  NUMBER_LOOKUP_RATE_LIMITER: RateLimiter;
 }
