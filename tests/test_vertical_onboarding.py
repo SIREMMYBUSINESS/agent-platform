@@ -18,7 +18,7 @@ from app.integrations.provider_support import MappingTenantConfig
 from app.verticals.outreach import DentalOutreachService
 from app.verticals.schemas import DentalOnboardingRequest
 from app.verticals.service import VerticalOnboardingService
-from app.verticals.templates import DENTAL_CLINIC, render_message
+from app.verticals.templates import DENTAL_CLINIC, list_vertical_templates, render_message
 
 
 @pytest.fixture
@@ -90,6 +90,35 @@ def add_contact(engine, business_id, *, last_visit_at=None):
             source="trusted_patient_permission")
 
 
+def test_catalog_exposes_all_eight_supported_business_types():
+    assert {item.vertical_id for item in list_vertical_templates()} == {
+        "real_estate", "healthcare_dental", "healthcare_medical", "legal_services",
+        "home_services", "automotive", "hospitality", "retail",
+    }
+
+
+def test_authenticated_catalog_returns_all_eight_verticals():
+    service = VerticalOnboardingService(uow_factory=lambda: None)
+    catalog = service.catalog(principal("business_onboarder"))
+    assert len(catalog) == 8
+    assert {item["vertical_id"] for item in catalog} == {
+        "real_estate", "healthcare_dental", "healthcare_medical", "legal_services",
+        "home_services", "automotive", "hospitality", "retail",
+    }
+    with pytest.raises(PermissionError):
+        service.catalog(principal("workflow_executor"))
+
+
+def test_non_dental_templates_do_not_inherit_dental_escalation_rules():
+    templates = {item.vertical_id: item for item in list_vertical_templates()}
+    for vertical_id in (
+        "real_estate", "healthcare_medical", "legal_services", "home_services",
+        "automotive", "hospitality", "retail",
+    ):
+        assert templates[vertical_id].escalation_rules == {}
+        assert templates[vertical_id].display_name
+
+
 def test_dental_template_has_sequential_questions_services_and_metrics():
     assert DENTAL_CLINIC.vertical_id == "healthcare_dental"
     assert [question.key for question in DENTAL_CLINIC.intake_questions] == [
@@ -105,6 +134,26 @@ def test_template_rendering_only_accepts_declared_variables():
     assert text == "Hello Jordan, welcome to Harbor Dental."
     with pytest.raises(ValueError):
         render_message("{{unknown}}", {"unknown": "value"})
+
+
+def test_real_estate_onboarding_persists_selected_vertical(vertical_store):
+    service = VerticalOnboardingService(uow_factory=uow_factory(vertical_store))
+    request = onboarding_request(
+        business_name="Harbor Property Group",
+        vertical_id="real_estate",
+        staff=[{"display_name": "Alex Agent"}],
+    )
+    result = service.onboard(principal("business_onboarder"), request)
+    with UnitOfWork(lambda: Session(vertical_store)) as uow:
+        business = uow.businesses.get(
+            tenant_id="tenant-dental", business_id=result["business_id"],
+        )
+        profile = uow.verticals.profile(
+            tenant_id="tenant-dental", business_id=result["business_id"],
+        )
+        assert business.vertical == "real_estate"
+        assert profile.vertical_id == "real_estate"
+        assert profile.config["intake_questions"][0]["key"] == "service_type"
 
 
 def test_onboarding_persists_region_scoped_services_hours_staff_and_health(vertical_store):

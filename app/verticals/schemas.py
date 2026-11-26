@@ -40,9 +40,9 @@ class StaffInput(BaseModel):
     email: str | None = Field(default=None, max_length=254)
 
 
-class DentalOnboardingRequest(BaseModel):
+class VerticalOnboardingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    vertical_id: Literal["healthcare_dental"] = "healthcare_dental"
+    vertical_id: str = Field(default="healthcare_dental", min_length=3, max_length=64, pattern=r"^[a-z0-9_]+$")
     business_name: str = Field(min_length=2, max_length=160)
     region_id: str | None = Field(default=None, min_length=3, max_length=64)
     timezone: str | None = Field(default=None, max_length=80)
@@ -77,6 +77,10 @@ class DentalOnboardingRequest(BaseModel):
         if value is not None and len({item.name.casefold() for item in value}) != len(value):
             raise ValueError("service names must be unique")
         return value
+
+
+# Backwards-compatible import for existing dental onboarding callers.
+DentalOnboardingRequest = VerticalOnboardingRequest
 
 
 class VerticalIntakeStartRequest(BaseModel):
