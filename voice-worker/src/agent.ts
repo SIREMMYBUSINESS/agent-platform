@@ -32,9 +32,6 @@ Never invent availability, prices or policies.
 If the caller describes a medical or safety emergency, tell them to hang up and call their local emergency number immediately.`;
 
 const GREETING = "Thanks for calling. How can I help you today?";
-const FALLBACK_TWIML = (msg: string) =>
-  `<Response><Say>${escapeXml(msg)}</Say><Hangup/></Response>`;
-
 // Tenant scope is set only from the signed stream path (verified in onConnect), never from caller input.
 type CallState = {
   callSid?: string;
