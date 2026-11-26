@@ -6,6 +6,8 @@ export default [
   route("api/onboarding", "routes/api-onboarding.ts"),
   route("login", "routes/login.tsx"),
   route("dashboard", "routes/dashboard.tsx"),
+  route("leads", "routes/leads.tsx"),
+  route("conversations", "routes/conversations.tsx"),
   route("ai-receptionist", "routes/seo-receptionist.tsx"),
   route("ai-receptionist/real-estate", "routes/seo-real-estate.tsx"),
   route("ai-receptionist/dental", "routes/seo-dental.tsx"),
