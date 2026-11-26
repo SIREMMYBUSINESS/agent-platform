@@ -22,6 +22,7 @@ class VoiceNumberNotFound(Exception):
 class ResolvedVoiceNumber:
     tenant_id: str
     business_id: str
+    voice_calls_per_minute: int
 
 
 class VoiceNumberResolver:
@@ -48,9 +49,14 @@ class VoiceNumberResolver:
         self._region_guard(tenant_id)
         # The business must exist under that tenant in the runtime database.
         with self._business_uow_factory() as uow:
-            if uow.businesses.get(tenant_id=tenant_id, business_id=business_id) is None:
+            business = uow.businesses.get(tenant_id=tenant_id, business_id=business_id)
+            if business is None:
                 raise VoiceNumberNotFound
-        return ResolvedVoiceNumber(tenant_id=tenant_id, business_id=business_id)
+            business_limit = business.voice_calls_per_minute
+        return ResolvedVoiceNumber(
+            tenant_id=tenant_id, business_id=business_id,
+            voice_calls_per_minute=business_limit,
+        )
 
 
 __all__ = ["ResolvedVoiceNumber", "SCOPE_ID_RE", "VoiceNumberNotFound", "VoiceNumberResolver"]

@@ -6,17 +6,19 @@
   "observability": { "enabled": true },
   "ai": { "binding": "AI" },
   "durable_objects": {
-    "bindings": [{ "name": "RECEPTIONIST", "class_name": "ReceptionistAgent" }]
+    "bindings": [
+      { "name": "RECEPTIONIST", "class_name": "ReceptionistAgent" },
+      { "name": "VOICE_ADMISSION", "class_name": "VoiceAdmission" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
-  "ratelimits": [
-    { "name": "INCOMING_RATE_LIMITER", "namespace_id": "2026112601", "simple": { "limit": 60, "period": 60 } },
-    { "name": "NUMBER_LOOKUP_RATE_LIMITER", "namespace_id": "2026112602", "simple": { "limit": 20, "period": 60 } }
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["VoiceAdmission"] }
   ],
   "vars": {
     "PUBLIC_ORIGIN": "https://agent-platform-voice.olaoluwaemmanuel6.workers.dev",
     "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com"
   }
-  // Runtime secrets are provisioned separately in the staging Worker:
-  // PLATFORM_API_KEY, TWILIO_AUTH_TOKEN, STREAM_SECRET
+  // Runtime secrets are provisioned separately in Cloudflare:
+  // PLATFORM_API_KEY, TWILIO_AUTH_TOKEN, TWILIO_ACCOUNT_SID, STREAM_SECRET
 }

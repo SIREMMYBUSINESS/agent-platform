@@ -1,17 +1,14 @@
 import type { ReceptionistAgent } from "./agent";
-
-export interface RateLimiter {
-  limit(options: { key: string }): Promise<{ success: boolean }>;
-}
+import type { VoiceAdmission } from "./admission";
 
 export interface Env {
   AI: Ai;
   RECEPTIONIST: DurableObjectNamespace<ReceptionistAgent>;
+  VOICE_ADMISSION: DurableObjectNamespace<VoiceAdmission>;
   PUBLIC_ORIGIN: string;
   PLATFORM_API_URL: string;
   PLATFORM_API_KEY: string;
   TWILIO_AUTH_TOKEN: string;
+  TWILIO_ACCOUNT_SID?: string;
   STREAM_SECRET: string;
-  INCOMING_RATE_LIMITER: RateLimiter;
-  NUMBER_LOOKUP_RATE_LIMITER: RateLimiter;
 }

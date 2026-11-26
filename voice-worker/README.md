@@ -1,23 +1,30 @@
 # Cloudflare voice receptionist
 
-This is a separate Worker from `web/`: it owns Twilio's form webhook and media WebSocket. `ReceptionistAgent` is one SQLite-backed Durable Object per Twilio CallSid.
+This Worker owns Twilio's incoming-call webhook and media WebSocket. `ReceptionistAgent` is one SQLite-backed Durable Object per Twilio CallSid. `VoiceAdmission` is one SQLite-backed Durable Object per Twilio AccountSid.
 
 ## Staging configuration
 
-Wrangler's canonical configuration is `wrangler.jsonc`. Keep only this Wrangler configuration file in this directory so a stale JSON file cannot carry old variable names or web-worker URLs into a deploy.
+Wrangler's canonical configuration is `wrangler.jsonc`.
 
-The Worker expects these non-secret variables:
+- `PUBLIC_ORIGIN`: exact HTTPS origin assigned to this Voice Worker, without a trailing slash.
+- `PLATFORM_API_URL`: platform FastAPI origin, without a path or trailing slash.
+- `TWILIO_ACCOUNT_SID`: optional expected Twilio account SID. If configured, signed webhooks from another account are rejected.
 
-- `PUBLIC_ORIGIN`: exact HTTPS origin assigned to **this Voice Worker**, without a trailing slash. It must not point at the website Worker.
-- `PLATFORM_API_URL`: staging FastAPI origin, without a path or trailing slash.
+Runtime secrets (never commit): `TWILIO_AUTH_TOKEN`, `PLATFORM_API_KEY`, and `STREAM_SECRET`.
 
-The Worker expects exactly these runtime secrets, provisioned in Cloudflare for the staging Worker (never committed):
+## Inbound admission policy
 
-- `TWILIO_AUTH_TOKEN`: Twilio account Auth Token used to validate incoming webhook signatures.
-- `PLATFORM_API_KEY`: dedicated platform-wide staging bearer token. Its value must be identical to the staging backend's `VOICE_NUMBER_LOOKUP_TOKEN`; it is not a normal tenant API key.
-- `STREAM_SECRET`: independently generated high-entropy secret used to sign short-lived, tenant-bound media-stream tokens.
+After Twilio's signature is validated, the webhook delegates admission to `VoiceAdmission`, keyed by the signed `AccountSid`.
 
-The backend's `GET /voice/resolve-number` endpoint validates `VOICE_NUMBER_LOOKUP_TOKEN` and returns a mapping only for a configured E.164 number. If lookup fails, is ambiguous, or returns invalid data, the Worker must fail closed and must not connect the call.
+1. A durable CallSid response lookup runs first. A duplicate webhook returns the stored TwiML and consumes no additional rate-limit token or resolver lookup.
+2. The account-wide rolling window permits at most 60 new CallSids in 60 seconds, across all numbers on that Twilio account.
+3. A positive-only E.164-to-business mapping cache has a 30-second TTL.
+4. The resolved tenant/business receives its configured `voice_calls_per_minute` rolling-window budget. The default is 10/minute and the platform allows values from 1 to 60.
+5. A rejected call receives HTTP 200 TwiML with a short busy message and Hangup. No source-IP limiter is used.
+
+Only successful number mappings are cached. Unknown numbers, invalid mappings, and platform failures are never cached. The account ceiling is checked before number resolution; the business budget is checked after the tenant/business is known.
+
+The per-account Durable Object serializes admission decisions and stores successful webhook responses for 24 hours. Its counters are durable and shared across Worker isolates.
 
 ## Local checks
 
@@ -30,14 +37,8 @@ npm test
 npx wrangler deploy --dry-run
 ```
 
-A dry run does not deploy the Worker. A real staging deployment must be explicitly initiated through the staging-only deployment workflow after its Cloudflare credentials, runtime secrets, public origin and backend token have been verified.
+A dry run does not deploy the Worker. A real deployment must be explicitly initiated through the staging-only deployment workflow after Cloudflare credentials, Durable Object migrations, runtime secrets, public origin and backend token are verified.
 
 ## Incoming call flow
 
-Configure the Twilio phone number's incoming-call webhook to `https://<voice-worker-host>/voice/incoming` with HTTP POST only after the Worker is deployed and tested. The webhook verifies Twilio's HMAC-SHA1 signature against the configured canonical public URL, returns escaped TwiML, and signs the CallSid media URL with an HMAC token. The WebSocket handler verifies that token before routing the socket to the per-call Durable Object.
-
-## Current scope and known integration boundary
-
-The Worker scaffold accepts Twilio Media Streams messages, forwards 8 kHz μ-law frames to Workers AI Nova-3, generates replies with Llama 3.3, generates μ-law audio with Aura, stores a local transcript in Durable Object SQLite, and ends a call at the configured maximum duration. It does not yet call the Agent Platform booking/message/transfer APIs. Do not configure or advertise those tools until matching tenant-authorized backend contracts are implemented.
-
-The current path uses completed-utterance recognition and whole-response TTS, not sentence-level token streaming. Verify model schemas, stream pacing, interruption/barge-in, audio levels, consent, retention, tenant residency, emergency escalation and call logging with a real test call before production.
+Configure Twilio's incoming-call webhook only after the Worker is deployed and tested. The webhook validates Twilio's HMAC-SHA1 signature against the configured canonical public URL, then admission creates a tenant-bound signed media-stream URL. The WebSocket handler verifies that token before routing the socket to the per-call Durable Object.

@@ -56,7 +56,7 @@ def resolver_client(monkeypatch):
                            issued_at=datetime.now(UTC) - timedelta(minutes=1)))
         session.flush()
         session.add(ApiKeyGrant(principal_id="key-a", tenant_id="tenant-a",
-                                roles=["inbound_writer", "campaign_writer"]))
+                                roles=["inbound_writer", "campaign_writer", "business_onboarder"]))
         session.add_all([
             VoiceNumberRoute(e164=NUMBER, tenant_id="tenant-a", business_id="biz-a"),
             VoiceNumberRoute(e164="+15550002222", tenant_id="tenant-b", business_id="biz-b"),
@@ -91,10 +91,14 @@ def test_resolves_dialed_number_to_exact_scope_only(resolver_client):
     client, _, _ = resolver_client
     response = resolve(client)
     assert response.status_code == 200
-    assert response.json() == {"tenant_id": "tenant-a", "business_id": "biz-a"}
+    assert response.json() == {
+        "tenant_id": "tenant-a", "business_id": "biz-a", "voice_calls_per_minute": 10,
+    }
     assert response.headers["cache-control"] == "no-store"
     other = resolve(client, "+15550002222")
-    assert other.json() == {"tenant_id": "tenant-b", "business_id": "biz-b"}
+    assert other.json() == {
+        "tenant_id": "tenant-b", "business_id": "biz-b", "voice_calls_per_minute": 10,
+    }
 
 
 @pytest.mark.parametrize("key", [None, "", "wrong-key", "vg_test_" + "x" * 40])
@@ -255,3 +259,27 @@ def test_migration_creates_and_drops_the_directory_table(capsys):
     command.downgrade(config, "0031_voice_number_routes:0030_tenant_db_route", sql=True)
     down = capsys.readouterr().out.lower()
     assert down.index("drop index ix_voice_number_routes_scope") < down.index("drop table voice_number_routes")
+
+
+
+def test_business_voice_rate_limit_can_be_configured_by_authorized_tenant(resolver_client):
+    client, _, tenant_key = resolver_client
+    response = client.put(
+        "/voice/businesses/biz-a/voice-rate-limit",
+        headers={"Authorization": f"Bearer {tenant_key}"},
+        json={"calls_per_minute": 7},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"business_id": "biz-a", "voice_calls_per_minute": 7}
+    assert resolve(client).json()["voice_calls_per_minute"] == 7
+
+
+@pytest.mark.parametrize("limit", [0, 61, -1])
+def test_business_voice_rate_limit_rejects_out_of_range_values(resolver_client, limit):
+    client, _, tenant_key = resolver_client
+    response = client.put(
+        "/voice/businesses/biz-a/voice-rate-limit",
+        headers={"Authorization": f"Bearer {tenant_key}"},
+        json={"calls_per_minute": limit},
+    )
+    assert response.status_code == 422

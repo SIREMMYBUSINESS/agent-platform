@@ -4,11 +4,7 @@ import { handleIncoming } from "./incoming";
 import { parseStreamPath, verifyStreamToken } from "./twilio";
 
 export { ReceptionistAgent } from "./agent";
-
-const xml = (body: string, status = 200) => new Response(body, {
-  status,
-  headers: { "content-type": "text/xml; charset=utf-8", "cache-control": "no-store" },
-});
+export { VoiceAdmission } from "./admission";
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -26,7 +22,6 @@ export default {
         return new Response("Expected WebSocket", { status: 426 });
       }
       const parsed = parseStreamPath(url.pathname);
-      // Reject invalid, expired or cross-tenant tokens before waking a Durable Object.
       if (!parsed || !(await verifyStreamToken(env.STREAM_SECRET, parsed))) {
         return new Response("Forbidden", { status: 403 });
       }
