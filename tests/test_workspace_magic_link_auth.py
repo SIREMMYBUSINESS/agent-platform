@@ -312,7 +312,9 @@ def assert_staging_owner_denial_is_generic(
                 assert value not in serialized_record
 
 
-def test_staging_owner_bypass_logs_configured_email_mismatch_without_disclosing_identity(passwordless_client, monkeypatch):
+def test_staging_owner_bypass_logs_configured_email_mismatch_without_disclosing_identity(
+    passwordless_client, monkeypatch,
+):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
     denial_logs = capture_staging_owner_denial_logs(monkeypatch)
@@ -328,7 +330,9 @@ def test_staging_owner_bypass_logs_configured_email_mismatch_without_disclosing_
     )
 
 
-def test_staging_owner_bypass_logs_configured_tenant_mismatch_without_disclosing_identity(passwordless_client, monkeypatch):
+def test_staging_owner_bypass_logs_configured_tenant_mismatch_without_disclosing_identity(
+    passwordless_client, monkeypatch,
+):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
     denial_logs = capture_staging_owner_denial_logs(monkeypatch)
@@ -345,7 +349,9 @@ def test_staging_owner_bypass_logs_configured_tenant_mismatch_without_disclosing
     )
 
 
-def test_staging_owner_bypass_logs_missing_user_without_disclosing_email(passwordless_client, monkeypatch):
+def test_staging_owner_bypass_logs_missing_user_without_disclosing_email(
+    passwordless_client, monkeypatch,
+):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     missing_email = "missing-owner@example.test"
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id, email=missing_email)
@@ -397,7 +403,9 @@ def test_staging_owner_bypass_logs_missing_tenant_membership(passwordless_client
     )
 
 
-def test_staging_owner_bypass_logs_missing_owner_role(passwordless_client, monkeypatch):
+def test_staging_owner_bypass_logs_missing_owner_role(
+    passwordless_client, monkeypatch,
+):
     client, engine, _mailer, tenant_id, _user_id, membership_id = passwordless_client
     with Session(engine) as session:
         session.get(TenantMembership, membership_id).role = "viewer"
