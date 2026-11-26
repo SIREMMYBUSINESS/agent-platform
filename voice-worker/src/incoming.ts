@@ -2,13 +2,7 @@
 // account-scoped Durable Object. No per-isolate or source-IP rate limiting.
 import { CALL_SID_RE, validTwilioSignature } from "./twilio";
 
-type AdmissionStub = {
-  fetch(input: Request | string, init?: RequestInit): Promise<Response>;
-};
-type AdmissionNamespace = {
-  idFromName(name: string): DurableObjectId;
-  get(id: DurableObjectId): AdmissionStub;
-};
+import type { AdmissionNamespace } from "./types";
 
 export type IncomingEnv = {
   PUBLIC_ORIGIN: string;
