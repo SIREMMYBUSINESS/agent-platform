@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, redirect, useNavigation } from "react-router";
+import { Link, redirect, useNavigation, useSearchParams } from "react-router";
 import { readSessionApiKey } from "../.server/session";
 import type { Route } from "./+types/conversations";
 
@@ -56,7 +56,8 @@ function readable(value: string) { return value.replaceAll("_", " ").replaceAll(
 export default function ConversationsRoute({ loaderData }: Route.ComponentProps) {
   const navigation = useNavigation();
   const isLoading = navigation.state === "loading";
-  const [query, setQuery] = useState("");
+  const [searchParams] = useSearchParams();
+  const [query, setQuery] = useState(() => searchParams.get("search") || "");
   const [channel, setChannel] = useState("all");
   const [status, setStatus] = useState("all");
   const channels = useMemo(() => [...new Set(loaderData.items.map((item) => item.channel))].sort(), [loaderData.items]);
