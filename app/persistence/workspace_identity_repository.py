@@ -38,6 +38,13 @@ class SQLWorkspaceIdentityRepository:
         ).order_by(TenantMembership.created_at, TenantMembership.id)
         return list(self._session.exec(statement).all())
 
+    def list_memberships_for_user(self, user_id: UUID) -> list[TenantMembership]:
+        """Return all membership states for internal access diagnostics."""
+        statement = select(TenantMembership).where(
+            TenantMembership.user_id == user_id,
+        ).order_by(TenantMembership.created_at, TenantMembership.id)
+        return list(self._session.exec(statement).all())
+
     def get_membership(
         self, *, membership_id: UUID, user_id: UUID, tenant_id: str,
         for_update: bool = False,
