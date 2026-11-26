@@ -201,7 +201,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         ? "Setup is healthy. Review the checks, then bring the business online."
         : "Business saved. Complete the remaining checks before go-live.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not create the clinic.");
+      setNotice(error instanceof Error ? error.message : "Could not create the business.");
     } finally {
       setBusy(false);
     }
@@ -272,7 +272,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
           {notice && !template && !loadingVerticals && <p className="notice" role="status">{notice}</p>}
           <div className="field-grid">
             <label>Business type
-              <select value={selectedVerticalId} onChange={(event) => setSelectedVerticalId(event.target.value)} disabled={busy || verticals.length === 0}>
+              <select value={selectedVerticalId} onChange={(event) => { setSelectedVerticalId(event.target.value); setTemplate(null); setHealth(null); setBusinessId(""); }} disabled={busy || verticals.length === 0 || !!businessId}>
                 {verticals.map((vertical) => <option key={vertical.vertical_id} value={vertical.vertical_id}>{vertical.display_name || vertical.vertical_id.replaceAll("_", " ")}</option>)}
               </select>
             </label>
@@ -299,7 +299,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         </section>
 
         <section className="card">
-          <div className="section-heading"><span className="number">4</span><div><h3>Business hours</h3><p>Times use the clinic's configured timezone.</p></div></div>
+          <div className="section-heading"><span className="number">4</span><div><h3>Business hours</h3><p>Times use the business's configured timezone.</p></div></div>
           <div className="hours-list">
             {hours.map((hour, index) => <div className="hours-row" key={hour.weekday}>
               <label className="day-check"><input type="checkbox" checked={hour.active} onChange={(event) => updateHour(index, { active: event.target.checked })} />{DAYS[hour.weekday]}</label>
@@ -344,11 +344,11 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
 
         <section className="card launch-card">
           <div className="section-heading"><span className="number">8</span><div><h3>Health check and launch</h3><p>Launch stays blocked until region policy, staff, hours, services, and required provider configuration are ready.</p></div></div>
-          {!businessId ? <button className="primary-button" disabled={busy} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create clinic and run health check"}</button> : <>
+          {!businessId ? <button className="primary-button" disabled={busy} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create business and run health check"}</button> : <>
             <p className="business-id">Business ID <code>{businessId}</code></p>
             <button className="secondary-button" disabled={busy} onClick={runHealthCheck}>Refresh health check</button>
             {health && <div className="health-panel"><h4>{readyLabel}</h4>{Object.entries(health.checks).map(([name, passed]) => <div className="health-row" key={name}><span>{name.replaceAll("_", " ")}</span><strong className={passed ? "pass" : "fail"}>{passed ? "Ready" : "Needs setup"}</strong></div>)}</div>}
-            <button className="primary-button" disabled={busy || !health?.ready} onClick={goLive}>Bring clinic online</button>
+            <button className="primary-button" disabled={busy || !health?.ready} onClick={goLive}>Bring business online</button>
           </>}
           {notice && <p className="notice" role="status">{notice}</p>}
         </section>
