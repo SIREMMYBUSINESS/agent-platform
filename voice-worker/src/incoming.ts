@@ -140,7 +140,7 @@ export async function handleIncoming(
   }
 
   // Tenant scope comes only from the platform, keyed by the (signed) dialed number.
-  const scope = await resolveNumber(env, to, fetchImpl);
+  try {\n    const incomingLimit = await env.INCOMING_RATE_LIMITER.limit({ key: to });\n    if (!incomingLimit.success) return RATE_LIMITED();\n    const lookupLimit = await env.NUMBER_LOOKUP_RATE_LIMITER.limit({ key: to });\n    if (!lookupLimit.success) return RATE_LIMITED();\n  } catch (error) {\n    const name = error instanceof Error ? error.name : "unknown";\n    console.error(JSON.stringify({ event: "voice_rate_limit_unavailable", error_name: name }));\n    return UNAVAILABLE();\n  }\n\n  const scope = await resolveNumber(env, to, fetchImpl);
   if (!scope) return UNAVAILABLE();
 
   const exp = Math.floor(Date.now() / 1000) + STREAM_TOKEN_TTL_SECONDS;
