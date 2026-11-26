@@ -148,11 +148,28 @@ export class VoiceAdmission extends DurableObject<Env> {
     return scope;
   }
 
+  async alarm(): Promise<void> {
+    const entries = await this.ctx.storage.list<StoredCall>({ prefix: "call:" });
+    const now = Date.now();
+    let nextExpiry: number | undefined;
+    for (const [key, record] of entries) {
+      if (record.expiresAt <= now) await this.ctx.storage.delete(key);
+      else nextExpiry = Math.min(nextExpiry ?? record.expiresAt, record.expiresAt);
+    }
+    if (nextExpiry !== undefined) await this.ctx.storage.setAlarm(nextExpiry);
+  }
+
+  private async scheduleCallCleanup(expiresAt: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || expiresAt < current) await this.ctx.storage.setAlarm(expiresAt);
+  }
+
   private async remember(key: string, response: Response, now: number): Promise<Response> {
     const body = await response.text();
     await this.ctx.storage.put(key, {
       xml: body, expiresAt: now + CALL_RESULT_TTL_SECONDS * 1000,
-    } satisfies StoredCall, { expirationTtl: CALL_RESULT_TTL_SECONDS });
+    } satisfies StoredCall);
+    await this.scheduleCallCleanup(now + CALL_RESULT_TTL_SECONDS * 1000);
     return rawXml(body);
   }
 }
