@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
-      name: voice-staging
+      name: staging
     permissions:
       contents: read
     defaults:
@@ -76,7 +76,7 @@ jobs:
             exit 1
           fi
           if [[ "${VOICE_DEPLOY_ENABLED}" != "true" ]]; then
-            echo "::error::Set VOICE_DEPLOY_ENABLED=true in the protected voice-staging environment to enable deployment."
+            echo "::error::Set VOICE_DEPLOY_ENABLED=true in the protected staging environment to enable deployment."
             exit 1
           fi
           if [[ "${DEPLOY_CONFIRMATION}" != "deploy-voice-worker" ]]; then
