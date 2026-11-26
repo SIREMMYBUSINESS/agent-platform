@@ -11,17 +11,18 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "businesses",
-        sa.Column("voice_calls_per_minute", sa.Integer(), nullable=False, server_default="10"),
-    )
-    op.create_check_constraint(
-        "ck_businesses_voice_calls_per_minute",
-        "businesses",
-        "voice_calls_per_minute >= 1 AND voice_calls_per_minute <= 60",
-    )
+    # Batch mode supports SQLite-based migration tests and PostgreSQL production.
+    with op.batch_alter_table("businesses") as batch:
+        batch.add_column(
+            sa.Column("voice_calls_per_minute", sa.Integer(), nullable=False, server_default="10"),
+        )
+        batch.create_check_constraint(
+            "ck_businesses_voice_calls_per_minute",
+            "voice_calls_per_minute >= 1 AND voice_calls_per_minute <= 60",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_businesses_voice_calls_per_minute", "businesses", type_="check")
-    op.drop_column("businesses", "voice_calls_per_minute")
+    with op.batch_alter_table("businesses") as batch:
+        batch.drop_constraint("ck_businesses_voice_calls_per_minute", type_="check")
+        batch.drop_column("voice_calls_per_minute")
