@@ -285,11 +285,19 @@ def assert_staging_owner_denial_is_generic(response, caplog, category: str, secr
         if value:
             assert value not in response.text
     assert "denial_category" not in response.json()
+    denial_records = [
+        record for record in caplog.records
+        if record.getMessage() == "staging owner session denied"
+    ]
     assert any(
-        record.getMessage() == "staging owner session denied"
-        and getattr(record, "denial_category", None) == category
-        for record in caplog.records
+        getattr(record, "denial_category", None) == category
+        for record in denial_records
     )
+    for record in denial_records:
+        serialized_record = str(record.__dict__)
+        for value in (*private_values, secret):
+            if value:
+                assert value not in serialized_record
 
 
 def test_staging_owner_bypass_logs_configured_email_mismatch_without_disclosing_identity(
