@@ -9,7 +9,11 @@
     "bindings": [{ "name": "RECEPTIONIST", "class_name": "ReceptionistAgent" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ReceptionistAgent"] }],
-  "ratelimits": [\n    { "name": "INCOMING_RATE_LIMITER", "namespace_id": "2026112601", "simple": { "limit": 60, "period": 60 } },\n    { "name": "NUMBER_LOOKUP_RATE_LIMITER", "namespace_id": "2026112602", "simple": { "limit": 20, "period": 60 } }\n  ],\n  "vars": {
+  "ratelimits": [
+    { "name": "INCOMING_RATE_LIMITER", "namespace_id": "2026112601", "simple": { "limit": 60, "period": 60 } },
+    { "name": "NUMBER_LOOKUP_RATE_LIMITER", "namespace_id": "2026112602", "simple": { "limit": 20, "period": 60 } }
+  ],
+  "vars": {
     "PUBLIC_ORIGIN": "https://agent-platform-voice.olaoluwaemmanuel6.workers.dev",
     "PLATFORM_API_URL": "https://agent-platform-staging.onrender.com"
   }
