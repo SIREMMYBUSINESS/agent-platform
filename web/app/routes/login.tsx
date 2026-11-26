@@ -1,4 +1,4 @@
-import { Form, Link } from "react-router";
+import { Form, Link, useNavigation } from "react-router";
 import { createSessionCookie } from "../.server/session";
 import type { Route } from "./+types/login";
 
@@ -91,9 +91,15 @@ export async function action({ request, context }: Route.ActionArgs) {
 }
 
 export default function LoginRoute({ actionData }: Route.ComponentProps) {
+  const navigation = useNavigation();
+  const isSubmitting = navigation.state !== "idle";
+  const submittedIntent = navigation.formData?.get("intent") || "magic-link";
+  const stagingPending = isSubmitting && submittedIntent === "staging-bypass";
+  const magicLinkPending = isSubmitting && submittedIntent !== "staging-bypass";
+
   return (
     <main className="workspace-shell">
-      <section className="card workspace-credentials">
+      <section className="card workspace-credentials" aria-busy={isSubmitting}>
         <p className="eyebrow">Agent Platform</p>
         <h1>Sign in to your workspace</h1>
         <p className="workspace-description">
@@ -105,7 +111,7 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
           </div>
         ) : (
           <>
-          <Form method="post" className="key-form">
+          <Form method="post" className="key-form" aria-busy={magicLinkPending}>
             <label htmlFor="workspace-email">Work email</label>
             <div className="key-entry">
               <input
@@ -116,24 +122,31 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
                 maxLength={254}
                 required
                 placeholder="you@company.com"
+                disabled={isSubmitting}
               />
-              <button className="primary-button" type="submit">Email me a sign-in link</button>
+              <button className="primary-button" type="submit" disabled={isSubmitting}>
+                {magicLinkPending ? <><span className="button-spinner" aria-hidden="true" /> Sending sign-in link…</> : "Email me a sign-in link"}
+              </button>
             </div>
+            {magicLinkPending && <p className="submit-status" role="status" aria-live="polite">Contacting the sign-in service. Please wait…</p>}
             <p className="helper">
               Access is available to users invited by a workspace administrator. Sign-in links expire and can only be used once.
             </p>
           </Form>
           {STAGING_BYPASS_UI && (
-            <Form method="post" className="key-form">
+            <Form method="post" className="key-form" aria-busy={stagingPending}>
               <input type="hidden" name="intent" value="staging-bypass" />
               <h2>Temporary staging owner access</h2>
               <label htmlFor="staging-owner-email">Workspace owner email</label>
-              <input id="staging-owner-email" name="email" type="email" required autoComplete="email" maxLength={254} />
+              <input id="staging-owner-email" name="email" type="email" required autoComplete="email" maxLength={254} disabled={isSubmitting} />
               <label htmlFor="staging-tenant-id">Staging tenant ID</label>
-              <input id="staging-tenant-id" name="tenantId" type="text" required autoComplete="off" />
+              <input id="staging-tenant-id" name="tenantId" type="text" required autoComplete="off" disabled={isSubmitting} />
               <label htmlFor="staging-access-code">Staging access code</label>
-              <input id="staging-access-code" name="accessCode" type="password" required autoComplete="off" />
-              <button className="primary-button" type="submit">Open staging workspace</button>
+              <input id="staging-access-code" name="accessCode" type="password" required autoComplete="off" disabled={isSubmitting} />
+              <button className="primary-button" type="submit" disabled={isSubmitting}>
+                {stagingPending ? <><span className="button-spinner" aria-hidden="true" /> Verifying access…</> : "Open staging workspace"}
+              </button>
+              {stagingPending && <p className="submit-status" role="status" aria-live="polite">Verifying owner access and preparing your workspace. Please wait…</p>}
               <p className="helper">Temporary staging-only access. Do not use production credentials.</p>
             </Form>
           )}

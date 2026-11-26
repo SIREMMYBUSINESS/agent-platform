@@ -144,3 +144,32 @@ td strong, td small { display: block; } td strong { color: #29443e; font-size: 1
 .hours-row { grid-template-columns: 1fr 1fr; }
 .hours-row .day-check { grid-column: 1 / -1; }
 }
+
+/* Login submit feedback: visible while the server action is pending. */
+.button-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: login-spin .7s linear infinite;
+}
+.primary-button:disabled {
+  cursor: wait;
+  opacity: .78;
+}
+.submit-status {
+  margin: 1px 0 0;
+  color: #536b65;
+  font-size: 12px;
+  line-height: 1.55;
+}
+@keyframes login-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .button-spinner { animation-duration: 1.8s; }
+}
