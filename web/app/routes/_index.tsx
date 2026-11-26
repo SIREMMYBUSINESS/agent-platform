@@ -278,7 +278,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
           <p className="helper">Provider credentials belong in the protected secret manager, not this page.</p>
           {loadingVerticals && <p className="notice" role="status">Loading available business types…</p>}
           {notice && !template && !loadingVerticals && <p className="notice" role="status">{notice}</p>}
-          <div className="field-grid">
+          <div className="field-grid field-row">
             <label>Business type
               <select value={selectedVerticalId} onChange={(event) => { setSelectedVerticalId(event.target.value); setTemplate(null); setHealth(null); setBusinessId(""); }} disabled={busy || verticals.length === 0 || !!businessId}>
                 {verticals.map((vertical) => <option key={vertical.vertical_id} value={vertical.vertical_id}>{vertical.display_name || vertical.vertical_id.replaceAll("_", " ")}</option>)}
@@ -291,7 +291,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
       {template && <>
         <section className="card">
           <div className="section-heading"><span className="number">2</span><div><h3>Business details</h3><p>Business scope and local scheduling details.</p></div></div>
-          <div className="field-grid">
+          <div className="field-grid field-row">
             <label>Business name<input value={businessName} onChange={(event) => setBusinessName(event.target.value)} placeholder="Your business name" /></label>
             <label>Business timezone<input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Africa/Banjul" /></label>
           </div>
@@ -311,9 +311,11 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
           <div className="hours-list">
             {hours.map((hour, index) => <div className="hours-row" key={hour.weekday}>
               <label className="day-check"><input type="checkbox" checked={hour.active} onChange={(event) => updateHour(index, { active: event.target.checked })} />{DAYS[hour.weekday]}</label>
-              <input aria-label={`${DAYS[hour.weekday]} opens at`} type="time" value={hour.opens_at} onChange={(event) => updateHour(index, { opens_at: event.target.value })} />
-              <span>to</span>
-              <input aria-label={`${DAYS[hour.weekday]} closes at`} type="time" value={hour.closes_at} onChange={(event) => updateHour(index, { closes_at: event.target.value })} />
+              <div className="hours-times">
+                <input aria-label={`${DAYS[hour.weekday]} opens at`} type="time" value={hour.opens_at} onChange={(event) => updateHour(index, { opens_at: event.target.value })} />
+                <span>to</span>
+                <input aria-label={`${DAYS[hour.weekday]} closes at`} type="time" value={hour.closes_at} onChange={(event) => updateHour(index, { closes_at: event.target.value })} />
+              </div>
             </div>)}
           </div>
         </section>
@@ -321,11 +323,11 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         <section className="card">
           <div className="section-heading"><span className="number">5</span><div><h3>Services and team</h3><p>Service durations inform scheduling where enabled. At least one team member is required.</p></div></div>
           <div className="stack">
-            {services.map((service, index) => <div className="field-grid service-row" key={index}>
+            {services.map((service, index) => <div className="field-grid field-row service-row" key={index}>
               <label>Service<input value={service.name} onChange={(event) => updateService(index, { name: event.target.value })} /></label>
               <label>Duration in minutes<input type="number" min={10} max={240} value={service.duration_minutes} onChange={(event) => updateService(index, { duration_minutes: Number(event.target.value) })} /></label>
             </div>)}
-            {staff.map((member, index) => <div className="field-grid" key={index}>
+            {staff.map((member, index) => <div className="field-grid field-row" key={index}>
               <label>Staff name<input value={member.display_name} onChange={(event) => setStaff((current) => current.map((item, i) => i === index ? { ...item, display_name: event.target.value } : item))} placeholder="Team member" /></label>
               <label>Staff email<input type="email" value={member.email} onChange={(event) => setStaff((current) => current.map((item, i) => i === index ? { ...item, email: event.target.value } : item))} placeholder="Optional" /></label>
             </div>)}
@@ -341,7 +343,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
 
         <section className="card">
           <div className="section-heading"><span className="number">7</span><div><h3>Provider connections</h3><p>Select adapters here; add credentials in your protected provider secret manager.</p></div></div>
-          <div className="field-grid">
+          <div className="field-grid field-row">
             <label>SMS provider<select value={providerSelection.sms} onChange={(event) => setProviderSelection((current) => ({ ...current, sms: event.target.value }))}><option value="twilio">Twilio</option></select></label>
             <label>Calendar provider<select value={providerSelection.calendar} onChange={(event) => setProviderSelection((current) => ({ ...current, calendar: event.target.value }))}><option value="google">Google Calendar</option></select></label>
             <label>Email provider<select value={providerSelection.email || ""} onChange={(event) => setProviderSelection((current) => ({ ...current, email: event.target.value || undefined }))}><option value="">Not configured</option><option value="sendgrid">SendGrid</option><option value="smtp">SMTP</option></select></label>
@@ -362,7 +364,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         </section>
       </>}
       </>}
-      <footer>Customer outreach must follow applicable consent and suppression policies. Configure human handoff for urgent or sensitive requests; automated agents should not replace qualified professional advice.</footer>
+      <footer className="onboarding-footer">Customer outreach must follow applicable consent and suppression policies. Configure human handoff for urgent or sensitive requests; automated agents should not replace qualified professional advice.</footer>
     </main>
   );
 }
