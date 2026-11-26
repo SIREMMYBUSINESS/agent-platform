@@ -7,7 +7,7 @@ import type { AdmissionNamespace } from "./types";
 export type IncomingEnv = {
   PUBLIC_ORIGIN: string;
   TWILIO_AUTH_TOKEN: string;
-  TWILIO_ACCOUNT_SID: string;
+  TWILIO_ACCOUNT_SID?: string;
   VOICE_ADMISSION: AdmissionNamespace;
 };
 
