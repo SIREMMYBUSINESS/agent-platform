@@ -9,9 +9,19 @@ const TO = "+15550001111";
 
 class MemoryStorage {
   values = new Map<string, unknown>();
+  alarmTime: number | null = null;
   async get<T>(key: string): Promise<T | undefined> { return this.values.get(key) as T | undefined; }
   async put(key: string, value: unknown): Promise<void> { this.values.set(key, value); }
   async delete(key: string): Promise<boolean> { return this.values.delete(key); }
+  async getAlarm(): Promise<number | null> { return this.alarmTime; }
+  async setAlarm(value: number | Date): Promise<void> {
+    this.alarmTime = value instanceof Date ? value.getTime() : value;
+  }
+  async list<T>(options: { prefix?: string } = {}): Promise<Map<string, T>> {
+    return new Map([...this.values.entries()]
+      .filter(([key]) => key.startsWith(options.prefix ?? ""))
+      .map(([key, value]) => [key, value as T]));
+  }
 }
 function setup(options: { businessLimit?: number; lookupStatus?: number } = {}) {
   const storage = new MemoryStorage();
