@@ -42,3 +42,12 @@ A dry run does not deploy the Worker. A real deployment must be explicitly initi
 ## Incoming call flow
 
 Configure Twilio's incoming-call webhook only after the Worker is deployed and tested. The webhook validates Twilio's HMAC-SHA1 signature against the configured canonical public URL, then admission creates a tenant-bound signed media-stream URL. The WebSocket handler verifies that token before routing the socket to the per-call Durable Object.
+
+
+## Realtime Nova-3 speech recognition
+
+Realtime STT connects through the Cloudflare AI Gateway WebSocket endpoint using the Workers outbound `fetch()` Upgrade contract. Configure `CF_ACCOUNT_ID` and `AI_GATEWAY_NAME` as Worker variables, and `AI_GATEWAY_AUTH_TOKEN` as a Worker secret. Do not put the token in `wrangler.jsonc`, source files, or CI logs.
+
+Twilio's 8 kHz G.711 μ-law media frames are decoded and upsampled to 16 kHz linear PCM16 before being sent to Deepgram Nova-3. Interim results and incomplete final segments are ignored; completed utterances are deduplicated and queued serially. Socket generations reject stale events, and call finalization closes the provider socket and preserves the existing transcript-retention schedule.
+
+If STT cannot open or the provider socket fails, the per-call Durable Object attempts to update the active Twilio Call resource with a fixed fallback TwiML response. This requires the existing `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` runtime configuration. If that REST update fails, the Worker logs a sanitized failure and can only attempt a Media Stream clear; it does not claim that fallback audio played.
