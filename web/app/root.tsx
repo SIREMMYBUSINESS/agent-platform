@@ -28,6 +28,11 @@ export function Layout({ children }: { children: ReactNode }) {
               <details className="account-menu">
                 <summary>Account</summary>
                 <div className="account-menu-panel">
+                  <div className="account-menu-heading"><strong>Workspace account</strong><small>Account details are not available in this view.</small></div>
+                  <button type="button" disabled title="Profile page is not available yet">Profile</button>
+                  <button type="button" disabled title="Workspace switching is not available yet">Switch workspace</button>
+                  <button type="button" disabled title="Account settings are not available yet">Settings</button>
+                  <div className="account-menu-divider" />
                   <Form method="post" action="/dashboard">
                     <button type="submit" name="intent" value="logout">Sign out</button>
                   </Form>
