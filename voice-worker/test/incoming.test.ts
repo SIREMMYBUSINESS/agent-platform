@@ -50,6 +50,16 @@ test("valid signed webhook dispatches to the Durable Object keyed by AccountSid"
   assert.deepEqual(calls[0].body, { accountSid: ACCOUNT, callSid: CALL, to: TO });
 });
 
+test("missing TWILIO_ACCOUNT_SID fails closed with HTTP 500 before admission", async () => {
+  const calls: Array<{ id: string; body: unknown }> = [];
+  const misconfigured = env(calls);
+  delete (misconfigured as Partial<IncomingEnv>).TWILIO_ACCOUNT_SID;
+  const res = await handleIncoming(await request({ AccountSid: ACCOUNT, CallSid: CALL, To: TO }), misconfigured);
+  assert.equal(res.status, 500);
+  assert.deepEqual(await res.json(), { error: "voice_webhook_misconfigured" });
+  assert.equal(calls.length, 0);
+});
+
 test("invalid signature is rejected before admission", async () => {
   const calls: Array<{ id: string; body: unknown }> = [];
   const res = await handleIncoming(await request({ AccountSid: ACCOUNT, CallSid: CALL, To: TO }, false), env(calls));

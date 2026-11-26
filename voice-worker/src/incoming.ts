@@ -7,7 +7,7 @@ import type { AdmissionNamespace } from "./types";
 export type IncomingEnv = {
   PUBLIC_ORIGIN: string;
   TWILIO_AUTH_TOKEN: string;
-  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_ACCOUNT_SID: string;
   VOICE_ADMISSION: AdmissionNamespace;
 };
 
@@ -24,11 +24,17 @@ const xml = (body: string, status = 200) =>
 const UNAVAILABLE = () =>
   xml("<Response><Say>We are unable to connect your call right now. Please try again later.</Say><Hangup/></Response>");
 
+const MISCONFIGURED = () =>
+  Response.json(
+    { error: "voice_webhook_misconfigured" },
+    { status: 500, headers: { "Cache-Control": "no-store" } },
+  );
+
 export async function handleIncoming(req: Request, env: IncomingEnv): Promise<Response> {
   const url = new URL(req.url);
-  if (!env.PUBLIC_ORIGIN || !env.TWILIO_AUTH_TOKEN || !env.VOICE_ADMISSION) {
+  if (!env.PUBLIC_ORIGIN || !env.TWILIO_AUTH_TOKEN || !env.TWILIO_ACCOUNT_SID || !env.VOICE_ADMISSION) {
     console.error(JSON.stringify({ event: "voice_webhook_misconfigured" }));
-    return UNAVAILABLE();
+    return MISCONFIGURED();
   }
 
   const len = Number(req.headers.get("content-length") ?? "0");
@@ -64,7 +70,7 @@ export async function handleIncoming(req: Request, env: IncomingEnv): Promise<Re
   if (!ACCOUNT_SID_RE.test(accountSid) || !CALL_SID_RE.test(callSid) || !PHONE_RE.test(to)) {
     return new Response("Bad Request", { status: 400 });
   }
-  if (env.TWILIO_ACCOUNT_SID && accountSid !== env.TWILIO_ACCOUNT_SID) {
+  if (accountSid !== env.TWILIO_ACCOUNT_SID) {
     console.warn(JSON.stringify({ event: "twilio_account_sid_mismatch" }));
     return new Response("Forbidden", { status: 403 });
   }
