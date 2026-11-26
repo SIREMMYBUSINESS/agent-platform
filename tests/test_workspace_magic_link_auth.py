@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import logging
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -279,8 +280,19 @@ def configure_staging_owner_bypass(
     return secret
 
 
+def capture_staging_owner_denial_logs(monkeypatch):
+    records = []
+    diagnostic_logger = logging.getLogger("app.observability")
+
+    def capture(message, *args, **kwargs):
+        records.append({"message": message, **kwargs.get("extra", {})})
+
+    monkeypatch.setattr(diagnostic_logger, "warning", capture)
+    return records
+
+
 def assert_staging_owner_denial_is_generic(
-    response, caplog, category: str, secret: str, *private_values: str,
+    response, log_records, category: str, secret: str, *private_values: str,
 ):
     assert response.status_code == 403
     assert response.json() == {"detail": "Staging workspace access is unavailable"}
@@ -288,26 +300,22 @@ def assert_staging_owner_denial_is_generic(
         if value:
             assert value not in response.text
     assert "denial_category" not in response.json()
-    denial_records = [
-        record for record in caplog.records
-        if record.getMessage() == "staging owner session denied"
-    ]
     assert any(
-        getattr(record, "denial_category", None) == category
-        for record in denial_records
+        record.get("message") == "staging owner session denied"
+        and record.get("denial_category") == category
+        for record in log_records
     )
-    for record in denial_records:
-        serialized_record = str(record.__dict__)
+    for record in log_records:
+        serialized_record = str(record)
         for value in (*private_values, secret):
             if value:
                 assert value not in serialized_record
 
 
-def test_staging_owner_bypass_logs_configured_email_mismatch_without_disclosing_identity(
-    passwordless_client, monkeypatch, caplog,
-):
+def test_staging_owner_bypass_logs_configured_email_mismatch_without_disclosing_identity(passwordless_client, monkeypatch):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
         "/auth/staging-owner-session",
         headers={"X-Staging-Auth-Bypass": secret},
@@ -315,16 +323,15 @@ def test_staging_owner_bypass_logs_configured_email_mismatch_without_disclosing_
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "configured_email_mismatch", secret,
+        response, denial_logs, "configured_email_mismatch", secret,
         "different@example.test", "owner@example.test", tenant_id,
     )
 
 
-def test_staging_owner_bypass_logs_configured_tenant_mismatch_without_disclosing_identity(
-    passwordless_client, monkeypatch, caplog,
-):
+def test_staging_owner_bypass_logs_configured_tenant_mismatch_without_disclosing_identity(passwordless_client, monkeypatch):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     requested_tenant = "unconfigured-tenant"
     response = client.post(
         "/auth/staging-owner-session",
@@ -333,17 +340,16 @@ def test_staging_owner_bypass_logs_configured_tenant_mismatch_without_disclosing
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "configured_tenant_mismatch", secret,
+        response, denial_logs, "configured_tenant_mismatch", secret,
         "owner@example.test", tenant_id, requested_tenant,
     )
 
 
-def test_staging_owner_bypass_logs_missing_user_without_disclosing_email(
-    passwordless_client, monkeypatch, caplog,
-):
+def test_staging_owner_bypass_logs_missing_user_without_disclosing_email(passwordless_client, monkeypatch):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     missing_email = "missing-owner@example.test"
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id, email=missing_email)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
         "/auth/staging-owner-session",
         headers={"X-Staging-Auth-Bypass": secret},
@@ -351,19 +357,18 @@ def test_staging_owner_bypass_logs_missing_user_without_disclosing_email(
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "user_not_found", secret, missing_email, tenant_id,
+        response, denial_logs, "user_not_found", secret, missing_email, tenant_id,
     )
 
 
-def test_staging_owner_bypass_logs_ineligible_user_status(
-    passwordless_client, monkeypatch, caplog,
-):
+def test_staging_owner_bypass_logs_ineligible_user_status(passwordless_client, monkeypatch):
     client, engine, _mailer, tenant_id, user_id, *_ = passwordless_client
     with Session(engine) as session:
-        session.get(WorkspaceUser, user_id).status = "suspended"
+        session.get(WorkspaceUser, user_id).status = "disabled"
         session.commit()
 
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
         "/auth/staging-owner-session",
         headers={"X-Staging-Auth-Bypass": secret},
@@ -371,16 +376,15 @@ def test_staging_owner_bypass_logs_ineligible_user_status(
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "user_ineligible_status", secret, "owner@example.test", tenant_id,
+        response, denial_logs, "user_ineligible_status", secret, "owner@example.test", tenant_id,
     )
 
 
-def test_staging_owner_bypass_logs_missing_tenant_membership(
-    passwordless_client, monkeypatch, caplog,
-):
+def test_staging_owner_bypass_logs_missing_tenant_membership(passwordless_client, monkeypatch):
     client, _engine, _mailer, _tenant_id, *_ = passwordless_client
     configured_tenant = "configured-but-unassigned-tenant"
     secret = configure_staging_owner_bypass(monkeypatch, configured_tenant)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
         "/auth/staging-owner-session",
         headers={"X-Staging-Auth-Bypass": secret},
@@ -388,18 +392,19 @@ def test_staging_owner_bypass_logs_missing_tenant_membership(
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "tenant_membership_not_found", secret,
+        response, denial_logs, "tenant_membership_not_found", secret,
         "owner@example.test", configured_tenant,
     )
 
 
-def test_staging_owner_bypass_logs_missing_owner_role(passwordless_client, monkeypatch, caplog):
+def test_staging_owner_bypass_logs_missing_owner_role(passwordless_client, monkeypatch):
     client, engine, _mailer, tenant_id, _user_id, membership_id = passwordless_client
     with Session(engine) as session:
         session.get(TenantMembership, membership_id).role = "viewer"
         session.commit()
 
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
         "/auth/staging-owner-session",
         headers={"X-Staging-Auth-Bypass": secret},
@@ -407,19 +412,18 @@ def test_staging_owner_bypass_logs_missing_owner_role(passwordless_client, monke
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "owner_role_not_found", secret, "owner@example.test", tenant_id,
+        response, denial_logs, "owner_role_not_found", secret, "owner@example.test", tenant_id,
     )
 
 
-def test_staging_owner_bypass_logs_ineligible_owner_membership(
-    passwordless_client, monkeypatch, caplog,
-):
+def test_staging_owner_bypass_logs_ineligible_owner_membership(passwordless_client, monkeypatch):
     client, engine, _mailer, tenant_id, _user_id, membership_id = passwordless_client
     with Session(engine) as session:
         session.get(TenantMembership, membership_id).status = "suspended"
         session.commit()
 
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
         "/auth/staging-owner-session",
         headers={"X-Staging-Auth-Bypass": secret},
@@ -427,17 +431,17 @@ def test_staging_owner_bypass_logs_ineligible_owner_membership(
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "owner_membership_ineligible_status", secret,
+        response, denial_logs, "owner_membership_ineligible_status", secret,
         "owner@example.test", tenant_id,
     )
 
 
-def test_staging_owner_bypass_logs_missing_identity_configuration(
-    passwordless_client, monkeypatch, caplog,
-):
+def test_staging_owner_bypass_logs_missing_identity_configuration(passwordless_client, monkeypatch):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_email", None)
+    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
         "/auth/staging-owner-session",
         headers={"X-Staging-Auth-Bypass": secret},
@@ -445,6 +449,6 @@ def test_staging_owner_bypass_logs_missing_identity_configuration(
     )
 
     assert_staging_owner_denial_is_generic(
-        response, caplog, "identity_configuration_missing", secret,
+        response, denial_logs, "identity_configuration_missing", secret,
         "owner@example.test", tenant_id,
     )
