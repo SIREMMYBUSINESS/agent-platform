@@ -1,6 +1,6 @@
 const SESSION_COOKIE_NAME = "__Host-agent_session";
 const LOGIN_COOKIE_NAME = "__Host-agent_login";
-const SESSION_TTL_SECONDS = 60 * 60 * 12;
+const SESSION_TTL_SECONDS = 60 * 60;
 const LOGIN_TICKET_TTL_SECONDS = 60 * 5;
 
 type EncryptedPayload = { value: string; expiresAt: number };
@@ -84,7 +84,7 @@ async function readEncryptedCookie(
 export async function createSessionCookie(
   credential: string, secret: string, expiresAt?: number,
 ): Promise<string> {
-  if (!/^(ap|ws)_[A-Za-z0-9_-]{43}$/.test(credential)) {
+  if (!/^ap_[A-Za-z0-9_-]{43}$/.test(credential)) {
     throw new Error("Workspace credential format is invalid.");
   }
   const ttl = expiresAt === undefined
@@ -95,11 +95,12 @@ export async function createSessionCookie(
 
 export async function readSessionCredential(request: Request, secret: string): Promise<string | null> {
   const value = await readEncryptedCookie(request, SESSION_COOKIE_NAME, secret);
-  return value && /^(ap|ws)_[A-Za-z0-9_-]{43}$/.test(value) ? value : null;
+  return value && /^ap_[A-Za-z0-9_-]{43}$/.test(value) ? value : null;
 }
 
 export async function readSessionApiKey(request: Request, secret: string): Promise<string | null> {
-  return readSessionCredential(request, secret);
+  const value = await readSessionCredential(request, secret);
+  return value && /^ap_[A-Za-z0-9_-]{43}$/.test(value) ? value : null;
 }
 
 export async function createPendingLoginCookie(ticket: string, secret: string): Promise<string> {

@@ -3,17 +3,67 @@ import { createSessionCookie } from "../.server/session";
 import type { Route } from "./+types/login";
 
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
-const STAGING_BYPASS_UI = import.meta.env.VITE_STAGING_AUTH_BYPASS_ENABLED === "true";
+
+type ListResponse<T> = { items: T[]; offset: number; limit: number };
+
+class PlatformApiError extends Error {
+  constructor(readonly path: string, readonly status: number) {
+    super("Platform API returned " + status + ".");
+  }
+}
+
+class PlatformRequestError extends Error {
+  constructor(readonly path: string) {
+    super("Platform API request failed.");
+  }
+}
 
 function originMatches(request: Request) {
   const origin = request.headers.get("Origin");
   return !!origin && origin === new URL(request.url).origin;
 }
 
+async function validateApiKey(apiKey: string) {
+  if (!API_BASE) throw new PlatformRequestError("configuration");
+  for (const path of ["/leads?offset=0&limit=1", "/conversations?offset=0&limit=1"]) {
+    let response: Response;
+    try {
+      response = await fetch(API_BASE + path, {
+        headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
+        redirect: "follow",
+      });
+    } catch {
+      throw new PlatformRequestError(path.split("?")[0]);
+    }
+    if (response.url && new URL(response.url).origin !== new URL(API_BASE).origin) {
+      throw new PlatformRequestError(path.split("?")[0]);
+    }
+    if (!response.ok) throw new PlatformApiError(path.split("?")[0], response.status);
+    try {
+      const payload = await response.json() as ListResponse<unknown>;
+      if (!payload || !Array.isArray(payload.items)) throw new Error("Invalid API response.");
+    } catch {
+      throw new PlatformRequestError(path.split("?")[0]);
+    }
+  }
+}
+
+function loginError(error: unknown) {
+  if (error instanceof PlatformApiError) {
+    if (error.status === 401) return error.path + " rejected this key. Check that it is the correct, unexpired staging key.";
+    if (error.status === 403) return error.path + " denied access. Check the key\u0027s tenant grant and permissions.";
+    return error.path + " returned HTTP " + error.status + ". Check the API service and try again.";
+  }
+  if (error instanceof PlatformRequestError) {
+    return "The staging API request for " + error.path + " could not be completed. Check the API URL and service availability.";
+  }
+  return "The workspace session could not be created. Check the staging Worker session configuration.";
+}
+
 export function meta() {
   return [
-    { title: "Sign in | Agent Platform" },
-    { name: "description", content: "Sign in securely to your Agent Platform workspace." },
+    { title: "Workspace login | Agent Platform" },
+    { name: "description", content: "Connect securely to your Agent Platform workspace." },
     { name: "robots", content: "noindex, nofollow" },
   ];
 }
@@ -27,132 +77,61 @@ export function headers() {
 
 export async function action({ request, context }: Route.ActionArgs) {
   if (!originMatches(request)) return { error: "Request origin could not be verified." };
-  if (!API_BASE) return { error: "Workspace authentication is not configured yet." };
+  if (!API_BASE) return { error: "The staging API URL is not configured." };
   const form = await request.formData();
-  const email = String(form.get("email") || "").trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-    return { error: "Enter a valid email address." };
+  const apiKey = String(form.get("apiKey") || "").trim();
+  if (!/^ap_[A-Za-z0-9_-]{43}$/.test(apiKey)) {
+    return { error: "Enter a valid provisioned API key." };
   }
-  const intent = String(form.get("intent") || "magic-link");
-  if (intent === "staging-bypass") {
-    const accessCode = String(form.get("accessCode") || "");
-    const tenantId = String(form.get("tenantId") || "");
-    const sessionSecret = context.cloudflare.env.SESSION_ENCRYPTION_KEY;
-    if (!STAGING_BYPASS_UI || !accessCode || !tenantId || !sessionSecret) {
-      return { error: "Staging access is not configured." };
-    }
-    try {
-      const response = await fetch(API_BASE + "/auth/staging-owner-session", {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          "X-Staging-Auth-Bypass": accessCode,
-        },
-        body: JSON.stringify({ email, tenant_id: tenantId }),
-        redirect: "manual",
-      });
-      if (!response.ok) return { error: "Staging access could not be authorized." };
-      const payload = await response.json() as { session_token: string; expires_at: string; tenant_id: string };
-      const expiry = Date.parse(payload.expires_at);
-      if (!/^ws_[A-Za-z0-9_-]{43}$/.test(payload.session_token)
-        || payload.tenant_id !== tenantId || !Number.isFinite(expiry)) {
-        return { error: "The staging workspace session could not be created." };
-      }
-      const headers = new Headers({
-        "Cache-Control": "private, no-store, max-age=0",
-        "Referrer-Policy": "no-referrer",
-        "Location": "/dashboard",
-      });
-      headers.append("Set-Cookie", await createSessionCookie(payload.session_token, sessionSecret, expiry));
-      return new Response(null, { status: 303, headers });
-    } catch {
-      return { error: "Staging access could not be completed. Please try again." };
-    }
-  }
+  const sessionSecret = context.cloudflare.env.SESSION_ENCRYPTION_KEY;
+  if (!sessionSecret) return { error: "Workspace session encryption is not configured." };
   try {
-    const response = await fetch(API_BASE + "/auth/magic-link", {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ email }),
-      redirect: "manual",
+    await validateApiKey(apiKey);
+    const headers = new Headers({
+      "Cache-Control": "private, no-store, max-age=0",
+      "Referrer-Policy": "no-referrer",
+      "Location": "/dashboard",
     });
-    if (response.status !== 202) {
-      return {
-        error: response.status >= 500
-          ? "Email sign-in is temporarily unavailable. Please try again shortly."
-          : "The sign-in request could not be completed.",
-      };
-    }
-    return { sent: true };
-  } catch {
-    return { error: "The sign-in service could not be reached. Please try again." };
+    headers.append("Set-Cookie", await createSessionCookie(apiKey, sessionSecret));
+    return new Response(null, { status: 303, headers });
+  } catch (error) {
+    return { error: loginError(error) };
   }
 }
 
 export default function LoginRoute({ actionData }: Route.ComponentProps) {
   const navigation = useNavigation();
   const isSubmitting = navigation.state !== "idle";
-  const submittedIntent = navigation.formData?.get("intent") || "magic-link";
-  const stagingPending = isSubmitting && submittedIntent === "staging-bypass";
-  const magicLinkPending = isSubmitting && submittedIntent !== "staging-bypass";
-
   return (
     <main className="workspace-shell">
       <section className="card workspace-credentials" aria-busy={isSubmitting}>
-        <p className="eyebrow">Agent Platform</p>
-        <h1>Sign in to your workspace</h1>
+        <p className="eyebrow">Agent Platform · Staging</p>
+        <h1>Connect to your workspace</h1>
         <p className="workspace-description">
-          Enter your invited workspace email. We will send you a one-time sign-in link.
+          Enter a provisioned staging API key to securely connect to its assigned tenant.
         </p>
-        {actionData?.sent ? (
-          <div className="notice" role="status">
-            Check your inbox. If an eligible workspace account exists for that email, a sign-in link has been sent.
+        <Form method="post" className="key-form">
+          <label htmlFor="workspace-api-key">Provisioned API key</label>
+          <div className="key-entry">
+            <input
+              id="workspace-api-key"
+              name="apiKey"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              required
+              placeholder="ap_…"
+              disabled={isSubmitting}
+            />
+            <button className="primary-button" type="submit" disabled={isSubmitting}>
+              {isSubmitting ? "Verifying key…" : "Connect"}
+            </button>
           </div>
-        ) : (
-          <>
-          <Form method="post" className="key-form" aria-busy={magicLinkPending}>
-            <label htmlFor="workspace-email">Work email</label>
-            <div className="key-entry">
-              <input
-                id="workspace-email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                maxLength={254}
-                required
-                placeholder="you@company.com"
-                disabled={isSubmitting}
-              />
-              <button className="primary-button" type="submit" disabled={isSubmitting}>
-                {magicLinkPending ? <><span className="button-spinner" aria-hidden="true" /> Sending sign-in link…</> : "Email me a sign-in link"}
-              </button>
-            </div>
-            {magicLinkPending && <p className="submit-status" role="status" aria-live="polite">Contacting the sign-in service. Please wait…</p>}
-            <p className="helper">
-              Access is available to users invited by a workspace administrator. Sign-in links expire and can only be used once.
-            </p>
-          </Form>
-          {STAGING_BYPASS_UI && (
-            <Form method="post" className="key-form" aria-busy={stagingPending}>
-              <input type="hidden" name="intent" value="staging-bypass" />
-              <h2>Temporary staging owner access</h2>
-              <label htmlFor="staging-owner-email">Workspace owner email</label>
-              <input id="staging-owner-email" name="email" type="email" required autoComplete="email" maxLength={254} disabled={isSubmitting} />
-              <label htmlFor="staging-tenant-id">Staging tenant ID</label>
-              <input id="staging-tenant-id" name="tenantId" type="text" required autoComplete="off" disabled={isSubmitting} />
-              <label htmlFor="staging-access-code">Staging access code</label>
-              <input id="staging-access-code" name="accessCode" type="password" required autoComplete="off" disabled={isSubmitting} />
-              <button className="primary-button" type="submit" disabled={isSubmitting}>
-                {stagingPending ? <><span className="button-spinner" aria-hidden="true" /> Verifying access…</> : "Open staging workspace"}
-              </button>
-              {stagingPending && <p className="submit-status" role="status" aria-live="polite">Verifying owner access and preparing your workspace. Please wait…</p>}
-              <p className="helper">Temporary staging-only access. Do not use production credentials.</p>
-            </Form>
-          )}
           {actionData?.error && <p className="notice error-notice" role="alert">{actionData.error}</p>}
-          </>
-        )}
+          <p className="helper">
+            The key is validated server-side and stored only in an encrypted, one-hour HttpOnly session. It is never placed in browser storage or returned to client-side code. Use a provisioned key with the required lead and conversation permissions.
+          </p>
+        </Form>
         <p className="helper"><Link to="/">Back to Agent Platform</Link></p>
       </section>
     </main>

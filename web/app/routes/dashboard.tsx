@@ -1,6 +1,6 @@
 import { Form, Link, redirect } from "react-router";
 import type { Route } from "./+types/dashboard";
-import { clearSessionCookie, readSessionCredential } from "../.server/session";
+import { clearSessionCookie, readSessionApiKey } from "../.server/session";
 
 type Lead = {
   id: string;
@@ -48,8 +48,8 @@ function safeFetchErrorCode(error: unknown) {
 
 function accessFailure(path: string, error: unknown) {
   if (error instanceof PlatformApiError) {
-    if (error.status === 401) return `${path} rejected the workspace session (HTTP 401). Request a new email sign-in link.`;
-    if (error.status === 403) return `${path} denied this workspace membership (HTTP 403). Ask a workspace owner to review your role and tenant access.`;
+    if (error.status === 401) return `${path} rejected the API key (HTTP 401). Check that this provisioned key is valid, unexpired, and not revoked.`;
+    if (error.status === 403) return `${path} denied tenant access (HTTP 403). Check that this key has an enabled grant for this tenant.`;
     return `${path} returned HTTP ${error.status}. Check the staging API deployment and its database connection.`;
   }
   if (error instanceof PlatformRequestError) {
@@ -125,7 +125,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       error: "Workspace authentication is not configured yet.",
     };
   }
-  const apiKey = await readSessionCredential(request, sessionSecret);
+  const apiKey = await readSessionApiKey(request, sessionSecret);
   if (!apiKey) return redirect("/login");
   try {
     const [leadResult, conversationResult] = await Promise.all([
@@ -150,28 +150,16 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       conversations: [] as Conversation[],
       error: error instanceof PlatformApiError || error instanceof PlatformRequestError
         ? accessFailure(error.path, error)
-        : "The workspace could not be loaded. Try again or ask an administrator to review access.",
+        : "Your API key could not access the workspace. Check its tenant grant and permissions.",
     };
-  }}
+  }
+}
 
-export async function action({ request, context }: Route.ActionArgs) {
+export async function action({ request }: Route.ActionArgs) {
   if (!originMatches(request)) return { error: "Request origin could not be verified." };
   const form = await request.formData();
   if (String(form.get("intent") || "") !== "logout") {
-    return { error: "Use email sign-in to connect to your workspace." };
-  }
-  const credential = await readSessionCredential(
-    request, context.cloudflare.env.SESSION_ENCRYPTION_KEY,
-  );
-  if (credential && API_BASE) {
-    try {
-      await fetch(API_BASE + "/auth/logout", {
-        method: "POST",
-        headers: { Authorization: "Bearer " + credential, Accept: "application/json" },
-      });
-    } catch {
-      // Always clear the browser session; an expired server session is already unusable.
-    }
+    return { error: "Invalid workspace action." };
   }
   return new Response(null, {
     status: 303,
@@ -183,14 +171,14 @@ export async function action({ request, context }: Route.ActionArgs) {
   });
 }
 
-export default function DashboardRoute({ loaderData, actionData }: Route.ComponentProps) {
+export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
   return (
     <main className="workspace-shell">
       <header className="workspace-heading">
         <div>
           <p className="eyebrow">Tenant workspace</p>
           <h1>Your receptionist activity</h1>
-          <p className="workspace-description">Review recent leads and conversations. Your workspace membership determines tenant access and permissions.</p>
+          <p className="workspace-description">Review recent leads and conversations. The API scopes each result to the tenant assigned to your key.</p>
         </div>
         {loaderData.connected && <div className="workspace-actions"><Link className="secondary-button" to="/onboarding">Configure receptionist</Link><Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form></div>}
       </header>
@@ -201,7 +189,7 @@ export default function DashboardRoute({ loaderData, actionData }: Route.Compone
             <span className="number">1</span>
             <div><h2>Workspace unavailable</h2><p>{loaderData.error || "Sign in to continue to your workspace."}</p></div>
           </div>
-          <Link className="primary-button" to="/login">Sign in with email</Link>
+          <Link className="primary-button" to="/login">Connect with API key</Link>
         </section>
       ) : (
         <>
