@@ -59,11 +59,12 @@ class VerticalOnboardingService:
 
     def catalog(self, principal: AuthenticatedPrincipal) -> list[dict]:
         self._require(principal, "business_onboarder")
-        template = get_vertical_template("healthcare_dental")
-        return [{"vertical_id": template.vertical_id,
-                 "display_name": template.display_name,
-                 "required_providers": list(template.required_providers),
-                 "optional_providers": list(template.optional_providers)}]
+        return [{
+            "vertical_id": template.vertical_id,
+            "display_name": template.display_name,
+            "required_providers": list(template.required_providers),
+            "optional_providers": list(template.optional_providers),
+        } for template in __import__("app.verticals.templates", fromlist=["list_vertical_templates"]).list_vertical_templates()]
 
     def template(self, principal: AuthenticatedPrincipal, vertical_id: str) -> dict:
         self._require(principal, "business_onboarder")
@@ -437,7 +438,7 @@ class VerticalOnboardingService:
             ticket = self._escalations.create_ticket(
                 uow=uow, tenant_id=tenant.id, business_id=business.id,
                 contact_id=contact.id, conversation_id=conversation.id,
-                reason="dental_intake_no_available_appointment", priority="normal",
+                reason="vertical_intake_no_available_appointment", priority="normal",
             )
             uow.verticals.save_answer(tenant_id=tenant.id, business_id=business.id,
                 session_id=session.id, answer_key="__complete__",
