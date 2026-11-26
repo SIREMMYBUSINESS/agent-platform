@@ -310,7 +310,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
               <p>{loaderData.conversations.length === 0 ? "Customer conversations will appear here as your receptionist handles them." : "Try a different search term or clear the search."}</p>
             </div> : (
               <div className="conversation-filter-bar" role="group" aria-label="Filter conversations">{(["all","open","blocked","closed"] as const).map((filter) => <button key={filter} type="button" className={conversationFilter === filter ? "filter-chip active" : "filter-chip"} aria-pressed={conversationFilter === filter} onClick={() => setConversationFilter(filter)}>{filter[0].toUpperCase()+filter.slice(1)}</button>)}<label className="sort-control">Sort <select value={conversationSort} onChange={e=>setConversationSort(e.target.value as typeof conversationSort)}><option value="updated">Last updated</option><option value="status">Status</option><option value="channel">Channel</option></select></label></div>
-              <div className="table-scroll"><table><thead><tr><th scope="col">Conversation</th><th scope="col">Channel</th><th scope="col">Status</th><th scope="col">Last updated</th></tr></thead>
+              <div className="table-scroll"><table><thead><tr><th scope="col">Conversation</th><th scope="col">Channel</th><th scope="col">Status</th><th scope="col">Last updated</th><th scope="col">Actions</th></tr></thead>
                 <tbody>{filteredConversations.map((conversation) => {
                   const isBlocked = /blocked/i.test(conversation.workflow_state);
                   const conversationUrl = `/conversations?search=${encodeURIComponent(conversation.id)}`;
@@ -320,7 +320,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
                     <td>{isBlocked
                       ? <span className="status-chip status-chip-blocked" title="This conversation is blocked in its workflow and needs a team member to review it.">Blocked: needs attention</span>
                       : <span className="status-chip">{readableStatus(conversation.status)}</span>}</td>
-                    <td><time dateTime={conversation.updated_at} title={formatDate(conversation.updated_at)}>{formatRelativeDate(conversation.updated_at)}</time></td>
+                    <td><time dateTime={conversation.updated_at} title={formatDate(conversation.updated_at)}>{formatRelativeDate(conversation.updated_at)}</time></td><td><details className="row-actions"><summary aria-label="Actions for conversation">Actions</summary><div><Link to={conversationUrl}>Open</Link><Link to={conversationUrl}>View details</Link><button type="button" disabled title="Resolution action is not available from this dashboard yet">Mark resolved</button></div></details></td>
                   </tr>;
                 })}</tbody>
               </table></div>
