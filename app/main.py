@@ -56,6 +56,7 @@ from app.observability.collectors import refresh_optimization_health, refresh_qu
 from app.queue.contracts import QueueDomain, QueueTaskSubmission, QueueTaskView
 from app.queue.service import QueueAuthorizationError, QueueTaskConflict, QueueTaskService
 from uuid import uuid4
+import os
 
 configure_structured_logging(settings.log_level)
 app = FastAPI(title=settings.app_name)
@@ -203,6 +204,29 @@ async def campaign_reply_tenant_mismatch_handler(request: Request, exc: Campaign
 @app.exception_handler(CampaignReplyNotFoundError)
 async def campaign_reply_not_found_handler(request: Request, exc: CampaignReplyNotFoundError) -> JSONResponse:
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+@app.get("/diagnostics/staging-owner-auth", include_in_schema=False)
+def staging_owner_auth_diagnostic():
+    """TEMPORARY: expose only four allowlisted, non-secret staging diagnostics."""
+    owner_route_registered = any(
+        route.path == "/auth/staging-owner-session"
+        and "POST" in getattr(route, "methods", set())
+        for route in app.routes
+    )
+    revision = (
+        os.environ.get("RENDER_GIT_COMMIT")
+        or os.environ.get("GIT_COMMIT_SHA")
+        or os.environ.get("COMMIT_SHA")
+        or os.environ.get("GITHUB_SHA")
+        or "unknown"
+    )
+    return {
+        "effective_environment": settings.environment,
+        "bypass_enabled": bool(settings.staging_auth_bypass_enabled),
+        "route_registered": bool(owner_route_registered),
+        "running_revision": revision,
+    }
+
 
 @app.get("/health")
 def health():
