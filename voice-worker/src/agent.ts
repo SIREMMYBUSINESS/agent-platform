@@ -1,3 +1,4 @@
+import { cancelHangupSchedule } from "./schedule";
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from "agents";
 import type { Env } from "./types";
 import { parseStreamPath, verifyStreamToken } from "./twilio";
@@ -317,14 +318,11 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.finalized = true;
     this.socketGeneration++;
 
-    const scheduleId = this.state.hangupScheduleId;
-    if (scheduleId) {
-      try {
-        await this.cancelSchedule(scheduleId);
-      } catch (error) {
-        logStreamFailure("hangup_schedule_cancel", error);
-      }
-    }
+    await cancelHangupSchedule(
+      this.state.hangupScheduleId,
+      (id) => this.cancelSchedule(id),
+      (error) => logStreamFailure("hangup_schedule_cancel", error),
+    );
 
     const socket = this.stt;
     this.stt = undefined;
