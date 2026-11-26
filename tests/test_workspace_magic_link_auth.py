@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import logging
+from datetime import UTC, datetime
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -439,7 +439,6 @@ def test_staging_owner_bypass_logs_ineligible_owner_membership(passwordless_clie
 def test_staging_owner_bypass_logs_missing_identity_configuration(passwordless_client, monkeypatch):
     client, _engine, _mailer, tenant_id, *_ = passwordless_client
     secret = configure_staging_owner_bypass(monkeypatch, tenant_id)
-    denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     monkeypatch.setattr("app.routes.auth.settings.staging_auth_bypass_email", None)
     denial_logs = capture_staging_owner_denial_logs(monkeypatch)
     response = client.post(
