@@ -9,7 +9,7 @@ const TTS_MODEL = "@cf/deepgram/aura-1";
 // -----------------------------------------------------------------------------------------------
 
 const MAX_CALL_SECONDS = 15 * 60;
-const TRANSCRIPT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const TRANSCRIPT_RETENTION_SECONDS = 30 * 24 * 60 * 60;
 const FRAME_BYTES = 160; // 20 ms of 8 kHz mu-law
 const BARGE_IN_GUARD_MS = 400; // ignore speech-start right after we begin speaking (line echo)
 const SENTENCE_END = /[.!?]\\s/;
@@ -227,6 +227,12 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.sql`INSERT INTO transcript (role, text, ts) VALUES (${role}, ${text.slice(0, 4000)}, ${Date.now()})`;
   }
 
+  // Scheduled from finalization so deletion occurs 30 days after the call, not only
+  // when a later call happens to touch this Durable Object.
+  async purgeTranscript() {
+    this.sql`DELETE FROM transcript`;
+  }
+
   async hangup() {
     await this.finalizeCall();
   }
@@ -252,8 +258,14 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     } catch { /* already closed */ }
     this.stt = undefined;
 
-    // Keep call transcripts for 30 days, then purge older rows at call finalization.
-    this.sql`DELETE FROM transcript WHERE ts < ${Date.now() - TRANSCRIPT_RETENTION_MS}`;
+    // Retain this call's transcript for 30 days after it ends, then delete it.
+    try {
+      await this.schedule(TRANSCRIPT_RETENTION_SECONDS, "purgeTranscript", {});
+    } catch (error) {
+      logStreamFailure("transcript_retention_schedule", error);
+      // If retention scheduling fails, prefer immediate deletion over indefinite retention.
+      this.sql`DELETE FROM transcript`;
+    }
   }
 }
 
