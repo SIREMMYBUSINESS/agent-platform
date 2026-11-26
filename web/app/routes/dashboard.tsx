@@ -198,7 +198,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
         <div>
           <p className="eyebrow">Tenant workspace · Overview</p>
           <h1>Good to have you back.</h1>
-          <p className="workspace-description">A live view of the latest leads and customer conversations available to this workspace.</p>
+          <p className="workspace-description">A clear view of the latest leads and customer conversations available to this workspace.</p>
         </div>
         {loaderData.connected && <div className="workspace-actions">
           <button className="secondary-button refresh-button" type="button" onClick={() => revalidator.revalidate()} disabled={revalidator.state !== "idle"}>
