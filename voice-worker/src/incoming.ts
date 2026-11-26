@@ -11,12 +11,12 @@ export type IncomingEnv = {
   VOICE_ADMISSION: AdmissionNamespace;
 };
 
-const PHONE_RE = /^\\+[1-9][0-9]{6,14}$/;
+const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
 const ACCOUNT_SID_RE = /^AC[0-9a-f]{32}$/i;
 const MAX_WEBHOOK_BYTES = 10_000;
 
 const xml = (body: string, status = 200) =>
-  new Response(`<?xml version="1.0" encoding="UTF-8"?>\\n${body}`, {
+  new Response(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`, {
     status,
     headers: { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" },
   });
