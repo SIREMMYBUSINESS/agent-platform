@@ -110,6 +110,18 @@ function formatDate(value: string) {
     ? "Date unavailable"
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
+function formatRelativeDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
+  const seconds = (date.getTime() - Date.now()) / 1000;
+  const absolute = Math.abs(seconds);
+  const units: Array<[number, Intl.RelativeTimeFormatUnit]> = [
+    [31_536_000, "year"], [2_592_000, "month"], [86_400, "day"],
+    [3_600, "hour"], [60, "minute"],
+  ];
+  const [size, unit] = units.find(([size]) => absolute >= size) || [1, "second"];
+  return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(Math.round(seconds / size), unit);
+}
 function originMatches(request: Request) {
   const origin = request.headers.get("Origin");
   return !!origin && origin === new URL(request.url).origin;
@@ -201,13 +213,14 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
           <p className="workspace-description">A clear view of the latest leads and customer conversations available to this workspace.</p>
         </div>
         {loaderData.connected && <div className="workspace-actions">
-          <button className="secondary-button refresh-button" type="button" onClick={() => revalidator.revalidate()} disabled={revalidator.state !== "idle"}>
-            {revalidator.state !== "idle" ? "Refreshing…" : "Refresh data"}
-          </button>
-          <Link className="secondary-button" to="/leads">Leads</Link>
-          <Link className="secondary-button" to="/conversations">Conversations</Link>
+          <div className="workspace-segmented-control" role="group" aria-label="Workspace shortcuts">
+            <button className="secondary-button refresh-button" type="button" onClick={() => revalidator.revalidate()} disabled={revalidator.state !== "idle"}>
+              {revalidator.state !== "idle" ? "Refreshing…" : "Refresh data"}
+            </button>
+            <Link className="secondary-button" to="/leads">Leads</Link>
+            <Link className="secondary-button" to="/conversations">Conversations</Link>
+          </div>
           <Link className="primary-button" to="/onboarding">Configure workspace</Link>
-          <Form method="post"><button className="secondary-button" type="submit" name="intent" value="logout">Sign out</button></Form>
         </div>}
       </header>
 
@@ -222,9 +235,9 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
       ) : (
         <>
           <section className="workspace-stats dashboard-metrics" aria-label="Workspace data summary">
-            <article className="stat-card metric-leads"><span>Leads loaded</span><strong>{loaderData.leads.length}</strong><small>Most recent records · maximum 25</small></article>
+            <article className="stat-card metric-leads"><span>Leads loaded</span><strong>{loaderData.leads.length}</strong><small>From up to 25 recent records</small></article>
             <article className="stat-card metric-conversations"><span>Conversations loaded</span><strong>{loaderData.conversations.length}</strong><small>Most recent records · maximum 25</small></article>
-            <article className="stat-card metric-channels"><span>Channels represented</span><strong>{channels}</strong><small>Across the loaded conversations</small></article>
+            <article className="stat-card metric-channels"><span>Channels represented</span><strong>{channels}</strong><small>From up to 25 recent conversations</small></article>
           </section>
 
           <section className="dashboard-toolbar" aria-label="Workspace data controls">
@@ -235,7 +248,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
             </div>
             <label className="workspace-search">
               <span className="sr-only">Search leads and conversations</span>
-              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search workspace…" />
+              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search leads and conversations…" />
               {query && <button type="button" onClick={() => setQuery("")} aria-label="Clear search">Clear</button>}
             </label>
           </section>
@@ -243,13 +256,14 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
           <section className="card data-card dashboard-data-card">
             <div className="data-heading">
               <div><p className="eyebrow">Lead management</p><h2>Recent leads</h2><p className="data-subtitle">Latest leads assigned to this tenant.</p></div>
-              <span className="data-count" aria-label={`${filteredLeads.length} matching leads`}>{filteredLeads.length}</span>
+              <div className="data-heading-actions"><span className="data-count data-count-label" aria-label={`${filteredLeads.length} matching leads`}>{filteredLeads.length} leads</span><Link className="view-all-link" to="/leads">View all</Link></div>
             </div>
             {filteredLeads.length === 0 ? <div className="empty-state">
               <strong>{loaderData.leads.length === 0 ? "No leads yet" : "No matching leads"}</strong>
               <p>{loaderData.leads.length === 0 ? "New leads will appear here when they enter your workspace." : "Try a different search term or clear the search."}</p>
+              {loaderData.leads.length === 0 && <Link className="empty-state-link" to="/onboarding">Configure your workspace to connect a channel</Link>}
             </div> : (
-              <div className="table-scroll"><table><thead><tr><th>Lead</th><th>Status</th><th>Priority score</th><th>Created</th></tr></thead>
+              <div className="table-scroll"><table><thead><tr><th scope="col">Lead</th><th scope="col">Status</th><th scope="col">Priority score</th><th scope="col">Created</th></tr></thead>
                 <tbody>{filteredLeads.map((lead) => <tr key={lead.id}>
                   <td><strong>{shortId(lead.id)}</strong><small>Contact {shortId(lead.contact_id)}</small></td>
                   <td><span className="status-chip">{readableStatus(lead.status)}</span></td>
@@ -263,19 +277,25 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
           <section className="card data-card dashboard-data-card">
             <div className="data-heading">
               <div><p className="eyebrow">Receptionist inbox</p><h2>Recent conversations</h2><p className="data-subtitle">Latest conversations across connected channels.</p></div>
-              <span className="data-count" aria-label={`${filteredConversations.length} matching conversations`}>{filteredConversations.length}</span>
+              <div className="data-heading-actions"><span className="data-count data-count-label" aria-label={`${filteredConversations.length} matching conversations`}>{filteredConversations.length} conversations</span><Link className="view-all-link" to="/conversations">View all</Link></div>
             </div>
             {filteredConversations.length === 0 ? <div className="empty-state">
               <strong>{loaderData.conversations.length === 0 ? "No conversations yet" : "No matching conversations"}</strong>
               <p>{loaderData.conversations.length === 0 ? "Customer conversations will appear here as your receptionist handles them." : "Try a different search term or clear the search."}</p>
             </div> : (
-              <div className="table-scroll"><table><thead><tr><th>Conversation</th><th>Channel</th><th>Status</th><th>Last updated</th></tr></thead>
-                <tbody>{filteredConversations.map((conversation) => <tr key={conversation.id}>
-                  <td><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></td>
-                  <td><span className="channel-label">{readableStatus(conversation.channel)}</span></td>
-                  <td><span className="status-chip">{readableStatus(conversation.status)}</span><small>{readableStatus(conversation.workflow_state)}</small></td>
-                  <td>{formatDate(conversation.updated_at)}</td>
-                </tr>)}</tbody>
+              <div className="table-scroll"><table><thead><tr><th scope="col">Conversation</th><th scope="col">Channel</th><th scope="col">Status</th><th scope="col">Last updated</th></tr></thead>
+                <tbody>{filteredConversations.map((conversation) => {
+                  const isBlocked = /blocked/i.test(conversation.workflow_state);
+                  const conversationUrl = `/conversations?search=${encodeURIComponent(conversation.id)}`;
+                  return <tr key={conversation.id}>
+                    <td><Link className="dashboard-row-link" to={conversationUrl} aria-label={`Open conversation ${shortId(conversation.id)}`}><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></Link></td>
+                    <td><span className="channel-label">{readableStatus(conversation.channel)}</span></td>
+                    <td>{isBlocked
+                      ? <span className="status-chip status-chip-blocked" title="This conversation is blocked in its workflow and needs a team member to review it.">Blocked: needs attention</span>
+                      : <span className="status-chip">{readableStatus(conversation.status)}</span>}</td>
+                    <td><time dateTime={conversation.updated_at} title={formatDate(conversation.updated_at)}>{formatRelativeDate(conversation.updated_at)}</time></td>
+                  </tr>;
+                })}</tbody>
               </table></div>
             )}
           </section>
