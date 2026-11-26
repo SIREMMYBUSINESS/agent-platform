@@ -50,12 +50,12 @@ async function validateApiKey(apiKey: string) {
 
 function loginError(error: unknown) {
   if (error instanceof PlatformApiError) {
-    if (error.status === 401) return "The API rejected this key. Check that it is the correct, unexpired staging key.";
-    if (error.status === 403) return "This API key does not have the required tenant access or permissions.";
-    return "The staging API returned HTTP " + error.status + ". Check the API service and try again.";
+    if (error.status === 401) return error.path + " rejected this key. Check that it is the correct, unexpired staging key.";
+    if (error.status === 403) return error.path + " denied access. Check the key\u0027s tenant grant and permissions.";
+    return error.path + " returned HTTP " + error.status + ". Check the API service and try again.";
   }
   if (error instanceof PlatformRequestError) {
-    return "The staging API could not be reached or returned an unexpected response. Check the API URL and service availability.";
+    return "The staging API request for " + error.path + " could not be completed. Check the API URL and service availability.";
   }
   return "The workspace session could not be created. Check the staging Worker session configuration.";
 }
