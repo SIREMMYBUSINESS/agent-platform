@@ -9,9 +9,10 @@ const TTS_MODEL = "@cf/deepgram/aura-1";
 // -----------------------------------------------------------------------------------------------
 
 const MAX_CALL_SECONDS = 15 * 60;
+const TRANSCRIPT_RETENTION_SECONDS = 30 * 24 * 60 * 60;
 const FRAME_BYTES = 160; // 20 ms of 8 kHz mu-law
 const BARGE_IN_GUARD_MS = 400; // ignore speech-start right after we begin speaking (line echo)
-const SENTENCE_END = /[.!?]\s/;
+const SENTENCE_END = /[.!?]\\s/;
 
 const SYSTEM_PROMPT = `You are a polite phone receptionist.
 Keep every reply to one or two short spoken sentences. No lists, no markdown.
@@ -32,6 +33,7 @@ type CallState = {
   streamSid?: string;
   speaking?: boolean;
   turns?: number;
+  hangupScheduleId?: string;
 };
 
 type ChatMsg = { role: "system" | "user" | "assistant"; content: string };
@@ -95,7 +97,8 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
         }
         this.started = true;
         this.setState({ ...this.state, streamSid: msg.start?.streamSid });
-        await this.schedule(MAX_CALL_SECONDS, "hangup", {});
+        const hangupSchedule = await this.schedule(MAX_CALL_SECONDS, "hangup", {});
+        this.setState({ ...this.state, hangupScheduleId: hangupSchedule.id });
         try {
           await this.openStt(conn);
           console.log(JSON.stringify({ event: "stream_stt_open_ok" }));
@@ -128,7 +131,6 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   async onClose() {
     await this.finalizeCall();
   }
-
 
   private async openStt(conn: Connection) {
     // Workers AI partner model supports streaming via its websocket response.
@@ -225,6 +227,12 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.sql`INSERT INTO transcript (role, text, ts) VALUES (${role}, ${text.slice(0, 4000)}, ${Date.now()})`;
   }
 
+  // Scheduled from finalization so deletion occurs 30 days after the call, not only
+  // when a later call happens to touch this Durable Object.
+  async purgeTranscript() {
+    this.sql`DELETE FROM transcript`;
+  }
+
   async hangup() {
     await this.finalizeCall();
   }
@@ -234,8 +242,30 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.ending = true;
     this.finalized = true;
     this.socketGeneration++;
-    try { this.stt?.close(); } catch { /* already closed */ }
+
+    // Cancel the call's 15-minute safety hangup when the caller or provider ends it first.
+    const scheduleId = this.state.hangupScheduleId;
+    if (scheduleId) {
+      try {
+        await this.cancelSchedule(scheduleId);
+      } catch (error) {
+        logStreamFailure("hangup_schedule_cancel", error);
+      }
+    }
+
+    try {
+      this.stt?.close();
+    } catch { /* already closed */ }
     this.stt = undefined;
+
+    // Retain this call's transcript for 30 days after it ends, then delete it.
+    try {
+      await this.schedule(TRANSCRIPT_RETENTION_SECONDS, "purgeTranscript", {});
+    } catch (error) {
+      logStreamFailure("transcript_retention_schedule", error);
+      // If retention scheduling fails, prefer immediate deletion over indefinite retention.
+      this.sql`DELETE FROM transcript`;
+    }
   }
 }
 

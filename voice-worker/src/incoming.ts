@@ -14,15 +14,18 @@ import {
 
 export type IncomingEnv = Pick<
   Env,
-  "PUBLIC_ORIGIN" | "PLATFORM_API_URL" | "PLATFORM_API_KEY" | "TWILIO_AUTH_TOKEN" | "STREAM_SECRET"
+  "PUBLIC_ORIGIN" | "PLATFORM_API_URL" | "PLATFORM_API_KEY" | "TWILIO_AUTH_TOKEN" | "STREAM_SECRET" | "INCOMING_RATE_LIMITER" | "NUMBER_LOOKUP_RATE_LIMITER"
 > & { TWILIO_ACCOUNT_SID?: string };
 
 const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
 const MAX_WEBHOOK_BYTES = 10_000;
 const LOOKUP_TIMEOUT_MS = 3000;
+const RATE_LIMITED = () =>
+  xml(`<Response><Say>We are receiving too many calls right now. Please try again later.</Say><Hangup/></Response>`, 429);
 
-const xml = (body: string) =>
+const xml = (body: string, status = 200) =>
   new Response(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`, {
+    status,
     headers: { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" },
   });
 
@@ -139,7 +142,20 @@ export async function handleIncoming(
     return new Response("Bad Request", { status: 400 });
   }
 
-  // Tenant scope comes only from the platform, keyed by the (signed) dialed number.
+  // Apply independent budgets after authenticating the Twilio request. Destination-number
+  // keys avoid grouping unrelated callers behind shared carrier/NAT IP addresses.
+  try {
+    const incomingLimit = await env.INCOMING_RATE_LIMITER.limit({ key: to });
+    if (!incomingLimit.success) return RATE_LIMITED();
+
+    const lookupLimit = await env.NUMBER_LOOKUP_RATE_LIMITER.limit({ key: to });
+    if (!lookupLimit.success) return RATE_LIMITED();
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "unknown";
+    console.error(JSON.stringify({ event: "voice_rate_limit_unavailable", error_name: name }));
+    return UNAVAILABLE();
+  }
+
   const scope = await resolveNumber(env, to, fetchImpl);
   if (!scope) return UNAVAILABLE();
 
