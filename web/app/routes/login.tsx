@@ -23,6 +23,25 @@ function originMatches(request: Request) {
   return !!origin && origin === new URL(request.url).origin;
 }
 
+function safeReturnTo(value: unknown): string {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
+    return "/dashboard";
+  }
+  try {
+    const destination = new URL(value, "https://agent-platform.invalid");
+    if (destination.origin !== "https://agent-platform.invalid"
+      || !["/dashboard", "/onboarding"].includes(destination.pathname)) return "/dashboard";
+    return destination.pathname + destination.search + destination.hash;
+  } catch {
+    return "/dashboard";
+  }
+}
+
+export async function loader({ request }: Route.LoaderArgs) {
+  const url = new URL(request.url);
+  return { returnTo: safeReturnTo(url.searchParams.get("returnTo")) };
+}
+
 async function validateApiKey(apiKey: string) {
   if (!API_BASE) throw new PlatformRequestError("configuration");
   for (const path of ["/leads?offset=0&limit=1", "/conversations?offset=0&limit=1"]) {
@@ -80,6 +99,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   if (!API_BASE) return { error: "The staging API URL is not configured." };
   const form = await request.formData();
   const apiKey = String(form.get("apiKey") || "").trim();
+  const returnTo = safeReturnTo(form.get("returnTo"));
   if (!/^ap_[A-Za-z0-9_-]{43}$/.test(apiKey)) {
     return { error: "Enter a valid provisioned API key." };
   }
@@ -90,7 +110,7 @@ export async function action({ request, context }: Route.ActionArgs) {
     const headers = new Headers({
       "Cache-Control": "private, no-store, max-age=0",
       "Referrer-Policy": "no-referrer",
-      "Location": "/dashboard",
+      "Location": returnTo,
     });
     headers.append("Set-Cookie", await createSessionCookie(apiKey, sessionSecret));
     return new Response(null, { status: 303, headers });
@@ -99,7 +119,7 @@ export async function action({ request, context }: Route.ActionArgs) {
   }
 }
 
-export default function LoginRoute({ actionData }: Route.ComponentProps) {
+export default function LoginRoute({ actionData, loaderData }: Route.ComponentProps) {
   const navigation = useNavigation();
   const isSubmitting = navigation.state !== "idle";
   return (
@@ -111,6 +131,7 @@ export default function LoginRoute({ actionData }: Route.ComponentProps) {
           Enter a provisioned staging API key to securely connect to its assigned tenant.
         </p>
         <Form method="post" className="key-form">
+          <input type="hidden" name="returnTo" value={loaderData.returnTo} />
           <label htmlFor="workspace-api-key">Provisioned API key</label>
           <div className="key-entry">
             <input

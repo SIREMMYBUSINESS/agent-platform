@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { Route } from "./+types/_index";
 import { readSessionCredential } from "../.server/session";
@@ -71,9 +71,9 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       canOnboard: false,
       requiresOnboardRole: missingRole,
       accessError: missingRole
-        ? "Your email is verified, but your workspace membership does not have the business_onboarder permission required to configure a business. Ask a workspace owner to review your role."
+        ? "Your API key is valid, but its tenant does not have the business_onboarder permission required to configure a business. Ask a workspace owner to review the key's role grants."
         : unauthorized
-          ? "Your workspace session has expired or was revoked. Request a new email sign-in link."
+          ? "Your workspace session has expired or was revoked. Reconnect with your provisioned staging API key."
           : denied
             ? "The staging API denied this request because of the tenant's access or region policy. Ask an administrator to review the staging grant and region configuration."
             : "The staging API could not be reached for onboarding. Check that the API is available, then reload this page.",
@@ -87,8 +87,11 @@ export function headers() {
 
 export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
   const [template, setTemplate] = useState<Template | null>(null);
+  const [verticals, setVerticals] = useState<Array<{ vertical_id: string; display_name?: string }>>([]);
+  const [selectedVerticalId, setSelectedVerticalId] = useState("");
+  const [loadingVerticals, setLoadingVerticals] = useState(false);
   const [businessName, setBusinessName] = useState("");
-  const [timezone, setTimezone] = useState("America/New_York");
+  const [timezone, setTimezone] = useState("UTC");
   const [questions, setQuestions] = useState<Question[]>([]);
   const [hours, setHours] = useState<Hour[]>([]);
   const [services, setServices] = useState<Service[]>([]);
@@ -119,21 +122,49 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
     return payload as T;
   }
 
+  async function loadVerticals() {
+    setLoadingVerticals(true);
+    try {
+      const choices = await api<{ items: Array<{ vertical_id: string; display_name?: string }> }>("/verticals");
+      setVerticals(choices.items);
+      setSelectedVerticalId((current) => current || choices.items.find((item) => item.vertical_id === "healthcare_dental")?.vertical_id || choices.items[0]?.vertical_id || "");
+      if (choices.items.length === 0) setNotice("No business templates are available for this workspace yet.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not load business types.");
+    } finally {
+      setLoadingVerticals(false);
+    }
+  }
+
+  useEffect(() => {
+    if (loaderData.canOnboard) void loadVerticals();
+  }, [loaderData.canOnboard]);
+
+  useEffect(() => {
+    try {
+      const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (localTimezone) setTimezone(localTimezone);
+    } catch {
+      // Keep the stable UTC default when the browser cannot determine its timezone.
+    }
+  }, []);
+
   async function loadTemplate() {
+    if (!selectedVerticalId) {
+      setNotice("No business templates are currently available.");
+      return;
+    }
     setBusy(true);
     setNotice("");
     try {
-      const choices = await api<{ items: Array<{ vertical_id: string }> }>("/verticals");
-      const selected = choices.items.find((item) => item.vertical_id === "healthcare_dental");
-      if (!selected) throw new Error("Dental clinic template is not available.");
-      const data = await api<Template>(`/verticals/${selected.vertical_id}/template`);
+      const data = await api<Template>(`/verticals/${selectedVerticalId}/template`);
       setTemplate(data);
       setQuestions(data.intake_questions);
       setHours(data.business_hours);
       setServices(data.services);
       setMessages(data.message_templates);
       setProviderSelection({ sms: "twilio", calendar: "google" });
-      setNotice("Dental clinic defaults loaded. Review and customize your setup.");
+      setNotice((data.display_name || selectedVerticalId) + " defaults loaded. Review and customize your setup.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load the template.");
     } finally {
@@ -143,7 +174,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
 
   async function createAndCheck() {
     if (!template || !businessName.trim() || !staff.some((person) => person.display_name.trim())) {
-      setNotice("Enter a clinic name and at least one staff member.");
+      setNotice("Enter a business name and at least one staff member.");
       return;
     }
     setBusy(true);
@@ -167,10 +198,10 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
       const result = await api<Health>(`/businesses/${created.business_id}/onboarding/health`);
       setHealth(result);
       setNotice(result.ready
-        ? "Setup is healthy. Review the checks, then bring the clinic online."
-        : "Clinic saved. Complete the remaining checks before go-live.");
+        ? "Setup is healthy. Review the checks, then bring the business online."
+        : "Business saved. Complete the remaining checks before go-live.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Could not create the clinic.");
+      setNotice(error instanceof Error ? error.message : "Could not create the business.");
     } finally {
       setBusy(false);
     }
@@ -194,7 +225,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
     setBusy(true);
     try {
       await api(`/businesses/${businessId}/onboarding/go-live`, { method: "POST" });
-      setNotice("The dental clinic is live.");
+      setNotice("The business is live.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Go-live check failed.");
     } finally {
@@ -218,34 +249,43 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
     <main className="page-shell">
       <header className="topbar">
         <div className="brand-mark">A</div>
-        <div><p className="eyebrow">Agent Platform</p><h1>Clinic onboarding</h1></div>
+        <div><p className="eyebrow">Agent Platform</p><h1>Business onboarding</h1></div>
         <span className="step-pill">About 5–10 minutes</span>
       </header>
 
       <section className="intro">
-        <p className="eyebrow">Healthcare · Dental</p>
+        <p className="eyebrow">Workspace setup</p>
         <h2>Set up your digital front desk</h2>
-        <p>Start with a dental clinic template, adjust it for your practice, and run setup checks before intake goes live.</p>
+        <p>Choose a business template, tailor it to your team, and complete the readiness checks before bringing the workflow online.</p>
       </section>
 
       {!loaderData.canOnboard ? <section className="card credentials-card">
-        <div className="section-heading"><span className="number">1</span><div><h3>{loaderData.authenticated ? loaderData.requiresOnboardRole ? "Onboarding permission needed" : "Onboarding unavailable" : "Sign in to your workspace"}</h3><p>{loaderData.accessError || "Use your workspace session to continue onboarding."}</p></div></div>
+        <div className="section-heading"><span className="number">1</span><div><h3>{loaderData.authenticated ? loaderData.requiresOnboardRole ? "Onboarding permission needed" : "Onboarding unavailable" : "Connect to your workspace"}</h3><p>{loaderData.accessError || "Use your workspace session to continue onboarding."}</p></div></div>
         {loaderData.authenticated
-          ? loaderData.requiresOnboardRole && <p className="helper">Your active sign-in is recognized. The administrator can add the <code>business_onboarder</code> role to the same tenant key.</p>
-          : <Link className="primary-button" to="/login?returnTo=%2Fonboarding">Sign in with email</Link>}
+          ? loaderData.requiresOnboardRole && <p className="helper">Your API-key session is valid. A workspace owner can add the <code>business_onboarder</code> permission to this tenant key.</p>
+          : <Link className="primary-button" to="/login?returnTo=%2Fonboarding">Connect with API key</Link>}
       </section> : <>
         <section className="card credentials-card">
           <div className="section-heading"><span className="number">1</span><div><h3>Workspace connected</h3><p>Onboarding uses your encrypted workspace session.</p></div></div>
           <p className="helper">Provider credentials belong in the protected secret manager, not this page.</p>
-          <button className="secondary-button" disabled={busy} onClick={loadTemplate}>{busy ? "Loading…" : "Load dental clinic template"}</button>
+          {loadingVerticals && <p className="notice" role="status">Loading available business types…</p>}
+          {notice && !template && !loadingVerticals && <p className="notice" role="status">{notice}</p>}
+          <div className="field-grid">
+            <label>Business type
+              <select value={selectedVerticalId} onChange={(event) => { setSelectedVerticalId(event.target.value); setTemplate(null); setHealth(null); setBusinessId(""); }} disabled={busy || verticals.length === 0 || !!businessId}>
+                {verticals.map((vertical) => <option key={vertical.vertical_id} value={vertical.vertical_id}>{vertical.display_name || vertical.vertical_id.replaceAll("_", " ")}</option>)}
+              </select>
+            </label>
+          </div>
+          <button className="secondary-button" disabled={busy || !selectedVerticalId} onClick={loadTemplate}>{busy ? "Loading…" : "Load selected template"}</button>
         </section>
 
       {template && <>
         <section className="card">
-          <div className="section-heading"><span className="number">2</span><div><h3>Clinic details</h3><p>Business scope and local scheduling details.</p></div></div>
+          <div className="section-heading"><span className="number">2</span><div><h3>Business details</h3><p>Business scope and local scheduling details.</p></div></div>
           <div className="field-grid">
-            <label>Clinic name<input value={businessName} onChange={(event) => setBusinessName(event.target.value)} placeholder="Harbor Dental" /></label>
-            <label>Business timezone<input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="America/New_York" /></label>
+            <label>Business name<input value={businessName} onChange={(event) => setBusinessName(event.target.value)} placeholder="Your business name" /></label>
+            <label>Business timezone<input value={timezone} onChange={(event) => setTimezone(event.target.value)} placeholder="Africa/Banjul" /></label>
           </div>
         </section>
 
@@ -259,7 +299,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         </section>
 
         <section className="card">
-          <div className="section-heading"><span className="number">4</span><div><h3>Business hours</h3><p>Times use the clinic's configured timezone.</p></div></div>
+          <div className="section-heading"><span className="number">4</span><div><h3>Business hours</h3><p>Times use the business's configured timezone.</p></div></div>
           <div className="hours-list">
             {hours.map((hour, index) => <div className="hours-row" key={hour.weekday}>
               <label className="day-check"><input type="checkbox" checked={hour.active} onChange={(event) => updateHour(index, { active: event.target.checked })} />{DAYS[hour.weekday]}</label>
@@ -286,9 +326,9 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         </section>
 
         <section className="card">
-          <div className="section-heading"><span className="number">6</span><div><h3>Patient messages</h3><p>Use variables such as <code>{"{{contact_name}}"}</code> and <code>{"{{clinic_name}}"}</code>.</p></div></div>
+          <div className="section-heading"><span className="number">6</span><div><h3>Customer messages</h3><p>Use the supported variables provided by the selected business template.</p></div></div>
           <label>Greeting<textarea value={messages.greeting || ""} onChange={(event) => setMessages((current) => ({ ...current, greeting: event.target.value }))} rows={2} /></label>
-          <label>Recall outreach<textarea value={messages.outreach || ""} onChange={(event) => setMessages((current) => ({ ...current, outreach: event.target.value }))} rows={3} /></label>
+          <label>Follow-up message<textarea value={messages.outreach || ""} onChange={(event) => setMessages((current) => ({ ...current, outreach: event.target.value }))} rows={3} /></label>
         </section>
 
         <section className="card">
@@ -304,17 +344,17 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
 
         <section className="card launch-card">
           <div className="section-heading"><span className="number">8</span><div><h3>Health check and launch</h3><p>Launch stays blocked until region policy, staff, hours, services, and required provider configuration are ready.</p></div></div>
-          {!businessId ? <button className="primary-button" disabled={busy} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create clinic and run health check"}</button> : <>
+          {!businessId ? <button className="primary-button" disabled={busy} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create business and run health check"}</button> : <>
             <p className="business-id">Business ID <code>{businessId}</code></p>
             <button className="secondary-button" disabled={busy} onClick={runHealthCheck}>Refresh health check</button>
             {health && <div className="health-panel"><h4>{readyLabel}</h4>{Object.entries(health.checks).map(([name, passed]) => <div className="health-row" key={name}><span>{name.replaceAll("_", " ")}</span><strong className={passed ? "pass" : "fail"}>{passed ? "Ready" : "Needs setup"}</strong></div>)}</div>}
-            <button className="primary-button" disabled={busy || !health?.ready} onClick={goLive}>Bring clinic online</button>
+            <button className="primary-button" disabled={busy || !health?.ready} onClick={goLive}>Bring business online</button>
           </>}
           {notice && <p className="notice" role="status">{notice}</p>}
         </section>
       </>}
       </>}
-      <footer>Patient outreach remains consent-gated. Emergency symptoms are routed to clinic staff; this system does not provide diagnosis or treatment advice.</footer>
+      <footer>Customer outreach must follow applicable consent and suppression policies. Configure human handoff for urgent or sensitive requests; automated agents should not replace qualified professional advice.</footer>
     </main>
   );
 }
