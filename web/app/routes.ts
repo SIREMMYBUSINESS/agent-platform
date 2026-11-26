@@ -5,7 +5,6 @@ export default [
   route("onboarding", "routes/_index.tsx"),
   route("api/onboarding", "routes/api-onboarding.ts"),
   route("login", "routes/login.tsx"),
-  route("auth/verify", "routes/auth-verify.tsx"),
   route("dashboard", "routes/dashboard.tsx"),
   route("ai-receptionist", "routes/seo-receptionist.tsx"),
   route("ai-receptionist/real-estate", "routes/seo-real-estate.tsx"),
