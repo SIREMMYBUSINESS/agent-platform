@@ -21,11 +21,11 @@ const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
 const MAX_WEBHOOK_BYTES = 10_000;
 const LOOKUP_TIMEOUT_MS = 3000;
 const RATE_LIMITED = () =>
-  xml(`<Response><Say>We are receiving too many calls right now. Please try again later.</Say><Hangup/></Response>`);
+  xml(`<Response><Say>We are receiving too many calls right now. Please try again later.</Say><Hangup/></Response>`, 429);
 
-const xml = (body: string) =>
-  new Response(`<?xml version="1.0" encoding="UTF-8"?>
-${body}`, {
+const xml = (body: string, status = 200) =>
+  new Response(`<?xml version="1.0" encoding="UTF-8"?>\n${body}`, {
+    status,
     headers: { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" },
   });
 
