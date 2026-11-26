@@ -288,7 +288,7 @@ export default function DashboardRoute({ loaderData }: Route.ComponentProps) {
                 <tbody>{filteredConversations.map((conversation) => {
                   const isBlocked = /blocked/i.test(conversation.workflow_state);
                   const conversationUrl = `/conversations?search=${encodeURIComponent(conversation.id)}`;
-                  return <tr key={conversation.id} tabIndex={0} aria-label={`Open conversation ${shortId(conversation.id)}`} onClick={() => navigate(conversationUrl)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); navigate(conversationUrl); } }}>
+                  return <tr key={conversation.id} className="conversation-row" tabIndex={0} aria-label={`Open conversation ${shortId(conversation.id)}`} onClick={() => navigate(conversationUrl)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); navigate(conversationUrl); } }}>
                     <td><strong>{shortId(conversation.id)}</strong><small>Contact {shortId(conversation.contact_id)}</small></td>
                     <td><span className="channel-label">{readableStatus(conversation.channel)}</span></td>
                     <td>{isBlocked
