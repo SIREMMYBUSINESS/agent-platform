@@ -135,7 +135,7 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
     try {
       const choices = await api<{ items: Array<{ vertical_id: string; display_name?: string }> }>("/verticals");
       setVerticals(choices.items);
-      setSelectedVerticalId((current) => current || choices.items.find((item) => item.vertical_id === "healthcare_dental")?.vertical_id || choices.items[0]?.vertical_id || "");
+      setSelectedVerticalId((current) => current || choices.items[0]?.vertical_id || "");
       if (choices.items.length === 0) setNotice("No business templates are available for this workspace yet.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load business types.");
@@ -319,14 +319,14 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         </section>
 
         <section className="card">
-          <div className="section-heading"><span className="number">5</span><div><h3>Services and staff</h3><p>Service durations seed appointment scheduling. At least one staff member is required.</p></div></div>
+          <div className="section-heading"><span className="number">5</span><div><h3>Services and team</h3><p>Service durations inform scheduling where enabled. At least one team member is required.</p></div></div>
           <div className="stack">
             {services.map((service, index) => <div className="field-grid service-row" key={index}>
               <label>Service<input value={service.name} onChange={(event) => updateService(index, { name: event.target.value })} /></label>
               <label>Duration in minutes<input type="number" min={10} max={240} value={service.duration_minutes} onChange={(event) => updateService(index, { duration_minutes: Number(event.target.value) })} /></label>
             </div>)}
             {staff.map((member, index) => <div className="field-grid" key={index}>
-              <label>Staff name<input value={member.display_name} onChange={(event) => setStaff((current) => current.map((item, i) => i === index ? { ...item, display_name: event.target.value } : item))} placeholder="Dr. Rivera" /></label>
+              <label>Staff name<input value={member.display_name} onChange={(event) => setStaff((current) => current.map((item, i) => i === index ? { ...item, display_name: event.target.value } : item))} placeholder="Team member" /></label>
               <label>Staff email<input type="email" value={member.email} onChange={(event) => setStaff((current) => current.map((item, i) => i === index ? { ...item, email: event.target.value } : item))} placeholder="Optional" /></label>
             </div>)}
             <button className="text-button" onClick={() => setStaff((current) => [...current, { display_name: "", email: "" }])}>+ Add staff member</button>
