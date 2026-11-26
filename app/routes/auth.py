@@ -139,12 +139,15 @@ def request_magic_link(
 
 def _deny_staging_owner_session(category: str) -> NoReturn:
     """Log a bounded internal denial category without exposing identity state to callers."""
-    logger.warning("staging owner session denied", extra={
-        "component": "workspace_auth",
-        "operation": "staging_owner_session",
-        "outcome": "denied",
-        "denial_category": category,
-    })
+    logging.getLogger("app.observability").warning(
+        "staging owner session denied",
+        extra={
+            "component": "workspace_auth",
+            "operation": "staging_owner_session",
+            "outcome": "denied",
+            "denial_category": category,
+        },
+    )
     raise HTTPException(403, "Staging workspace access is unavailable")
 
 
