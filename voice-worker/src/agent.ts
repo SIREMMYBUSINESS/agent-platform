@@ -1,10 +1,20 @@
 import { Agent, type Connection, type ConnectionContext, type WSMessage } from "agents";
 import type { Env } from "./types";
-import { escapeXml, parseStreamPath, verifyStreamToken } from "./twilio";
+import { parseStreamPath, verifyStreamToken } from "./twilio";
+import { redirectCallToFallback } from "./call-fallback";
+import { decodeMulaw8kToLinear16k } from "./audio";
+import {
+  closeSocketSafely,
+  FinalTranscriptDeduplicator,
+  getCompletedTranscript,
+  isCurrentSocketGeneration,
+  isNova3SpeechStarted,
+  openNova3WebSocket,
+  parseNova3Message,
+} from "./stt";
 
 // ---- Model contracts: verify against the live Workers AI model schemas before production. ----
 const LLM_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-const STT_MODEL = "@cf/deepgram/nova-3";
 const TTS_MODEL = "@cf/deepgram/aura-1";
 // -----------------------------------------------------------------------------------------------
 
@@ -12,7 +22,7 @@ const MAX_CALL_SECONDS = 15 * 60;
 const TRANSCRIPT_RETENTION_SECONDS = 30 * 24 * 60 * 60;
 const FRAME_BYTES = 160; // 20 ms of 8 kHz mu-law
 const BARGE_IN_GUARD_MS = 400; // ignore speech-start right after we begin speaking (line echo)
-const SENTENCE_END = /[.!?]\\s/;
+const SENTENCE_END = /[.!?]\s/;
 
 const SYSTEM_PROMPT = `You are a polite phone receptionist.
 Keep every reply to one or two short spoken sentences. No lists, no markdown.
@@ -55,6 +65,10 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   initialState: CallState = {};
 
   private stt?: WebSocket;
+  private sttMessageQueue: Promise<void> = Promise.resolve();
+  private utteranceQueue: Promise<void> = Promise.resolve();
+  private finalTranscriptDeduplicator = new FinalTranscriptDeduplicator();
+  private fallbackStarted = false;
   private history: ChatMsg[] = [];
   private turn = 0;
   private speaking = false;
@@ -117,8 +131,9 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
       }
       case "media": {
         if (this.stt && this.stt.readyState === WebSocket.OPEN && msg.media?.payload) {
-          const bytes = decodeBase64(msg.media.payload);
-          this.stt.send(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+          const mulaw = decodeBase64(msg.media.payload);
+          const pcm16 = decodeMulaw8kToLinear16k(mulaw);
+          this.stt.send(pcm16.buffer.slice(pcm16.byteOffset, pcm16.byteOffset + pcm16.byteLength) as ArrayBuffer);
         }
         break;
       }
@@ -132,36 +147,73 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     await this.finalizeCall();
   }
 
+
   private async openStt(conn: Connection) {
-    // Workers AI partner model supports streaming via its websocket response.
-    const result = await this.env.AI.run(
-      STT_MODEL as keyof AiModels,
-      { encoding: "mulaw", sample_rate: 8000, interim_results: true, vad_events: true } as never,
-      { websocket: true } as never,
-    ) as { webSocket?: WebSocket };
-    const socket = result.webSocket;
-    if (!socket) throw new Error("Workers AI STT did not return a websocket");
+    const socket = await openNova3WebSocket(this.env);
+    socket.binaryType = "arraybuffer";
     socket.accept();
     this.stt = socket;
     const generation = ++this.socketGeneration;
+
     socket.addEventListener("message", (message) => {
-      if (generation !== this.socketGeneration) return;
-      void this.handleSttMessage(conn, message.data).catch((e) => { logStreamFailure("stt_message", e); return this.fallback(conn); });
+      if (!isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+      this.sttMessageQueue = this.sttMessageQueue
+        .then(async () => {
+          if (!isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+          await this.handleSttMessage(conn, message.data, generation);
+        })
+        .catch((error) => {
+          if (!isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+          logStreamFailure("stt_message", error);
+          return this.fallback(conn);
+        });
+    });
+
+    socket.addEventListener("close", () => {
+      if (!isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+      this.socketGeneration++;
+      if (this.stt === socket) this.stt = undefined;
+      if (!this.ending) void this.fallback(conn);
+    });
+
+    socket.addEventListener("error", () => {
+      if (!isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+      this.socketGeneration++;
+      if (this.stt === socket) this.stt = undefined;
+      closeSocketSafely(socket);
+      logStreamFailure("stt_socket", new Error("Nova-3 WebSocket error"));
+      if (!this.ending) void this.fallback(conn);
     });
   }
 
-  private async handleSttMessage(conn: Connection, data: unknown) {
-    let result: Record<string, any>;
-    try { result = JSON.parse(typeof data === "string" ? data : new TextDecoder().decode(data as ArrayBuffer)); }
-    catch { return; }
-    if ((result.type === "SpeechStarted" || result.event === "SpeechStarted") && this.state.speaking) {
+  private async handleSttMessage(conn: Connection, data: unknown, generation: number) {
+    const result = await parseNova3Message(data);
+    if (!result || !isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+
+    if (
+      isNova3SpeechStarted(result) &&
+      this.state.speaking &&
+      Date.now() - this.speakStartedAt >= BARGE_IN_GUARD_MS
+    ) {
       conn.send(JSON.stringify({ event: "clear", streamSid: this.state.streamSid }));
       this.setState({ ...this.state, speaking: false });
     }
-    const text = result.channel?.alternatives?.[0]?.transcript;
-    if (result.is_final && result.speech_final && typeof text === "string" && text.trim()) {
-      await this.handleUtterance(conn, text.trim());
-    }
+
+    const completed = getCompletedTranscript(result);
+    if (!completed || !this.finalTranscriptDeduplicator.shouldAccept(completed)) return;
+
+    // Serialize LLM/TTS turns independently of provider event parsing so SpeechStarted
+    // events can still interrupt audio while a previous response is being generated.
+    this.utteranceQueue = this.utteranceQueue
+      .then(async () => {
+        if (!isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+        await this.handleUtterance(conn, completed.text);
+      })
+      .catch((error) => {
+        if (!isCurrentSocketGeneration(this.socketGeneration, generation)) return;
+        logStreamFailure("stt_turn", error);
+        return this.fallback(conn);
+      });
   }
 
   private async handleUtterance(conn: Connection, text: string) {
@@ -187,6 +239,7 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
 
   private async say(conn: Connection, text: string) {
     if (this.ending || !this.state.streamSid) return;
+    this.speakStartedAt = Date.now();
     this.setState({ ...this.state, speaking: true });
     try {
       const audio = await this.env.AI.run(
@@ -218,9 +271,33 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
   }
 
   private async fallback(conn: Connection) {
-    if (this.ending || !this.state.streamSid) return;
-    // Keep the call alive with provider-generated audio only as a last resort.
-    conn.send(JSON.stringify({ event: "clear", streamSid: this.state.streamSid }));
+    if (this.ending || this.fallbackStarted || !this.state.callSid) return;
+    this.fallbackStarted = true;
+
+    const accountSid = this.env.TWILIO_ACCOUNT_SID;
+    if (accountSid && this.env.TWILIO_AUTH_TOKEN) {
+      try {
+        await redirectCallToFallback({
+          accountSid,
+          callSid: this.state.callSid,
+          authToken: this.env.TWILIO_AUTH_TOKEN,
+        });
+        console.warn(JSON.stringify({ event: "voice_twiml_fallback_started" }));
+        closeSocketSafely(this.stt);
+        this.stt = undefined;
+        return;
+      } catch (error) {
+        logStreamFailure("twiml_fallback", error);
+      }
+    } else {
+      console.warn(JSON.stringify({ event: "voice_twiml_fallback_unconfigured" }));
+    }
+
+    // Best-effort stream clear if REST fallback is unavailable; do not claim caller audio was restored.
+    if (this.state.streamSid) {
+      try { conn.send(JSON.stringify({ event: "clear", streamSid: this.state.streamSid })); }
+      catch { /* stream may already be closed */ }
+    }
   }
 
   private saveTranscript(role: string, text: string) {
@@ -243,7 +320,6 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
     this.finalized = true;
     this.socketGeneration++;
 
-    // Cancel the call's 15-minute safety hangup when the caller or provider ends it first.
     const scheduleId = this.state.hangupScheduleId;
     if (scheduleId) {
       try {
@@ -253,17 +329,14 @@ export class ReceptionistAgent extends Agent<Env, CallState> {
       }
     }
 
-    try {
-      this.stt?.close();
-    } catch { /* already closed */ }
+    const socket = this.stt;
     this.stt = undefined;
+    closeSocketSafely(socket);
 
-    // Retain this call's transcript for 30 days after it ends, then delete it.
     try {
       await this.schedule(TRANSCRIPT_RETENTION_SECONDS, "purgeTranscript", {});
     } catch (error) {
       logStreamFailure("transcript_retention_schedule", error);
-      // If retention scheduling fails, prefer immediate deletion over indefinite retention.
       this.sql`DELETE FROM transcript`;
     }
   }
