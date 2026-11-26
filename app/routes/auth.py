@@ -8,8 +8,8 @@ import re
 import secrets
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
-from uuid import UUID
 from typing import NoReturn
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Response
 from fastapi.responses import JSONResponse
