@@ -1,3 +1,4 @@
+import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./types";
 import { escapeXml, makeStreamToken, streamPath, STREAM_TOKEN_TTL_SECONDS } from "./twilio";
 
@@ -27,8 +28,10 @@ const rawXml = (body: string) => new Response(body, {
   status: 200, headers: { "Content-Type": "text/xml; charset=utf-8", "Cache-Control": "no-store" },
 });
 
-export class VoiceAdmission {
-  constructor(private readonly state: DurableObjectState, private readonly env: Env) {}
+export class VoiceAdmission extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+  }
 
   async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST" || new URL(request.url).pathname !== "/admit") {
@@ -49,15 +52,15 @@ export class VoiceAdmission {
 
     // Serialize the complete decision, including the platform lookup. Concurrent Twilio
     // retries for the same CallSid therefore observe the first stored response.
-    return this.state.blockConcurrencyWhile(() => this.admit(input));
+    return this.ctx.blockConcurrencyWhile(() => this.admit(input));
   }
 
   private async admit(input: AdmissionInput): Promise<Response> {
     const now = Date.now();
     const callKey = `call:${input.callSid}`;
-    const previous = await this.state.storage.get<StoredCall>(callKey);
+    const previous = await this.ctx.storage.get<StoredCall>(callKey);
     if (previous && previous.expiresAt > now) return rawXml(previous.xml);
-    if (previous) await this.state.storage.delete(callKey);
+    if (previous) await this.ctx.storage.delete(callKey);
 
     // Account-wide ceiling is checked before any number-to-business resolution.
     const accountTimes = await this.recentTimes("account", now);
@@ -65,7 +68,7 @@ export class VoiceAdmission {
       return this.remember(callKey, busy(), now);
     }
     accountTimes.push(now);
-    await this.state.storage.put("account", accountTimes);
+    await this.ctx.storage.put("account", accountTimes);
 
     const scope = await this.resolveCached(input.to);
     if (!scope) return this.remember(callKey, unavailable(), now);
@@ -76,7 +79,7 @@ export class VoiceAdmission {
       return this.remember(callKey, busy(), now);
     }
     businessTimes.push(now);
-    await this.state.storage.put(businessKey, businessTimes);
+    await this.ctx.storage.put(businessKey, businessTimes);
 
     const exp = Math.floor(now / 1000) + STREAM_TOKEN_TTL_SECONDS;
     const stream = { callSid: input.callSid, exp, tenantId: scope.tenantId, businessId: scope.businessId };
@@ -89,18 +92,18 @@ export class VoiceAdmission {
   }
 
   private async recentTimes(key: string, now: number): Promise<number[]> {
-    const values = await this.state.storage.get<number[]>(key) ?? [];
+    const values = await this.ctx.storage.get<number[]>(key) ?? [];
     const recent = values.filter((time) => Number.isFinite(time) && time > now - WINDOW_MS);
-    if (recent.length !== values.length) await this.state.storage.put(key, recent);
+    if (recent.length !== values.length) await this.ctx.storage.put(key, recent);
     return recent;
   }
 
   private async resolveCached(to: string): Promise<Scope | null> {
     const key = `number:${to}`;
     const now = Date.now();
-    const cached = await this.state.storage.get<CachedScope>(key);
+    const cached = await this.ctx.storage.get<CachedScope>(key);
     if (cached && cached.expiresAt > now) return cached;
-    if (cached) await this.state.storage.delete(key);
+    if (cached) await this.ctx.storage.delete(key);
 
     let response: Response;
     try {
@@ -141,13 +144,13 @@ export class VoiceAdmission {
       businessLimit, expiresAt: now + NUMBER_CACHE_TTL_MS,
     };
     // Only successful, validated mappings are cached. Failures are never cached.
-    await this.state.storage.put(key, scope);
+    await this.ctx.storage.put(key, scope);
     return scope;
   }
 
   private async remember(key: string, response: Response, now: number): Promise<Response> {
     const body = await response.text();
-    await this.state.storage.put(key, {
+    await this.ctx.storage.put(key, {
       xml: body, expiresAt: now + CALL_RESULT_TTL_SECONDS * 1000,
     } satisfies StoredCall, { expirationTtl: CALL_RESULT_TTL_SECONDS });
     return rawXml(body);
