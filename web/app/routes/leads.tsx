@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, redirect } from "react-router";
+import { Link, redirect, useNavigation } from "react-router";
 import { readSessionApiKey } from "../.server/session";
 import type { Route } from "./+types/leads";
 
@@ -57,6 +57,8 @@ function shortId(value: string) { return value.length > 16 ? value.slice(0, 8) +
 function readable(value: string) { return value.replaceAll("_", " ").replaceAll("-", " "); }
 
 export default function LeadsRoute({ loaderData }: Route.ComponentProps) {
+  const navigation = useNavigation();
+  const isLoading = navigation.state === "loading";
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   const [priority, setPriority] = useState("all");
@@ -72,11 +74,12 @@ export default function LeadsRoute({ loaderData }: Route.ComponentProps) {
   const previous = Math.max(0, loaderData.offset - loaderData.limit);
   const next = loaderData.offset + loaderData.limit;
   return (
-    <main className="workspace-shell workspace-list-page">
+    <main className="workspace-shell workspace-list-page" aria-busy={isLoading}>
       <header className="workspace-heading">
         <div><p className="eyebrow">Tenant workspace · Pipeline</p><h1>Leads</h1><p className="workspace-description">Search and review the latest leads assigned to this tenant.</p></div>
         <div className="workspace-actions"><Link className="secondary-button" to="/dashboard">Overview</Link><Link className="secondary-button" to="/conversations">Conversations</Link></div>
       </header>
+      {isLoading && <p className="submit-status" role="status">Loading leads…</p>}
       {loaderData.error ? <section className="card workspace-credentials" role="alert"><h2>Leads unavailable</h2><p>{loaderData.error}</p><Link className="primary-button" to="/dashboard">Return to workspace</Link></section> : <>
         <section className="card list-toolbar" aria-label="Lead filters">
           <label className="workspace-search"><span className="sr-only">Search this page of leads</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search lead or contact ID…" /></label>
