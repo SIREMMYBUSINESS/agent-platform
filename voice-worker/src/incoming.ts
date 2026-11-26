@@ -1,12 +1,21 @@
 // Authenticates Twilio's incoming-call webhook, then delegates admission to the
 // account-scoped Durable Object. No per-isolate or source-IP rate limiting.
-import type { Env } from "./types";
 import { CALL_SID_RE, validTwilioSignature } from "./twilio";
 
-export type IncomingEnv = Pick<
-  Env,
-  "PUBLIC_ORIGIN" | "TWILIO_AUTH_TOKEN" | "TWILIO_ACCOUNT_SID" | "VOICE_ADMISSION"
->;
+type AdmissionStub = {
+  fetch(input: Request | string, init?: RequestInit): Promise<Response>;
+};
+type AdmissionNamespace = {
+  idFromName(name: string): DurableObjectId;
+  get(id: DurableObjectId): AdmissionStub;
+};
+
+export type IncomingEnv = {
+  PUBLIC_ORIGIN: string;
+  TWILIO_AUTH_TOKEN: string;
+  TWILIO_ACCOUNT_SID?: string;
+  VOICE_ADMISSION: AdmissionNamespace;
+};
 
 const PHONE_RE = /^\+[1-9][0-9]{6,14}$/;
 const ACCOUNT_SID_RE = /^AC[0-9a-f]{32}$/i;
