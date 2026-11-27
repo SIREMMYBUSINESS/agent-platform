@@ -33,7 +33,12 @@ class VerticalTemplate:
     optional_providers: tuple[str, ...]
 
     def as_config(self) -> dict:
-        return asdict(self)
+        config = asdict(self)
+        config["template_variables_by_key"] = {
+            key: sorted(extract_template_variables(value))
+            for key, value in self.message_templates.items()
+        }
+        return config
 
 
 DENTAL_CLINIC = VerticalTemplate(
@@ -57,13 +62,13 @@ DENTAL_CLINIC = VerticalTemplate(
         ServiceTemplate("Urgent dental visit", 30),
     ),
     message_templates={
-        "greeting": "Hello {{contact_name}}, thanks for contacting {{clinic_name}}.",
+        "greeting": "Hello {{contact_name}}, thanks for contacting our team.",
         "ask_reason": "What would you like help scheduling?",
         "propose_slots": "Available times for {{service_type}}: {{slot_1}}, {{slot_2}}, {{slot_3}}. Reply with your choice.",
         "confirmation": "Your {{service_type}} appointment is confirmed for {{appointment_time}} at {{clinic_name}}.",
         "reminder": "Reminder: your appointment at {{clinic_name}} is {{appointment_time}}.",
         "follow_up": "Thanks for visiting {{clinic_name}}. How was your appointment?",
-        "outreach": "Hello {{contact_name}}, it may be time to schedule a visit with {{clinic_name}}. Reply BOOK to see available times or STOP to opt out.",
+        "outreach": "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue.",
     },
     escalation_rules={
         "immediate_staff_review": ["breathing difficulty", "uncontrolled bleeding", "facial swelling", "serious injury"],
@@ -157,19 +162,80 @@ def get_vertical_template(vertical_id: str) -> VerticalTemplate:
         raise ValueError("unsupported business vertical") from None
 
 
-def render_message(template: str, values: dict[str, str]) -> str:
-    """Substitute only known, supplied placeholders; reject unknown variables."""
-    allowed = {"contact_name", "clinic_name", "service_type", "slot_1", "slot_2",
-               "slot_3", "appointment_time", "reason", "insurance_provider"}
-    fields = set(re.findall(r"{{\s*([a-z][a-z0-9_]*)\s*}}", template))
+def extract_template_variables(template: str) -> set[str]:
+    """Return syntactically valid variable names present in one template."""
+    return set(re.findall(r"{{\s*([a-z][a-z0-9_]*)\s*}}", template))
+
+
+def render_message(template: str, values: dict[str, str], *,
+                   allowed_variables: set[str] | None = None) -> str:
+    """Purely substitute supplied variables, enforcing one selected template's contract."""
+    allowed = ({"contact_name", "clinic_name", "service_type", "slot_1", "slot_2",
+                "slot_3", "appointment_time", "reason", "insurance_provider"}
+               if allowed_variables is None else set(allowed_variables))
+    fields = extract_template_variables(template)
     residue = re.sub(r"{{\s*[a-z][a-z0-9_]*\s*}}", "", template)
     if "{{" in residue or "}}" in residue:
-        raise ValueError("message template has malformed variable syntax")
-    if fields - allowed or fields - set(values):
-        raise ValueError("message template contains an unsupported or unresolved variable")
+        raise ValueError("malformed template variable syntax")
+    unsupported = fields - allowed
+    if unsupported:
+        names = ", ".join("{{" + name + "}}" for name in sorted(unsupported))
+        raise ValueError(f"unsupported template variable(s): {names}")
+    unresolved = fields - set(values)
+    if unresolved:
+        names = ", ".join("{{" + name + "}}" for name in sorted(unresolved))
+        raise ValueError(f"unresolved template variable(s): {names}")
     return re.sub(r"{{\s*([a-z][a-z0-9_]*)\s*}}",
                   lambda match: str(values[match.group(1)]), template)
 
 
+def resolve_stored_message_template(vertical_id: str, message_key: str,
+                                    stored_template: str) -> tuple[str, str | None]:
+    """Use saved copy only when it matches the selected vertical's own default contract."""
+    defaults = get_vertical_template(vertical_id).message_templates
+    if message_key not in defaults:
+        raise ValueError("unsupported message template key")
+    default_template = defaults[message_key]
+    allowed = extract_template_variables(default_template)
+    try:
+        if not isinstance(stored_template, str):
+            raise ValueError("stored template is not text")
+        render_message(stored_template, {name: name for name in allowed},
+                       allowed_variables=allowed)
+        if message_key == "greeting" and "our team" not in stored_template:
+            raise ValueError("greeting is missing the business-name marker 'our team'")
+    except ValueError as exc:
+        return default_template, (
+            f"Saved {message_key} template is incompatible with {vertical_id}: {exc}. "
+            f"The {vertical_id} default is being used instead."
+        )
+    return stored_template, None
+
+
+def render_business_message(template: str, business, contact, staff, *,
+                            message_key: str, allowed_variables: set[str]) -> str:
+    """Pure renderer: read the supplied records and return text; never persists or sends."""
+    contact_name = getattr(contact, "full_name", None)
+    if not isinstance(contact_name, str) or not contact_name.strip():
+        raise ValueError("contact record has no display name")
+    rendered = render_message(
+        template, {"contact_name": contact_name}, allowed_variables=allowed_variables,
+    )
+    if message_key == "greeting":
+        business_name = getattr(business, "name", None)
+        if not isinstance(business_name, str) or not business_name.strip():
+            raise ValueError("business record has no name")
+        if "our team" not in rendered:
+            raise ValueError("greeting is missing the business-name marker 'our team'")
+        return rendered.replace("our team", business_name.strip())
+    if message_key == "outreach":
+        staff_name = getattr(staff, "display_name", None)
+        if not isinstance(staff_name, str) or not staff_name.strip():
+            raise ValueError("staff record has no display name")
+        return f"{rendered.rstrip()} — {staff_name.strip()}"
+    raise ValueError("unsupported record-backed message key")
+
+
 __all__ = ["IntakeQuestion", "ServiceTemplate", "VerticalTemplate", "DENTAL_CLINIC",
-           "get_vertical_template", "list_vertical_templates", "render_message"]
+           "extract_template_variables", "get_vertical_template", "list_vertical_templates",
+           "render_business_message", "render_message", "resolve_stored_message_template"]

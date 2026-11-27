@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event
@@ -18,7 +19,11 @@ from app.integrations.provider_support import MappingTenantConfig
 from app.verticals.outreach import DentalOutreachService
 from app.verticals.schemas import DentalOnboardingRequest
 from app.verticals.service import VerticalOnboardingService
-from app.verticals.templates import DENTAL_CLINIC, list_vertical_templates, render_message
+from app.verticals.templates import (
+    DENTAL_CLINIC, extract_template_variables, get_vertical_template,
+    list_vertical_templates, render_business_message, render_message,
+    resolve_stored_message_template,
+)
 
 
 @pytest.fixture
@@ -134,6 +139,76 @@ def test_template_rendering_only_accepts_declared_variables():
     assert text == "Hello Jordan, welcome to Harbor Dental."
     with pytest.raises(ValueError):
         render_message("{{unknown}}", {"unknown": "value"})
+
+
+def test_real_estate_identity_renderer_uses_plain_text_record_values():
+    business = SimpleNamespace(name="HMFIRM")
+    contact = SimpleNamespace(full_name="Sample contact")
+    staff = SimpleNamespace(display_name="EMMY")
+    greeting_template = "Hello {{contact_name}}, thanks for contacting our team."
+    follow_up_template = (
+        "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue."
+    )
+    real_estate_variables = {"contact_name"}
+    contract = get_vertical_template("real_estate").as_config()["template_variables_by_key"]
+    assert contract["greeting"] == ["contact_name"]
+    assert extract_template_variables(greeting_template) == real_estate_variables
+    assert render_business_message(
+        greeting_template, business, contact, staff,
+        message_key="greeting", allowed_variables=real_estate_variables,
+    ) == "Hello Sample contact, thanks for contacting HMFIRM."
+    assert render_business_message(
+        follow_up_template, business, contact, staff,
+        message_key="outreach", allowed_variables=real_estate_variables,
+    ) == ("Hello Sample contact, we're following up on your enquiry. "
+          "Reply to continue. — EMMY")
+
+
+def test_real_estate_renderer_rejects_dental_variable_and_explains_fallback():
+    business = SimpleNamespace(name="HMFIRM")
+    contact = SimpleNamespace(full_name="Sample contact")
+    staff = SimpleNamespace(display_name="EMMY")
+    invalid_dental_template = (
+        "Hello {{contact_name}}, thanks for contacting {{clinic_name}}."
+    )
+    with pytest.raises(ValueError, match=r"unsupported template variable.*{{clinic_name}}"):
+        render_business_message(
+            invalid_dental_template, business, contact, staff,
+            message_key="greeting", allowed_variables={"contact_name"},
+        )
+    resolved, warning = resolve_stored_message_template(
+        "real_estate", "greeting", invalid_dental_template,
+    )
+    assert resolved == get_vertical_template("real_estate").message_templates["greeting"]
+    assert warning and "{{clinic_name}}" in warning
+    assert "real_estate default is being used instead" in warning
+
+
+def test_business_and_staff_renames_are_read_at_render_time():
+    business = SimpleNamespace(name="Harbor Realty")
+    contact = SimpleNamespace(full_name="Sample contact")
+    staff = SimpleNamespace(display_name="Alex Agent")
+    template = "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue."
+    first = render_business_message(
+        template, business, contact, staff,
+        message_key="outreach", allowed_variables={"contact_name"},
+    )
+    business.name = "HMFIRM"
+    staff.display_name = "EMMY"
+    second = render_business_message(
+        template, business, contact, staff,
+        message_key="outreach", allowed_variables={"contact_name"},
+    )
+    assert first.endswith("— Alex Agent")
+    assert second.endswith("— EMMY")
+    assert business.name == "HMFIRM"
+    assert staff.display_name == "EMMY"
+
+
+def test_real_estate_template_keeps_weekends_disabled():
+    hours = {item["weekday"]: item["active"] for item in get_vertical_template("real_estate").business_hours}
+    assert hours[5] is False
+    assert hours[6] is False
 
 
 def test_real_estate_onboarding_persists_selected_vertical(vertical_store):
