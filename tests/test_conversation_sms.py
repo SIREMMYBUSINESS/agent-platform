@@ -174,19 +174,19 @@ def _send(env, *, content="Hello", client_key="client-1", conversation_id=None):
 
 def _events(engine):
     with Session(engine) as session:
-        return session.exec(
+        return session.scalars(
             select(EventLog).where(EventLog.source == "conversation_sms_composer")
         ).all()
 
 
 def _messages(engine):
     with Session(engine) as session:
-        return session.exec(select(Message)).all()
+        return session.scalars(select(Message)).all()
 
 
 def _queue_rows(engine):
     with Session(engine) as session:
-        return session.exec(select(QueueTaskRecord)).all()
+        return session.scalars(select(QueueTaskRecord)).all()
 
 
 def test_sms_composer_is_hidden_when_flag_is_off_and_does_not_queue(sms_environment, monkeypatch):
@@ -295,7 +295,7 @@ def test_foreign_contact_result_is_hidden_as_404(sms_environment, monkeypatch):
 def test_no_active_routing_rules_is_conflict_even_with_valid_timezone(sms_environment):
     env = sms_environment
     with Session(env["engine"]) as session:
-        rules = session.exec(
+        rules = session.scalars(
             select(RoutingRule).where(RoutingRule.business_id == "business-a")
         ).all()
         for rule in rules:
@@ -363,7 +363,7 @@ def test_suppressed_contact_keeps_blocked_message_and_returns_reason(sms_environ
 def test_missing_channel_consent_is_blocked_and_policy_event_is_recorded(sms_environment):
     env = sms_environment
     with Session(env["engine"]) as session:
-        consent = session.exec(
+        consent = session.scalars(
             select(ConsentRecord).where(
                 ConsentRecord.tenant_id == "tenant-a",
                 ConsentRecord.contact_id == "contact-a",
@@ -378,7 +378,7 @@ def test_missing_channel_consent_is_blocked_and_policy_event_is_recorded(sms_env
     assert response.json()["reason_code"] == "consent_unknown"
     assert response.json()["message"]["delivery_status"] == "blocked"
     with Session(env["engine"]) as session:
-        policy_event = session.exec(
+        policy_event = session.scalars(
             select(EventLog).where(
                 EventLog.event_type == "outbound.delivery.blocked",
             )
