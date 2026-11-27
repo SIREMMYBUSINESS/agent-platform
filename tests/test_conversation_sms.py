@@ -312,7 +312,7 @@ def test_no_active_routing_rules_is_conflict_even_with_valid_timezone(sms_enviro
 def test_outside_hours_returns_next_business_time_and_audit(sms_environment):
     env = sms_environment
     with Session(env["engine"]) as session:
-        rules = session.exec(
+        rules = session.scalars(
             select(RoutingRule).where(RoutingRule.business_id == "business-a")
         ).all()
         for rule in rules:

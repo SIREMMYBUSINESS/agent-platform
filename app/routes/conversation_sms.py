@@ -132,6 +132,7 @@ def _refusal_response(status_code: int, detail: str, reason_code: str, **extra) 
     response_model=ConversationSMSMessageView,
 )
 def send_conversation_sms(
+    request: Request,
     business_id: str,
     conversation_id: UUID,
     body: ConversationSMSRequest,
@@ -140,7 +141,6 @@ def send_conversation_sms(
     uow_factory=Depends(get_conversation_sms_uow_factory),
     business_hours: BusinessHoursService = Depends(get_business_hours_service),
     outbound_delivery: OutboundDeliveryService = Depends(get_outbound_delivery_service),
-    request: Request,
 ) -> Response:
     # get_authenticated_principal verifies the workspace session, active membership,
     # and email verification. API keys and non-workspace principals fail this gate.
@@ -183,7 +183,7 @@ def send_conversation_sms(
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=None,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="business_not_found", correlation_id=correlation_id,
+                reason_code="business_not_found", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
 
@@ -199,7 +199,7 @@ def send_conversation_sms(
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="contact_not_found", correlation_id=correlation_id,
+                reason_code="contact_not_found", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(404, "Conversation contact not found.", "contact_not_found")
 
@@ -208,7 +208,7 @@ def send_conversation_sms(
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="tenant_not_found", correlation_id=correlation_id,
+                reason_code="tenant_not_found", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
 
@@ -221,7 +221,7 @@ def send_conversation_sms(
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="conversation_unassigned", correlation_id=correlation_id,
+                reason_code="conversation_unassigned", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(
                 409, "Assign this conversation before sending.", "conversation_unassigned",
@@ -231,7 +231,7 @@ def send_conversation_sms(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
                 reason_code="conversation_assigned_to_another_staff",
-                correlation_id=correlation_id,
+                correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(
                 403, "Only the assigned staff member can send.",
@@ -246,7 +246,7 @@ def send_conversation_sms(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
                 reason_code="business_hours_not_configured",
-                correlation_id=correlation_id,
+                correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(
                 409, "Business hours are not configured.",
@@ -262,7 +262,7 @@ def send_conversation_sms(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
                 reason_code="business_hours_not_configured",
-                correlation_id=correlation_id,
+                correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(
                 409, "Business hours are not safely configured.",
@@ -275,7 +275,7 @@ def send_conversation_sms(
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="outside_business_hours", correlation_id=correlation_id,
+                reason_code="outside_business_hours", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(
                 409,
