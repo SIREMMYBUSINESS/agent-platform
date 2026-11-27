@@ -30,6 +30,8 @@ def test_initial_migration_renders_postgresql_schema_offline(capsys):
         "routing_rules",
         "services",
         "staff",
+        "workspace_staff_mappings",
+        "workspace_staff_mapping_events",
         "lead_sources",
         "leads",
         "lead_enrichments",
@@ -122,3 +124,17 @@ def test_long_revision_migration_widens_alembic_version_column(capsys):
     command.upgrade(config, "0020_appointment_proposal_options", sql=True)
     sql = capsys.readouterr().out.lower()
     assert "alter table alembic_version alter column version_num type varchar(128)" in sql
+
+
+
+def test_workspace_staff_mapping_migration_downgrade_removes_audit_before_mapping(capsys):
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    command.downgrade(
+        config,
+        "0034_workspace_staff_mappings:0033_business_voice_rate_limits",
+        sql=True,
+    )
+    sql = capsys.readouterr().out.lower()
+    assert sql.index("drop table workspace_staff_mapping_events") < sql.index(
+        "drop table workspace_staff_mappings"
+    )

@@ -1613,6 +1613,80 @@ __all__ = [
 ]
 
 
+class WorkspaceStaffMapping(SQLModel, table=True):
+    """Regional mapping from a tenant workspace identity to one business staff record.
+
+    workspace_user_id is an opaque reference to the identity stored in the
+    control database. It intentionally has no cross-database FK; management
+    routes validate the active tenant membership before writing this row.
+    """
+    __tablename__ = "workspace_staff_mappings"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_workspace_staff_mappings"),
+        ForeignKeyConstraint(
+            ["tenant_id", "business_id", "staff_id"],
+            ["staff.tenant_id", "staff.business_id", "staff.id"],
+            name="fk_workspace_staff_mappings_staff",
+        ),
+        UniqueConstraint(
+            "tenant_id", "business_id", "workspace_user_id",
+            name="uq_workspace_staff_mappings_user",
+        ),
+        UniqueConstraint(
+            "tenant_id", "business_id", "staff_id",
+            name="uq_workspace_staff_mappings_staff",
+        ),
+        Index(
+            "ix_workspace_staff_mappings_scope",
+            "tenant_id", "business_id",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str = Field(max_length=160)
+    business_id: str = Field(max_length=160)
+    workspace_user_id: UUID
+    staff_id: UUID
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
+class WorkspaceStaffMappingEvent(SQLModel, table=True):
+    """Append-only audit record for workspace-to-staff mapping changes."""
+    __tablename__ = "workspace_staff_mapping_events"
+    __table_args__ = (
+        PrimaryKeyConstraint("id", name="pk_workspace_staff_mapping_events"),
+        ForeignKeyConstraint(
+            ["tenant_id", "business_id"],
+            ["businesses.tenant_id", "businesses.id"],
+            name="fk_workspace_staff_mapping_events_business",
+        ),
+        CheckConstraint(
+            "event_type IN ('created', 'removed')",
+            name="ck_workspace_staff_mapping_events_type",
+        ),
+        Index(
+            "ix_workspace_staff_mapping_events_scope_created",
+            "tenant_id", "business_id", "created_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: str = Field(max_length=160)
+    business_id: str = Field(max_length=160)
+    mapping_id: UUID
+    workspace_user_id: UUID
+    staff_id: UUID
+    actor_workspace_user_id: UUID
+    event_type: str = Field(max_length=16)
+    created_at: datetime = Field(
+        default_factory=utc_now,
+        sa_column=Column(DateTime(timezone=True), nullable=False, server_default=func.now()),
+    )
+
+
 class WorkspaceUser(SQLModel, table=True):
     """A verified email identity provisioned by a trusted workspace administrator."""
     __tablename__ = "workspace_users"
