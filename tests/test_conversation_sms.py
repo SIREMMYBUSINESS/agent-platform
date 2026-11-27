@@ -8,6 +8,8 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.auth.dependencies import get_authenticated_principal
+from app.queue.replay import EventReplayService
+from app.persistence.unit_of_work import UnitOfWork
 from app.main import app
 from app.persistence.models import (
     Business, ConsentRecord, Contact, Conversation, ConversationAssignment,
@@ -404,3 +406,26 @@ def test_same_client_key_with_different_content_conflicts(sms_environment):
     assert second.json()["reason_code"] == "idempotency_key_conflict"
     assert len(_messages(env["engine"])) == 1
     assert len(_queue_rows(env["engine"])) == 1
+
+def test_business_scoped_sms_refusal_event_cannot_be_replayed_as_conversation_event(sms_environment):
+    env = sms_environment
+    with Session(env["engine"]) as session:
+        audit = EventLog(
+            tenant_id="tenant-a", business_id="business-a", conversation_id=None,
+            event_type="conversation.sms.refused", payload={"reason_code": "conversation_not_found"},
+            source="conversation_sms_composer",
+        )
+        session.add(audit)
+        session.commit()
+        event_id = audit.id
+
+    service = EventReplayService(
+        uow_factory=lambda: UnitOfWork(lambda: Session(env["engine"])),
+        queue_tasks=None,
+    )
+    with pytest.raises(LookupError, match="conversation replay"):
+        service.replay(
+            _workspace_principal(env["workspace_user_id"], roles=("inbound_writer",)),
+            business_id="business-a", event_id=event_id,
+            domain="inbound", task_name="events.replay", replay_key="sms-audit-replay",
+        )
