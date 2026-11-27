@@ -110,7 +110,7 @@ class WorkflowRepository(Protocol):
 class EventRepository(Protocol):
     def get_by_id(self, *, tenant_id: str, business_id: str, event_id: UUID) -> EventLog | None: ...
     def add(
-        self, *, tenant_id: str, business_id: str, conversation_id: UUID | str,
+        self, *, tenant_id: str, business_id: str, conversation_id: UUID | str | None,
         event_type: str, payload: dict[str, Any], source: str,
         correlation_id: str | None = None,
     ) -> EventLog: ...
@@ -592,14 +592,15 @@ class SQLEventRepository:
         self._session = session
 
     def add(
-        self, *, tenant_id: str, business_id: str, conversation_id: UUID | str,
+        self, *, tenant_id: str, business_id: str, conversation_id: UUID | str | None,
         event_type: str, payload: dict[str, Any], source: str,
         correlation_id: str | None = None,
     ) -> EventLog:
         _require_tenant(tenant_id)
         event = EventLog(
             tenant_id=tenant_id, business_id=business_id,
-            conversation_id=_uuid(conversation_id), event_type=event_type,
+            conversation_id=_uuid(conversation_id) if conversation_id is not None else None,
+            event_type=event_type,
             payload=payload, source=source, correlation_id=correlation_id,
         )
         def persist() -> EventLog:

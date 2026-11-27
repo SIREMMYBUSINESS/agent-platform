@@ -20,8 +20,10 @@ class EventReplayService:
             event = uow.events.get_by_id(
                 tenant_id=principal.tenant_id, business_id=business_id, event_id=event_id,
             )
-            if event is None:
-                raise LookupError("event is not available in trusted scope")
+            if event is None or event.conversation_id is None:
+                # Business-scoped refusal records are auditable but have no
+                # conversation context and must never enter the worker replay path.
+                raise LookupError("event is not available for conversation replay")
             conversation_id = str(event.conversation_id)
             event_type = event.event_type
         if not isinstance(replay_key, str) or not replay_key.strip():

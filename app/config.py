@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     worker_bootstrap_module: str | None = None
     cors_allowed_origins: list[str] = Field(default_factory=list)
     workflow_dry_run: bool = False
+    # Staging-only human SMS composer; remains disabled unless explicitly enabled.
+    conversation_sms_composer_enabled: bool = False
     optimization_min_sample_size: int = Field(default=30, ge=2, le=100000)
     optimization_confidence_threshold: float = Field(default=0.75, ge=0.5, le=1.0)
     optimization_dry_run: bool = False
