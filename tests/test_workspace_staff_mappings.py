@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 from sqlalchemy.pool import StaticPool
@@ -253,3 +252,24 @@ def test_resolver_rejects_missing_cross_business_and_non_workspace_identities(ma
         assert resolve_staff_id(uow, principal, business_id="business-a2") is None
         assert resolve_staff_id(uow, other_business, business_id="business-a") is None
         assert resolve_staff_id(uow, api_key, business_id="business-a") is None
+
+ 
+
+def test_resolver_does_not_authorize_inactive_staff(mapping_client):
+    client, ids, factory, engine = (
+        mapping_client["client"], mapping_client["ids"],
+        mapping_client["factory"], mapping_client["engine"],
+    )
+    assert _create(client, ids["agent"], ids["staff_a"]).status_code == 201
+    with Session(engine) as session:
+        staff = session.get(Staff, ids["staff_a"])
+        staff.active = False
+        session.commit()
+
+    principal = AuthenticatedPrincipal(
+        principal_id=f"workspace-user:{ids['agent']}",
+        tenant_id="mapping-tenant", roles=("conversation_writer",),
+        auth_source="email_magic_link", issued_at=datetime.now(UTC),
+    )
+    with UnitOfWork(factory) as uow:
+        assert resolve_staff_id(uow, principal, business_id="business-a") is None
