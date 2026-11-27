@@ -29,7 +29,8 @@ class StructuredFormatter(logging.Formatter):
             payload["correlation_id"] = "unavailable"
         for field in ("method", "route", "status_code", "duration_ms", "component",
                       "operation", "outcome", "error_type", "tenant_id", "business_id",
-                      "task_id", "provider", "channel", "workflow_state", "denial_category"):
+                      "task_id", "provider", "channel", "workflow_state", "denial_category",
+                      "conversation_id", "staff_id", "reason_code"):
             value = getattr(record, field, None)
             if value is not None:
                 payload[field] = value

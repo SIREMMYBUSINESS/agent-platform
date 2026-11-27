@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import logging
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.auth.dependencies import get_authenticated_principal
 from app.config import settings
+from app.persistence.repositories import DuplicateEntityError
 from app.persistence.session import session_factory
 from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
@@ -20,6 +23,7 @@ from app.workflows.business_hours import BusinessHoursService
 
 
 router = APIRouter(tags=["conversation-sms"])
+logger = logging.getLogger("app.observability")
 
 
 class ConversationSMSRequest(BaseModel):
@@ -89,25 +93,47 @@ def _message_json(message) -> dict:
     return ConversationSMSMessageView.model_validate(message).model_dump(mode="json")
 
 
+def _log_not_found_refusal(
+    principal: AuthenticatedPrincipal,
+    *,
+    business_id: str,
+    requested_conversation_id: UUID,
+    staff_id: UUID,
+    reason_code: str,
+) -> None:
+    """Log a 404 refusal when no valid EventLog conversation FK can be written."""
+    logger.warning(
+        "conversation SMS composer refused a request for a missing scoped resource",
+        extra={
+            "component": "conversation_sms_composer",
+            "operation": "eligibility",
+            "outcome": "refused",
+            "tenant_id": principal.tenant_id,
+            "business_id": business_id,
+            "conversation_id": str(requested_conversation_id),
+            "staff_id": str(staff_id),
+            "reason_code": reason_code,
+            "denial_category": reason_code,
+        },
+    )
+
+
 def _refusal(
     uow: UnitOfWork,
     principal: AuthenticatedPrincipal,
     *,
     business_id: str,
-    conversation_id: UUID | None,
-    requested_conversation_id: UUID,
+    conversation_id: UUID,
     staff_id: UUID,
     reason_code: str,
     correlation_id: str | None,
 ) -> None:
-    """Persist an eligibility refusal in the same UoW as the decision."""
+    """Persist an eligibility refusal only when its conversation is known."""
     payload = {
         "actor_id": principal.principal_id,
         "staff_id": str(staff_id),
         "reason_code": reason_code,
     }
-    if conversation_id is None:
-        payload["requested_conversation_id"] = str(requested_conversation_id)
     uow.events.add(
         tenant_id=principal.tenant_id,
         business_id=business_id,
@@ -115,7 +141,7 @@ def _refusal(
         event_type="conversation.sms.refused",
         payload=payload,
         source="conversation_sms_composer",
-        correlation_id=correlation_id or str(requested_conversation_id),
+        correlation_id=correlation_id or str(conversation_id),
     )
 
 
@@ -144,6 +170,8 @@ def send_conversation_sms(
 ) -> Response:
     # get_authenticated_principal verifies the workspace session, active membership,
     # and email verification. API keys and non-workspace principals fail this gate.
+    # Until both checks pass, the caller is not a verified staff actor and no
+    # EventLog row is written for these authorization refusals.
     if (
         not isinstance(principal, AuthenticatedPrincipal)
         or workspace_user_id_from_principal(principal) is None
@@ -157,6 +185,7 @@ def send_conversation_sms(
     with uow_factory() as uow:
         staff_id = resolve_staff_id(uow, principal, business_id=business_id)
         if staff_id is None:
+            # No staff mapping means there is no verified staff actor to attribute.
             raise HTTPException(
                 status_code=403,
                 detail="No staff mapping for this workspace user.",
@@ -169,10 +198,10 @@ def send_conversation_sms(
             conversation_id=conversation_id,
         )
         if conversation is None or conversation.business_id != business_id:
-            _refusal(
-                uow, principal, business_id=business_id, conversation_id=None,
+            _log_not_found_refusal(
+                principal, business_id=business_id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="conversation_not_found", correlation_id=request.headers.get("X-Correlation-ID"),
+                reason_code="conversation_not_found",
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
 
@@ -180,10 +209,10 @@ def send_conversation_sms(
             tenant_id=principal.tenant_id, business_id=business_id,
         )
         if business is None:
-            _refusal(
-                uow, principal, business_id=business_id, conversation_id=None,
+            _log_not_found_refusal(
+                principal, business_id=business_id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="business_not_found", correlation_id=request.headers.get("X-Correlation-ID"),
+                reason_code="business_not_found",
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
 
@@ -198,17 +227,17 @@ def send_conversation_sms(
         ):
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
-                requested_conversation_id=conversation_id, staff_id=staff_id,
+                staff_id=staff_id,
                 reason_code="contact_not_found", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(404, "Conversation contact not found.", "contact_not_found")
 
         tenant = uow.tenants.get(tenant_id=principal.tenant_id)
         if tenant is None:
-            _refusal(
-                uow, principal, business_id=business_id, conversation_id=conversation.id,
+            _log_not_found_refusal(
+                principal, business_id=business_id,
                 requested_conversation_id=conversation_id, staff_id=staff_id,
-                reason_code="tenant_not_found", correlation_id=request.headers.get("X-Correlation-ID"),
+                reason_code="tenant_not_found",
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
 
@@ -220,7 +249,7 @@ def send_conversation_sms(
         if assigned_staff_id is None:
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
-                requested_conversation_id=conversation_id, staff_id=staff_id,
+                staff_id=staff_id,
                 reason_code="conversation_unassigned", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(
@@ -229,7 +258,7 @@ def send_conversation_sms(
         if assigned_staff_id != staff_id:
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
-                requested_conversation_id=conversation_id, staff_id=staff_id,
+                staff_id=staff_id,
                 reason_code="conversation_assigned_to_another_staff",
                 correlation_id=request.headers.get("X-Correlation-ID"),
             )
@@ -244,7 +273,7 @@ def send_conversation_sms(
         if not any(rule.active for rule in rules):
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
-                requested_conversation_id=conversation_id, staff_id=staff_id,
+                staff_id=staff_id,
                 reason_code="business_hours_not_configured",
                 correlation_id=request.headers.get("X-Correlation-ID"),
             )
@@ -260,7 +289,7 @@ def send_conversation_sms(
         if not decision.safely_configured:
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
-                requested_conversation_id=conversation_id, staff_id=staff_id,
+                staff_id=staff_id,
                 reason_code="business_hours_not_configured",
                 correlation_id=request.headers.get("X-Correlation-ID"),
             )
@@ -274,7 +303,7 @@ def send_conversation_sms(
             )
             _refusal(
                 uow, principal, business_id=business_id, conversation_id=conversation.id,
-                requested_conversation_id=conversation_id, staff_id=staff_id,
+                staff_id=staff_id,
                 reason_code="outside_business_hours", correlation_id=request.headers.get("X-Correlation-ID"),
             )
             return _refusal_response(
@@ -308,6 +337,15 @@ def send_conversation_sms(
                 409,
                 "Idempotency key was already used with different content.",
                 "idempotency_key_conflict",
+            )
+        except (DuplicateEntityError, IntegrityError):
+            # The repository translates uniqueness IntegrityErrors to DuplicateEntityError.
+            # Roll back the failed transaction before the UoW context exits normally.
+            uow.rollback()
+            return _refusal_response(
+                409,
+                "Idempotency key is already being processed.",
+                "idempotency_key_in_progress",
             )
 
         if message.delivery_status == "blocked":

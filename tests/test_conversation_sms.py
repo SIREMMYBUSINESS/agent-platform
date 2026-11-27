@@ -16,7 +16,8 @@ from app.persistence.models import (
     EventLog, Message, QueueTaskRecord, RoutingRule, Staff, SuppressionRule,
     Tenant, WorkspaceStaffMapping,
 )
-from app.persistence.repositories import SQLContactRepository
+from app.persistence.repositories import DuplicateEntityError, SQLBusinessRepository, SQLContactRepository
+from app.services.outbound_delivery_service import OutboundDeliveryService
 from app.security import AuthenticatedPrincipal
 
 
@@ -214,6 +215,8 @@ def test_api_key_principal_and_missing_writer_role_are_denied(sms_environment):
     assert _send(env).status_code == 403
     env["set_principal"](roles=())
     assert _send(env).status_code == 403
+    # Unverified/non-writer callers intentionally do not create EventLog rows.
+    assert _events(env["engine"]) == []
     assert _messages(env["engine"]) == []
 
 
@@ -223,6 +226,8 @@ def test_unmapped_workspace_user_is_denied(sms_environment):
     response = _send(env)
     assert response.status_code == 403
     assert response.json()["detail"] == "No staff mapping for this workspace user."
+    # Without a verified staff mapping there is no staff actor to attribute.
+    assert _events(env["engine"]) == []
     assert _messages(env["engine"]) == []
 
 
@@ -255,24 +260,70 @@ def test_conversation_assigned_to_another_staff_is_forbidden_and_audited(sms_env
     assert _events(env["engine"])[0].payload["staff_id"] == str(env["staff_id"])
 
 
-def test_missing_conversation_is_404_with_business_scoped_audit(sms_environment):
+def test_missing_conversation_is_404_with_structured_log_not_event(sms_environment, monkeypatch):
+    from app.routes import conversation_sms as sms_route
+
     env = sms_environment
+    records = []
+
+    def capture_warning(message, *, extra):
+        records.append({"message": message, **extra})
+
+    monkeypatch.setattr(sms_route.logger, "warning", capture_warning)
     missing_id = uuid4()
     response = _send(env, conversation_id=missing_id)
+
     assert response.status_code == 404
-    audits = _events(env["engine"])
-    assert len(audits) == 1
-    assert audits[0].conversation_id is None
-    assert audits[0].payload["requested_conversation_id"] == str(missing_id)
-    assert audits[0].payload["reason_code"] == "conversation_not_found"
+    assert _events(env["engine"]) == []
+    assert records[0]["reason_code"] == "conversation_not_found"
+    assert records[0]["conversation_id"] == str(missing_id)
+    assert records[0]["staff_id"] == str(env["staff_id"])
+    assert records[0]["denial_category"] == "conversation_not_found"
     assert _messages(env["engine"]) == []
 
 
-def test_foreign_tenant_conversation_is_hidden_as_404(sms_environment):
+def test_foreign_tenant_conversation_is_hidden_as_404_without_event(sms_environment, monkeypatch):
+    from app.routes import conversation_sms as sms_route
+
     env = sms_environment
+    records = []
+    monkeypatch.setattr(
+        sms_route.logger, "warning",
+        lambda message, *, extra: records.append({"message": message, **extra}),
+    )
+
     response = _send(env, conversation_id=env["foreign_conversation_id"])
+
     assert response.status_code == 404
-    assert _events(env["engine"])[0].conversation_id is None
+    assert _events(env["engine"]) == []
+    assert records[0]["reason_code"] == "conversation_not_found"
+    assert records[0]["conversation_id"] == str(env["foreign_conversation_id"])
+    assert _messages(env["engine"]) == []
+
+
+def test_missing_business_is_404_with_structured_log_not_event(sms_environment, monkeypatch):
+    from app.routes import conversation_sms as sms_route
+
+    env = sms_environment
+    records = []
+    monkeypatch.setattr(
+        sms_route.logger, "warning",
+        lambda message, *, extra: records.append({"message": message, **extra}),
+    )
+    original_get = SQLBusinessRepository.get
+
+    def missing_business(repository, *, tenant_id, business_id):
+        if tenant_id == "tenant-a" and business_id == "business-a":
+            return None
+        return original_get(repository, tenant_id=tenant_id, business_id=business_id)
+
+    monkeypatch.setattr(SQLBusinessRepository, "get", missing_business)
+    response = _send(env)
+
+    assert response.status_code == 404
+    assert _events(env["engine"]) == []
+    assert records[0]["reason_code"] == "business_not_found"
+    assert records[0]["conversation_id"] == str(env["conversation_id"])
     assert _messages(env["engine"]) == []
 
 
@@ -385,6 +436,22 @@ def test_missing_channel_consent_is_blocked_and_policy_event_is_recorded(sms_env
         ).first()
     assert policy_event is not None
     assert policy_event.payload["reason_code"] == "consent_unknown"
+
+
+def test_concurrent_message_id_collision_returns_409_without_commit(sms_environment, monkeypatch):
+    env = sms_environment
+
+    def duplicate_queue(*_args, **_kwargs):
+        raise DuplicateEntityError("database uniqueness constraint rejected the operation")
+
+    monkeypatch.setattr(OutboundDeliveryService, "queue", duplicate_queue)
+    response = _send(env, client_key="racing-key")
+
+    assert response.status_code == 409
+    assert response.json()["reason_code"] == "idempotency_key_in_progress"
+    assert response.json()["detail"] == "Idempotency key is already being processed."
+    assert _messages(env["engine"]) == []
+    assert _queue_rows(env["engine"]) == []
 
 
 def test_same_client_key_is_idempotent_for_message_and_enqueue(sms_environment):
