@@ -478,6 +478,8 @@ class SQLMessageRepository:
         _require_tenant(tenant_id)
         if not conversation_ids:
             return []
+        if len(conversation_ids) > 100:
+            raise ValueError("conversation_ids exceeds the contact timeline cap")
         if direction not in {"older", "newer"} or not 1 <= limit <= 101:
             raise ValueError("Invalid message timeline pagination")
         statement = select(Message).where(
@@ -608,6 +610,8 @@ class SQLEventRepository:
         _require_tenant(tenant_id)
         if not conversation_ids:
             return []
+        if len(conversation_ids) > 100:
+            raise ValueError("conversation_ids exceeds the contact timeline cap")
         if direction not in {"older", "newer"} or not 1 <= limit <= 101:
             raise ValueError("Invalid event timeline pagination")
         statement = select(EventLog).where(

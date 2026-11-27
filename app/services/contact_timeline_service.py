@@ -112,7 +112,7 @@ def decode_timeline_cursor(token: str) -> TimelineCursor:
         if direction not in {"older", "newer"}:
             raise ValueError("Invalid cursor direction")
         return TimelineCursor(_utc(created_at), item_id, direction)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (binascii.Error, UnicodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise ValueError("Invalid timeline cursor") from exc
 
 
@@ -230,8 +230,9 @@ class ContactTimelineService:
                 direction=direction,
                 limit=fetch_limit,
             )
+            # Materialize ORM rows before the UnitOfWork closes its session.
+            merged = merge_timeline_items(messages, events)
 
-        merged = merge_timeline_items(messages, events)
         ordered = sorted(merged, key=_sort_key, reverse=(direction == "older"))
         has_more = len(ordered) > limit
         selected = ordered[:limit]

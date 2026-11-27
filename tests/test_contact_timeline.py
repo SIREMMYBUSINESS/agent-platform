@@ -69,10 +69,11 @@ def contact_environment(monkeypatch):
 
 def _create_conversation(factory, contact_id="contact-a", channel="sms"):
     with factory() as uow:
-        return uow.conversations.create(
+        row = uow.conversations.create(
             tenant_id="tenant-a", business_id="business-a",
             contact_id=contact_id, channel=channel,
         )
+        return row.id
 
 
 def test_timeline_merges_messages_and_events_across_contact_conversations(contact_environment):
@@ -83,18 +84,18 @@ def test_timeline_merges_messages_and_events_across_contact_conversations(contac
     with Session(engine) as session:
         session.add_all([
             Message(
-                id=UUID(int=10), tenant_id="tenant-a", conversation_id=first.id,
+                id=UUID(int=10), tenant_id="tenant-a", conversation_id=first,
                 sender="customer", channel="sms", content="First message",
                 direction="inbound", delivery_status="not_applicable", created_at=timestamp,
             ),
             EventLog(
                 id=UUID(int=20), tenant_id="tenant-a", business_id="business-a",
-                conversation_id=first.id, event_type="human.escalation.alert",
+                conversation_id=first, event_type="human.escalation.alert",
                 payload={"reason": "Customer requested a person"}, source="test",
                 created_at=timestamp + timedelta(seconds=1),
             ),
             Message(
-                id=UUID(int=30), tenant_id="tenant-a", conversation_id=second.id,
+                id=UUID(int=30), tenant_id="tenant-a", conversation_id=second,
                 sender="agent", channel="call", content="Call summary",
                 direction="outbound", delivery_status="sent", created_at=timestamp + timedelta(seconds=2),
             ),
@@ -113,10 +114,11 @@ def test_timeline_merges_messages_and_events_across_contact_conversations(contac
 
 
 @pytest.mark.parametrize("contact_id", ["contact-b", "contact-other-business", "missing-contact"])
-def test_contact_reads_hide_foreign_or_unknown_contacts_as_404(contact_environment, contact_id):
+@pytest.mark.parametrize("endpoint", ["conversations", "timeline"])
+def test_contact_reads_hide_foreign_or_unknown_contacts_as_404(contact_environment, contact_id, endpoint):
     _, client, keys, _ = contact_environment
     response = client.get(
-        "/contacts/" + contact_id + "/conversations",
+        "/contacts/" + contact_id + "/" + endpoint,
         headers=_headers(keys, "tenant-a"),
     )
     assert response.status_code == 404
@@ -130,7 +132,7 @@ def test_timestamp_ties_page_stably_using_id_tiebreak(contact_environment):
     with Session(engine) as session:
         session.add_all([
             Message(
-                id=UUID(int=value), tenant_id="tenant-a", conversation_id=conversation.id,
+                id=UUID(int=value), tenant_id="tenant-a", conversation_id=conversation,
                 sender="customer", channel="sms", content="Message " + str(value),
                 direction="inbound", delivery_status="not_applicable", created_at=timestamp,
             )
