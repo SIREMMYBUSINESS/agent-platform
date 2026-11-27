@@ -567,8 +567,15 @@ class Message(SQLModel, table=True):
             ["conversations.tenant_id", "conversations.id"],
             name="fk_messages_tenant_conversation",
         ),
+        ForeignKeyConstraint(
+            ["sent_by_staff_id"], ["staff.id"], name="fk_messages_sent_by_staff",
+        ),
         Index("ix_messages_tenant_conversation_created", "tenant_id", "conversation_id", "created_at"),
         CheckConstraint("delivery_status IN ('not_applicable', 'pending', 'sent', 'failed', 'blocked', 'dry_run')", name="ck_messages_delivery_status"),
+        CheckConstraint(
+            "sent_by_staff_id IS NULL OR direction = 'outbound'",
+            name="ck_messages_sent_by_outbound_only",
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
@@ -579,6 +586,7 @@ class Message(SQLModel, table=True):
     content: str
     subject: str | None = None
     direction: str
+    sent_by_staff_id: UUID | None = None
     delivery_status: str = "not_applicable"
     provider_message_id: Optional[str] = None
     delivery_error_code: Optional[str] = None
