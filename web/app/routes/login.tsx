@@ -6,7 +6,12 @@ import type { Route } from "./+types/login";
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
 const API_KEY_PATTERN = /^ap_[A-Za-z0-9_-]{43}$/;
 
-type ListResponse<T> = { items: T[]; offset: number; limit: number };
+type WorkspaceIdentity = {
+  principal_id: string;
+  tenant_id: string;
+  roles: string[];
+  auth_source: string;
+};
 
 class PlatformApiError extends Error {
   constructor(readonly path: string, readonly status: number) { super("Platform API returned " + status + "."); }
@@ -32,23 +37,50 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 async function validateApiKey(apiKey: string) {
   if (!API_BASE) throw new PlatformRequestError("configuration");
-  for (const path of ["/leads?offset=0&limit=1", "/conversations?offset=0&limit=1"]) {
-    let response: Response;
-    try {
-      response = await fetch(API_BASE + path, { headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" }, redirect: "follow" });
-    } catch { throw new PlatformRequestError(path.split("?")[0]); }
-    if (response.url && new URL(response.url).origin !== new URL(API_BASE).origin) throw new PlatformRequestError(path.split("?")[0]);
-    if (!response.ok) throw new PlatformApiError(path.split("?")[0], response.status);
-    try {
-      const payload = await response.json() as ListResponse<unknown>;
-      if (!payload || !Array.isArray(payload.items)) throw new Error("Invalid API response.");
-    } catch { throw new PlatformRequestError(path.split("?")[0]); }
+
+  // Authentication must not depend on feature-specific permissions or data
+  // availability. Individual workspace loaders enforce their own capabilities.
+  const path = "/auth/me";
+  let response: Response;
+  try {
+    response = await fetch(API_BASE + path, {
+      headers: { Authorization: "Bearer " + apiKey, Accept: "application/json" },
+      redirect: "follow",
+    });
+  } catch {
+    throw new PlatformRequestError(path);
+  }
+
+  if (response.url && new URL(response.url).origin !== new URL(API_BASE).origin) {
+    throw new PlatformRequestError(path);
+  }
+  if (!response.ok) throw new PlatformApiError(path, response.status);
+
+  let payload: WorkspaceIdentity;
+  try {
+    payload = await response.json() as WorkspaceIdentity;
+  } catch {
+    throw new PlatformRequestError(path);
+  }
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    typeof payload.principal_id !== "string" || !payload.principal_id.trim() ||
+    typeof payload.tenant_id !== "string" || !payload.tenant_id.trim() ||
+    typeof payload.auth_source !== "string" || !payload.auth_source.trim() ||
+    !Array.isArray(payload.roles) ||
+    !payload.roles.every((role) => typeof role === "string")
+  ) {
+    throw new PlatformRequestError(path);
   }
 }
 function loginError(error: unknown) {
   if (error instanceof PlatformApiError) {
     if (error.status === 401) return error.path + " rejected this key. Check that it is the correct, unexpired staging key.";
-    if (error.status === 403) return error.path + " denied access. Check the key's tenant grant and permissions.";
+    if (error.status === 403) return error.path + " denied tenant access. Check the key's tenant grant.";
+    if (error.status === 429) return error.path + " is temporarily rate-limited. Wait briefly before trying again; this response does not mean the key is invalid.";
+    if (error.status >= 500) return error.path + " is temporarily unavailable. Check the API service and try again.";
     return error.path + " returned HTTP " + error.status + ". Check the API service and try again.";
   }
   if (error instanceof PlatformRequestError) return "The staging API request for " + error.path + " could not be completed. Check the API URL and service availability.";
@@ -101,7 +133,7 @@ export default function LoginRoute({ actionData, loaderData }: Route.ComponentPr
             </button>
           </div>
           {actionData?.error && <p className="notice error-notice" role="alert">{actionData.error}</p>}
-          <p className="helper" id="api-key-help">The key is validated server-side and stored only in an encrypted, one-hour HttpOnly session. It is never placed in browser storage or returned to client-side code. Use a provisioned key with the required lead and conversation permissions.</p>
+          <p className="helper" id="api-key-help">The key is validated server-side against your authenticated workspace identity and stored only in an encrypted, one-hour HttpOnly session. It is never placed in browser storage or returned to client-side code. Access to leads, conversations, and other workspace features is checked separately when you open those pages.</p>
         </Form>
         <p className="helper"><Link to="/">Back to Agent Platform</Link></p>
       </section>
