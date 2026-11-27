@@ -17,7 +17,10 @@ from app.schemas import (CampaignCreateRequest, CampaignEnrollRequest,
                          CampaignMessageTemplate, CampaignStepInput)
 from app.services.receptionist_intake_service import ReceptionistIntakeService
 from app.verticals.schemas import DentalOnboardingRequest
-from app.verticals.templates import get_vertical_template, list_vertical_templates, render_message
+from app.verticals.templates import (
+    extract_template_variables, get_vertical_template, list_vertical_templates,
+    render_business_message, render_message, resolve_stored_message_template,
+)
 
 
 class VerticalAuthorizationError(PermissionError):
@@ -34,12 +37,6 @@ _PROVIDER_OPTIONS = {
 }
 _TEMPLATE_KEYS = {"greeting", "ask_reason", "propose_slots", "confirmation",
                   "reminder", "follow_up", "outreach"}
-_ALLOWED_TEMPLATE_VARIABLES = {
-    "contact_name", "clinic_name", "service_type", "slot_1", "slot_2",
-    "slot_3", "appointment_time", "reason", "insurance_provider",
-}
-
-
 class VerticalOnboardingService:
     def __init__(self, *, uow_factory, provider_config_resolver=None,
                  scheduling_service: SchedulingService | None = None,
@@ -80,8 +77,11 @@ class VerticalOnboardingService:
         if set(request.message_templates) - _TEMPLATE_KEYS:
             raise ValueError("unsupported message template key")
         messages = {**template.message_templates, **request.message_templates}
-        for value in messages.values():
-            render_message(value, {key: key for key in _ALLOWED_TEMPLATE_VARIABLES})
+        for message_key, value in messages.items():
+            allowed = extract_template_variables(template.message_templates[message_key])
+            render_message(value, {name: name for name in allowed}, allowed_variables=allowed)
+            if message_key == "greeting" and "our team" not in value:
+                raise ValueError("greeting must retain the business-name marker 'our team'")
         questions = ([question.model_dump() for question in request.intake_questions]
                      if request.intake_questions is not None else
                      [item.__dict__ for item in template.intake_questions])
@@ -185,6 +185,14 @@ class VerticalOnboardingService:
                 "staff": bool(uow.staff.list_active(tenant_id=principal.tenant_id,
                                                     business_id=business_id)),
             }
+            template_warnings = []
+            stored_templates = profile.config.get("message_templates", {})
+            for message_key in get_vertical_template(profile.vertical_id).message_templates:
+                _, warning = resolve_stored_message_template(
+                    profile.vertical_id, message_key, stored_templates.get(message_key),
+                )
+                if warning:
+                    template_warnings.append(warning)
             setup_checks_ready = all(checks.values())
             providers = self._provider_checks(
                 tenant_id=principal.tenant_id, business_id=business_id,
@@ -197,6 +205,7 @@ class VerticalOnboardingService:
             return {"tenant_id": principal.tenant_id, "business_id": business_id,
                     "vertical_id": profile.vertical_id, "status": profile.status,
                     "ready": ready, "checks": checks,
+                    "template_warnings": template_warnings,
                     "provider_status": {key: "configured" if value else "missing"
                                         for key, value in providers.items()}}
 
@@ -384,11 +393,28 @@ class VerticalOnboardingService:
         question = config["intake_questions"][index]
         return {"question_key": question["key"], "prompt": question["prompt"]}
 
+    @staticmethod
+    def _render_profile_message(uow, *, business, contact, profile, message_key: str) -> str:
+        stored = profile.config.get("message_templates", {}).get(message_key)
+        template, _warning = resolve_stored_message_template(
+            profile.vertical_id, message_key, stored,
+        )
+        defaults = get_vertical_template(profile.vertical_id).message_templates
+        allowed = extract_template_variables(defaults[message_key])
+        staff = uow.staff.list_active(tenant_id=business.tenant_id, business_id=business.id)
+        return render_business_message(
+            template, business, contact, staff[0] if staff else None,
+            message_key=message_key, allowed_variables=allowed,
+        )
+
     def _send_question(self, uow, tenant, business, contact, conversation,
                        session_id, question_index, question, channel):
-        template = uow.verticals.profile(
-            tenant_id=tenant.id, business_id=business.id).config["message_templates"]
-        greeting = template["greeting"] if question_index == 0 else ""
+        profile = uow.verticals.profile(tenant_id=tenant.id, business_id=business.id)
+        if profile is None:
+            raise VerticalProvisioningError("business message profile is unavailable")
+        greeting = (self._render_profile_message(
+            uow, business=business, contact=contact, profile=profile, message_key="greeting",
+        ) if question_index == 0 else "")
         content = " ".join(part for part in (greeting, question["prompt"]) if part)
         self._outbound.queue(uow, tenant=tenant, business=business, contact=contact,
             conversation=conversation, channel=channel, content=content,

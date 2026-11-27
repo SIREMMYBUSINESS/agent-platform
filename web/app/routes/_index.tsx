@@ -14,23 +14,37 @@ type Template = {
   business_hours: Hour[];
   services: Service[];
   message_templates: Record<string, string>;
+  template_variables_by_key: Record<string, string[]>;
   required_providers: string[];
   optional_providers: string[];
 };
-type Health = { ready: boolean; checks: Record<string, boolean>; provider_status: Record<string, string> };
+type Health = { ready: boolean; checks: Record<string, boolean>; provider_status: Record<string, string>; template_warnings?: string[] };
 type ProviderSelection = { sms: string; calendar: string; email?: string; crm?: string };
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, "");
-const ALLOWED_TEMPLATE_VARIABLES = new Set(["contact_name", "clinic_name", "service_type", "slot_1", "slot_2", "slot_3", "appointment_time", "reason", "insurance_provider"]);
-function validateMessageTemplate(template: string): string[] {
-  const variables = [...template.matchAll(/{{\s*([a-z][a-z0-9_]*)\s*}}/g)].map((match) => match[1]);
-  const residue = template.replace(/{{\s*[a-z][a-z0-9_]*\s*}}/g, "");
+const DEFAULT_GREETING = "Hello {{contact_name}}, thanks for contacting our team.";
+const DEFAULT_OUTREACH = "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue.";
+function validateMessageTemplate(template: string, allowedVariables: ReadonlySet<string>): string[] {
+  const variables = [...template.matchAll(/{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}/g)].map((match) => match[1]);
+  const residue = template.replace(/{{\s*[A-Za-z][A-Za-z0-9_]*\s*}}/g, "");
   const errors: string[] = [];
   if (residue.includes("{{") || residue.includes("}}")) errors.push("Malformed template variable syntax.");
-  const unsupported = [...new Set(variables.filter((name) => !ALLOWED_TEMPLATE_VARIABLES.has(name)))];
+  const unsupported = [...new Set(variables.filter((name) => !allowedVariables.has(name)))];
   if (unsupported.length) errors.push("Unsupported variable(s): " + unsupported.map((name) => "{{" + name + "}}").join(", "));
   return errors;
+}
+function renderIdentityPreview(template: string, messageKey: "greeting" | "outreach", allowedVariables: string[], businessName: string, staffName: string): string {
+  const errors = validateMessageTemplate(template, new Set(allowedVariables));
+  if (errors.length) return "Preview unavailable: " + errors.join(" ");
+  let rendered = template.replace(/{{\s*contact_name\s*}}/g, "Sample contact");
+  if (messageKey === "greeting") {
+    if (!businessName.trim()) return "Enter the business name to preview this message.";
+    if (!rendered.includes("our team")) return "Preview unavailable: greeting is missing the business-name marker.";
+    return rendered.replaceAll("our team", businessName.trim());
+  }
+  if (!staffName.trim()) return "Add a staff member to preview the sign-off.";
+  return rendered.trimEnd() + " — " + staffName.trim();
 }
 
 class PlatformApiError extends Error {
@@ -115,15 +129,24 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
   const [services, setServices] = useState<Service[]>([]);
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [providerSelection, setProviderSelection] = useState<ProviderSelection>({ sms: "twilio", calendar: "google" });
-  const [staff, setStaff] = useState<Staff[]>([]);
+  const [staff, setStaff] = useState<Staff[]>([{ display_name: "", email: "" }]);
   const [businessId, setBusinessId] = useState("");
   const [health, setHealth] = useState<Health | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const readyLabel = useMemo(() => health?.ready ? "Ready for go-live" : "Setup needs attention", [health]);
-  const greetingErrors = validateMessageTemplate(messages.greeting || "");
-  const outreachErrors = validateMessageTemplate(messages.outreach || "");
+  const greetingAllowedVariables = template?.template_variables_by_key?.greeting || [];
+  const outreachAllowedVariables = template?.template_variables_by_key?.outreach || [];
+  const greetingErrors = validateMessageTemplate(messages.greeting || "", new Set(greetingAllowedVariables));
+  const outreachErrors = validateMessageTemplate(messages.outreach || "", new Set(outreachAllowedVariables));
   const templateErrors = [...greetingErrors, ...outreachErrors];
+  const primaryStaffName = staff.find((person) => person.display_name.trim())?.display_name.trim() || "";
+  const greetingPreview = renderIdentityPreview(
+    messages.greeting || DEFAULT_GREETING, "greeting", greetingAllowedVariables, businessName, primaryStaffName,
+  );
+  const followUpPreview = renderIdentityPreview(
+    messages.outreach || DEFAULT_OUTREACH, "outreach", outreachAllowedVariables, businessName, primaryStaffName,
+  );
 
   async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetch("/api/onboarding", {
@@ -183,9 +206,22 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
       setQuestions(data.intake_questions);
       setHours(data.business_hours);
       setServices(data.services);
-      setMessages(data.message_templates);
+      const rawGreeting = data.message_templates.greeting || DEFAULT_GREETING;
+      const rawOutreach = data.message_templates.outreach || DEFAULT_OUTREACH;
+      const greetingAllowed = new Set(data.template_variables_by_key?.greeting || []);
+      const outreachAllowed = new Set(data.template_variables_by_key?.outreach || []);
+      const greetingNeedsRepair = validateMessageTemplate(rawGreeting, greetingAllowed).length > 0
+        || !rawGreeting.includes("our team");
+      const outreachNeedsRepair = validateMessageTemplate(rawOutreach, outreachAllowed).length > 0;
+      setMessages({
+        ...data.message_templates,
+        greeting: greetingNeedsRepair ? DEFAULT_GREETING : rawGreeting,
+        outreach: outreachNeedsRepair ? DEFAULT_OUTREACH : rawOutreach,
+      });
+      setStaff((current) => current.length ? current : [{ display_name: "", email: "" }]);
       setProviderSelection({ sms: "twilio", calendar: "google" });
-      setNotice((data.display_name || selectedVerticalId) + " defaults loaded. Review and customize your setup.");
+      setNotice((data.display_name || selectedVerticalId) + " defaults loaded. Review and customize your setup."
+        + (greetingNeedsRepair || outreachNeedsRepair ? " An incompatible identity template was replaced with a safe default." : ""));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load the template.");
     } finally {
@@ -313,9 +349,11 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         <section className="card">
           <div className="section-heading"><span className="number">3</span><div><h3>Intake questions</h3><p>Questions are asked one at a time and saved with the conversation.</p></div></div>
           <div className="stack">
-            {questions.map((question, index) => <label key={question.key}>{index + 1}. {question.key.replaceAll("_", " ")}
-              <input value={question.prompt} onChange={(event) => updateQuestion(index, event.target.value)} />
-            </label>)}
+            {questions.map((question, index) => <div key={question.key}>
+              <label htmlFor={`intake-question-${question.key}`}>{index + 1}. Customer-facing question</label>
+              <input id={`intake-question-${question.key}`} aria-label={`Question for customers: ${question.key.replaceAll("_", " ")}`} value={question.prompt} placeholder="Enter the question for customers." onChange={(event) => updateQuestion(index, event.target.value)} />
+              <p className="helper">This text is the prompt customers will receive, not an answer.</p>
+            </div>)}
           </div>
         </section>
 
@@ -351,9 +389,13 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
         <section className="card">
           <div className="section-heading"><span className="number">6</span><div><h3>Customer messages</h3><p>Use the supported variables provided by the selected business template.</p></div></div>
           <label>Greeting<textarea spellCheck={false} aria-invalid={greetingErrors.length > 0} value={messages.greeting || ""} onChange={(event) => setMessages((current) => ({ ...current, greeting: event.target.value }))} rows={2} />
-            {greetingErrors.map((error) => <p className="field-error" role="alert" key={error}>{error}</p>)}</label>
+            {greetingErrors.map((error) => <p className="field-error" role="alert" key={error}>{error}</p>)}
+            <p className="helper">Only variables defined by the selected business type are accepted. The business name is inserted from the business record, outside the variable syntax.</p>
+            <p className="helper">Preview: {greetingPreview}</p></label>
           <label>Follow-up message<textarea spellCheck={false} aria-invalid={outreachErrors.length > 0} value={messages.outreach || ""} onChange={(event) => setMessages((current) => ({ ...current, outreach: event.target.value }))} rows={3} />
             {outreachErrors.map((error) => <p className="field-error" role="alert" key={error}>{error}</p>)}
+            <p className="helper">The sign-off comes from the active staff record at render time; it is not saved in the template text.</p>
+            <p className="helper">Preview: {followUpPreview}</p>
             {templateErrors.length === 0 && <p className="helper">Template variables pass validation.</p>}</label>
         </section>
 
@@ -363,17 +405,18 @@ export default function OnboardingRoute({ loaderData }: Route.ComponentProps) {
             <label>SMS provider<select value={providerSelection.sms} onChange={(event) => setProviderSelection((current) => ({ ...current, sms: event.target.value }))}><option value="twilio">Twilio</option></select></label>
             <label>Calendar provider<select value={providerSelection.calendar} onChange={(event) => setProviderSelection((current) => ({ ...current, calendar: event.target.value }))}><option value="google">Google Calendar</option></select></label>
             <label>Email provider<select value={providerSelection.email || ""} onChange={(event) => setProviderSelection((current) => ({ ...current, email: event.target.value || undefined }))}><option value="">Not configured</option><option value="sendgrid">SendGrid</option><option value="smtp">SMTP</option></select></label>
-            <label>CRM provider<select value={providerSelection.crm || ""} onChange={(event) => setProviderSelection((current) => ({ ...current, crm: event.target.value || undefined }))}><option value="">Not configured</option><option value="hubspot">HubSpot</option><option value="salesforce">Salesforce</option></select></label>
+            <label>CRM provider<select defaultValue="" disabled><option value="">Not configured</option></select></label>
           </div>
           <p className="helper">Required adapters are SMS and calendar. Optional email and CRM adapters can be connected later. Credentials never pass through this form.</p>
         </section>
 
         <section className="card launch-card">
           <div className="section-heading"><span className="number">8</span><div><h3>Health check and launch</h3><p>Launch stays blocked until region policy, staff, hours, services, and required provider configuration are ready.</p></div></div>
-          {!businessId ? <button className="primary-button" disabled={busy || templateErrors.length > 0} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create business and run health check"}</button> : <>
+          {!businessId ? <button className="primary-button" disabled={busy || templateErrors.length > 0 || !staff.some((person) => person.display_name.trim())} onClick={createAndCheck}>{busy ? "Saving and checking…" : "Create business and run health check"}</button> : <>
             <p className="business-id">Business ID <code>{businessId}</code></p>
             <button className="secondary-button" disabled={busy} onClick={runHealthCheck}>Refresh health check</button>
             {health && <div className="health-panel"><h4>{readyLabel}</h4>{Object.entries(health.checks).map(([name, passed]) => <div className="health-row" key={name}><span>{name.replaceAll("_", " ")}</span><strong className={passed ? "pass" : "fail"}>{passed ? "Ready" : "Needs setup"}</strong></div>)}
+              {!!health.template_warnings?.length && <div className="health-blockers" role="status"><strong>Template warnings</strong><ul>{health.template_warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div>}
               {!health.ready && <div className="health-blockers" role="status"><strong>Blocking checks</strong><ul>{Object.entries(health.checks).filter(([, passed]) => !passed).map(([name]) => <li key={name}>{name.replaceAll("_", " ")}</li>)}</ul></div>}
             </div>}
             <button className="primary-button" disabled={busy || !health?.ready} onClick={goLive}>Bring business online</button>

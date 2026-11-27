@@ -130,3 +130,4 @@ class HealthCheckResponse(BaseModel):
     ready: bool
     checks: dict[str, bool]
     provider_status: dict[str, str]
+    template_warnings: list[str] = Field(default_factory=list)
