@@ -138,3 +138,19 @@ def test_workspace_staff_mapping_migration_downgrade_removes_audit_before_mappin
     assert sql.index("drop table workspace_staff_mapping_events") < sql.index(
         "drop table workspace_staff_mappings"
     )
+
+
+
+def test_message_staff_sender_migration_adds_and_drops_attribution_constraints(capsys):
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    command.upgrade(config, "0035_message_sent_by_staff", sql=True)
+    upgrade_sql = capsys.readouterr().out.lower()
+    assert "add column sent_by_staff_id" in upgrade_sql
+    assert "fk_messages_sent_by_staff" in upgrade_sql
+    assert "ck_messages_sent_by_outbound_only" in upgrade_sql
+
+    command.downgrade(config, "0035_message_sent_by_staff:0034_workspace_staff_mappings", sql=True)
+    downgrade_sql = capsys.readouterr().out.lower()
+    assert "drop constraint fk_messages_sent_by_staff" in downgrade_sql
+    assert "drop constraint ck_messages_sent_by_outbound_only" in downgrade_sql
+    assert "drop column sent_by_staff_id" in downgrade_sql

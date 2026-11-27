@@ -15,7 +15,8 @@ class OutboundDeliveryService:
     def queue(self, uow, *, tenant, business, contact, conversation,
               channel: str, content: str, message_id: UUID | None = None,
               correlation_id: str | None = None, subject: str | None = None,
-              campaign_step_run_id: UUID | None = None):
+              campaign_step_run_id: UUID | None = None,
+              sent_by_staff_id: UUID | None = None):
         if (tenant.id != business.tenant_id or contact.tenant_id != tenant.id
                 or contact.business_id != business.id or conversation.tenant_id != tenant.id
                 or conversation.business_id != business.id or conversation.contact_id != contact.id):
@@ -24,7 +25,9 @@ class OutboundDeliveryService:
                     if message_id else None)
         if existing is not None:
             if (existing.channel != channel or existing.content != content
-                    or existing.subject != subject):
+                    or existing.subject != subject
+                    or existing.conversation_id != conversation.id
+                    or existing.sent_by_staff_id != sent_by_staff_id):
                 raise ValueError("message id is already bound to different outbound content")
             if existing.delivery_status in {"sent", "blocked", "dry_run"}:
                 return existing
@@ -34,6 +37,7 @@ class OutboundDeliveryService:
                 tenant_id=tenant.id, conversation_id=conversation.id, sender="agent",
                 channel=channel, content=content, direction="outbound",
                 delivery_status="pending", message_id=message_id, subject=subject,
+                **({"sent_by_staff_id": sent_by_staff_id} if sent_by_staff_id is not None else {}),
             )
         decision = self._policy.evaluate(
             uow, tenant=tenant, business=business, contact=contact,
