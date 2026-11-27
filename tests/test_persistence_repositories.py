@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.persistence.models import Business, Contact, Tenant
+from app.persistence.models import Business, Contact, Message, Staff, Tenant
 from app.persistence.repositories import (
     DuplicateEntityError,
     EntityNotFoundError,
@@ -52,12 +52,23 @@ def repository_db():
         session.flush()
         session.add_all([
             Business(id="business-a", tenant_id="tenant-a", name="A", vertical="general"),
+            Business(id="business-a2", tenant_id="tenant-a", name="A2", vertical="general"),
             Business(id="business-b", tenant_id="tenant-b", name="B", vertical="general"),
         ])
         session.flush()
         session.add_all([
             Contact(id="contact-a", tenant_id="tenant-a", business_id="business-a"),
+            Contact(id="contact-a2", tenant_id="tenant-a", business_id="business-a2"),
             Contact(id="contact-b", tenant_id="tenant-b", business_id="business-b"),
+        ])
+        session.flush()
+        session.add_all([
+            Staff(id=UUID(int=101), tenant_id="tenant-a", business_id="business-a",
+                  display_name="Staff A", active=True),
+            Staff(id=UUID(int=102), tenant_id="tenant-a", business_id="business-a2",
+                  display_name="Staff A2", active=True),
+            Staff(id=UUID(int=103), tenant_id="tenant-b", business_id="business-b",
+                  display_name="Staff B", active=True),
         ])
         session.commit()
     CountingSession.commits = CountingSession.rollbacks = 0
@@ -122,6 +133,8 @@ def test_messages_append_query_and_have_deterministic_order(repository_db):
             tenant_id="tenant-a", conversation_id=conversation.id
         )
         assert {row.id for row in rows} == {first.id, second.id}
+        assert first.sent_by_staff_id is None
+        assert second.sent_by_staff_id is None
         assert rows == sorted(rows, key=lambda row: (row.created_at, row.id.hex))
         assert uow.messages.list_for_conversation(
             tenant_id="tenant-b", conversation_id=conversation.id
@@ -264,3 +277,77 @@ def test_repository_contracts_do_not_expose_update_of_unspecified_contact_fields
 
     assert set(dir(ContactRepository)) >= {"get"}
     assert not hasattr(ContactRepository, "update")
+
+
+def test_outbound_message_can_record_active_staff_in_its_business(repository_db):
+    with make_uow(repository_db) as uow:
+        conversation = uow.conversations.create(
+            tenant_id="tenant-a", business_id="business-a", contact_id="contact-a", channel="sms"
+        )
+        message = uow.messages.add(
+            tenant_id="tenant-a", conversation_id=conversation.id, sender="agent",
+            channel="sms", content="hello", direction="outbound",
+            sent_by_staff_id=UUID(int=101),
+        )
+        assert message.sent_by_staff_id == UUID(int=101)
+        assert message.direction == "outbound"
+
+
+@pytest.mark.parametrize("staff_id", [UUID(int=102), UUID(int=103)])
+def test_message_repository_rejects_staff_from_another_business_or_tenant(repository_db, staff_id):
+    with make_uow(repository_db) as uow:
+        conversation = uow.conversations.create(
+            tenant_id="tenant-a", business_id="business-a", contact_id="contact-a", channel="sms"
+        )
+        with pytest.raises(InvalidTenantRelationshipError, match="active staff"):
+            uow.messages.add(
+                tenant_id="tenant-a", conversation_id=conversation.id, sender="agent",
+                channel="sms", content="must not be attributed", direction="outbound",
+                sent_by_staff_id=staff_id,
+            )
+
+
+def test_message_repository_rejects_inactive_staff_attribution(repository_db):
+    with Session(repository_db) as session:
+        staff = session.get(Staff, UUID(int=101))
+        staff.active = False
+        session.commit()
+
+    with make_uow(repository_db) as uow:
+        conversation = uow.conversations.create(
+            tenant_id="tenant-a", business_id="business-a", contact_id="contact-a", channel="sms"
+        )
+        with pytest.raises(InvalidTenantRelationshipError, match="active staff"):
+            uow.messages.add(
+                tenant_id="tenant-a", conversation_id=conversation.id, sender="agent",
+                channel="sms", content="must not be attributed", direction="outbound",
+                sent_by_staff_id=UUID(int=101),
+            )
+
+
+def test_message_repository_rejects_sender_attribution_on_inbound_messages(repository_db):
+    with make_uow(repository_db) as uow:
+        conversation = uow.conversations.create(
+            tenant_id="tenant-a", business_id="business-a", contact_id="contact-a", channel="sms"
+        )
+        with pytest.raises(ValueError, match="only valid for outbound"):
+            uow.messages.add(
+                tenant_id="tenant-a", conversation_id=conversation.id, sender="contact",
+                channel="sms", content="inbound", direction="inbound",
+                sent_by_staff_id=UUID(int=101),
+            )
+
+
+def test_database_check_constraint_rejects_inbound_staff_attribution(repository_db):
+    with make_uow(repository_db) as uow:
+        conversation = uow.conversations.create(
+            tenant_id="tenant-a", business_id="business-a", contact_id="contact-a", channel="sms"
+        )
+    with pytest.raises(IntegrityError):
+        with Session(repository_db) as session:
+            session.add(Message(
+                tenant_id="tenant-a", conversation_id=conversation.id, sender="contact",
+                channel="sms", content="inbound", direction="inbound",
+                sent_by_staff_id=UUID(int=101),
+            ))
+            session.flush()
