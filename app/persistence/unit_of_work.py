@@ -62,6 +62,7 @@ from app.persistence.vertical_repositories import SQLVerticalRepository
 from app.persistence.directory_repositories import SQLTenantDatabaseAssignmentRepository
 from app.persistence.voice_number_repositories import SQLVoiceNumberRouteRepository
 from app.persistence.workspace_identity_repository import SQLWorkspaceIdentityRepository
+from app.persistence.workspace_staff_mapping_repository import SQLWorkspaceStaffMappingRepository
 
 
 class UnitOfWork:
@@ -93,6 +94,7 @@ class UnitOfWork:
         self.tenant_database_assignments: SQLTenantDatabaseAssignmentRepository | None = None
         self.voice_number_routes: SQLVoiceNumberRouteRepository | None = None
         self.workspace_identity: SQLWorkspaceIdentityRepository | None = None
+        self.workspace_staff_mappings: SQLWorkspaceStaffMappingRepository | None = None
         self.businesses: SQLBusinessRepository | None = None
         self.contacts: SQLContactRepository | None = None
         self.conversations: SQLConversationRepository | None = None
@@ -159,6 +161,7 @@ class UnitOfWork:
             self.tenant_database_assignments = SQLTenantDatabaseAssignmentRepository(self._session)
             self.voice_number_routes = SQLVoiceNumberRouteRepository(self._session)
             self.workspace_identity = SQLWorkspaceIdentityRepository(self._session)
+            self.workspace_staff_mappings = SQLWorkspaceStaffMappingRepository(self._session)
             self.businesses = SQLBusinessRepository(self._session)
             self.contacts = SQLContactRepository(self._session)
             self.conversations = SQLConversationRepository(self._session)

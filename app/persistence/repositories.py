@@ -124,6 +124,7 @@ class RoutingRuleRepository(Protocol):
 
 class StaffRepository(Protocol):
     def list_active(self, *, tenant_id: str, business_id: str) -> list[Staff]: ...
+    def get_active(self, *, tenant_id: str, business_id: str, staff_id: UUID) -> Staff | None: ...
 
 
 class ServiceRepository(Protocol):
@@ -684,6 +685,16 @@ class SQLStaffRepository:
             Staff.tenant_id == tenant_id, Staff.business_id == business_id, Staff.active.is_(True)
         ).order_by(Staff.display_name, Staff.id)
         return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def get_active(self, *, tenant_id: str, business_id: str, staff_id: UUID) -> Staff | None:
+        _require_tenant(tenant_id)
+        statement = select(Staff).where(
+            Staff.tenant_id == tenant_id,
+            Staff.business_id == business_id,
+            Staff.id == staff_id,
+            Staff.active.is_(True),
+        )
+        return _database_call(lambda: self._session.exec(statement).first())
 
     def add(self, staff: Staff) -> Staff:
         _require_tenant(staff.tenant_id)
