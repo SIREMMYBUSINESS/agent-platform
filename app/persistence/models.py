@@ -708,7 +708,9 @@ class EventLog(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: str
     business_id: str
-    conversation_id: UUID
+    # Nullable only for business-scoped audit records where a requested conversation
+    # is missing or belongs to another tenant/business.
+    conversation_id: UUID | None = Field(default=None)
     event_type: str
     payload: dict[str, Any] = Field(
         default_factory=dict,
