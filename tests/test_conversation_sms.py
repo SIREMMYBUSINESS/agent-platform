@@ -4,11 +4,14 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.auth.dependencies import get_authenticated_principal
+from app.queue.contracts import QueueDomain
 from app.queue.replay import EventReplayService
+from app.queue.service import QueueTaskService
 from app.persistence.unit_of_work import UnitOfWork
 from app.main import app
 from app.persistence.models import (
@@ -454,6 +457,49 @@ def test_concurrent_message_id_collision_returns_409_without_commit(sms_environm
     assert _queue_rows(env["engine"]) == []
 
 
+
+@pytest.mark.parametrize("error_factory", [
+    lambda: DuplicateEntityError("database uniqueness constraint rejected the operation"),
+    lambda: IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed")),
+], ids=["duplicate_entity", "raw_integrity_error"])
+def test_flushed_partial_writes_are_rolled_back_on_duplicate_collision(
+    sms_environment, monkeypatch, error_factory,
+):
+    env = sms_environment
+
+    def stage_then_collide(self, uow, *, tenant, business, contact, conversation,
+                           channel, content, message_id=None, correlation_id=None,
+                           subject=None, campaign_step_run_id=None, sent_by_staff_id=None):
+        uow.messages.add(
+            tenant_id=tenant.id, conversation_id=conversation.id, sender="agent",
+            channel=channel, content=content, direction="outbound",
+            delivery_status="pending", message_id=message_id, subject=subject,
+            sent_by_staff_id=sent_by_staff_id,
+        )
+        uow.queue_tasks.enqueue(
+            tenant_id=tenant.id, business_id=business.id,
+            domain=QueueDomain.OUTREACH.value, task_name="communication.deliver_message",
+            idempotency_key="message:" + str(message_id) + ":delivery",
+            aggregate_type="message", aggregate_id=str(message_id),
+            payload={"message_id": str(message_id)},
+            correlation_id=correlation_id or str(message_id),
+            traceparent=None, available_at=NOW, max_attempts=6,
+        )
+        # Force both INSERTs to reach the database, then fail. The route must
+        # roll back the flushed transaction before returning a normal 409.
+        uow.session.flush()
+        raise error_factory()
+
+    monkeypatch.setattr(OutboundDeliveryService, "queue", stage_then_collide)
+    response = _send(env, client_key="flushed-then-collide")
+    assert response.status_code == 409
+    assert response.json()["reason_code"] == "idempotency_key_in_progress"
+    # Query in fresh sessions: neither flushed row may survive.
+    assert _messages(env["engine"]) == []
+    assert _queue_rows(env["engine"]) == []
+    with Session(env["engine"]) as session:
+        assert session.scalars(select(EventLog)).all() == []
+
 def test_same_client_key_is_idempotent_for_message_and_enqueue(sms_environment):
     env = sms_environment
     first = _send(env, content="Hello", client_key="retry-1")
@@ -486,13 +532,14 @@ def test_business_scoped_sms_refusal_event_cannot_be_replayed_as_conversation_ev
         session.commit()
         event_id = audit.id
 
+    uow_factory = lambda: UnitOfWork(lambda: Session(env["engine"]))
     service = EventReplayService(
-        uow_factory=lambda: UnitOfWork(lambda: Session(env["engine"])),
-        queue_tasks=None,
+        uow_factory=uow_factory,
+        queue_tasks=QueueTaskService(uow_factory=uow_factory, now_provider=lambda: NOW),
     )
     with pytest.raises(LookupError, match="conversation replay"):
         service.replay(
             _workspace_principal(env["workspace_user_id"], roles=("inbound_writer",)),
             business_id="business-a", event_id=event_id,
-            domain="inbound", task_name="events.replay", replay_key="sms-audit-replay",
+            domain=QueueDomain.INBOUND, task_name="events.replay", replay_key="sms-audit-replay",
         )
