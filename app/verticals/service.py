@@ -408,7 +408,7 @@ class VerticalOnboardingService:
         )
 
     def _send_question(self, uow, tenant, business, contact, conversation,
-                       session_id, question, channel):
+                       session_id, question_index, question, channel):
         profile = uow.verticals.profile(tenant_id=tenant.id, business_id=business.id)
         if profile is None:
             raise VerticalProvisioningError("business message profile is unavailable")

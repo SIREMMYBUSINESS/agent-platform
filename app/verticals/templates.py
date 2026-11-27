@@ -164,7 +164,7 @@ def get_vertical_template(vertical_id: str) -> VerticalTemplate:
 
 def extract_template_variables(template: str) -> set[str]:
     """Return syntactically valid variable names present in one template."""
-    return set(re.findall(r"{{\s*([a-z][a-z0-9_]*)\s*}}", template))
+    return set(re.findall(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}", template))
 
 
 def render_message(template: str, values: dict[str, str], *,
@@ -174,7 +174,7 @@ def render_message(template: str, values: dict[str, str], *,
                 "slot_3", "appointment_time", "reason", "insurance_provider"}
                if allowed_variables is None else set(allowed_variables))
     fields = extract_template_variables(template)
-    residue = re.sub(r"{{\s*[a-z][a-z0-9_]*\s*}}", "", template)
+    residue = re.sub(r"{{\s*[A-Za-z][A-Za-z0-9_]*\s*}}", "", template)
     if "{{" in residue or "}}" in residue:
         raise ValueError("malformed template variable syntax")
     unsupported = fields - allowed
@@ -185,7 +185,7 @@ def render_message(template: str, values: dict[str, str], *,
     if unresolved:
         names = ", ".join("{{" + name + "}}" for name in sorted(unresolved))
         raise ValueError(f"unresolved template variable(s): {names}")
-    return re.sub(r"{{\s*([a-z][a-z0-9_]*)\s*}}",
+    return re.sub(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}",
                   lambda match: str(values[match.group(1)]), template)
 
 

@@ -188,19 +188,30 @@ def test_business_and_staff_renames_are_read_at_render_time():
     business = SimpleNamespace(name="Harbor Realty")
     contact = SimpleNamespace(full_name="Sample contact")
     staff = SimpleNamespace(display_name="Alex Agent")
-    template = "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue."
-    first = render_business_message(
-        template, business, contact, staff,
+    greeting = "Hello {{contact_name}}, thanks for contacting our team."
+    follow_up = "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue."
+    first_greeting = render_business_message(
+        greeting, business, contact, staff,
+        message_key="greeting", allowed_variables={"contact_name"},
+    )
+    first_follow_up = render_business_message(
+        follow_up, business, contact, staff,
         message_key="outreach", allowed_variables={"contact_name"},
     )
     business.name = "HMFIRM"
     staff.display_name = "EMMY"
-    second = render_business_message(
-        template, business, contact, staff,
+    second_greeting = render_business_message(
+        greeting, business, contact, staff,
+        message_key="greeting", allowed_variables={"contact_name"},
+    )
+    second_follow_up = render_business_message(
+        follow_up, business, contact, staff,
         message_key="outreach", allowed_variables={"contact_name"},
     )
-    assert first.endswith("— Alex Agent")
-    assert second.endswith("— EMMY")
+    assert first_greeting.endswith("Harbor Realty.")
+    assert second_greeting.endswith("HMFIRM.")
+    assert first_follow_up.endswith("— Alex Agent")
+    assert second_follow_up.endswith("— EMMY")
     assert business.name == "HMFIRM"
     assert staff.display_name == "EMMY"
 

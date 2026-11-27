@@ -26,8 +26,8 @@ const API_BASE = (import.meta.env.VITE_PLATFORM_API_URL || "").replace(/\/$/, ""
 const DEFAULT_GREETING = "Hello {{contact_name}}, thanks for contacting our team.";
 const DEFAULT_OUTREACH = "Hello {{contact_name}}, we're following up on your enquiry. Reply to continue.";
 function validateMessageTemplate(template: string, allowedVariables: ReadonlySet<string>): string[] {
-  const variables = [...template.matchAll(/{{\s*([a-z][a-z0-9_]*)\s*}}/g)].map((match) => match[1]);
-  const residue = template.replace(/{{\s*[a-z][a-z0-9_]*\s*}}/g, "");
+  const variables = [...template.matchAll(/{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}/g)].map((match) => match[1]);
+  const residue = template.replace(/{{\s*[A-Za-z][A-Za-z0-9_]*\s*}}/g, "");
   const errors: string[] = [];
   if (residue.includes("{{") || residue.includes("}}")) errors.push("Malformed template variable syntax.");
   const unsupported = [...new Set(variables.filter((name) => !allowedVariables.has(name)))];
