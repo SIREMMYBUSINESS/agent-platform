@@ -8,6 +8,7 @@ export default [
   route("dashboard", "routes/dashboard.tsx"),
   route("leads", "routes/leads.tsx"),
   route("conversations", "routes/conversations.tsx"),
+  route("contacts/:contactId/conversations", "routes/contact-conversations.tsx"),
   route("ai-receptionist", "routes/seo-receptionist.tsx"),
   route("ai-receptionist/real-estate", "routes/seo-real-estate.tsx"),
   route("ai-receptionist/dental", "routes/seo-dental.tsx"),
