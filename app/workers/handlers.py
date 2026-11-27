@@ -30,13 +30,44 @@ from app.workflows.receptionist import ReceptionistActions, ReceptionistWorkflow
 from app.optimization.feedback import FeedbackEventCapture
 from app.optimization.segments import segment_for_lead
 from app.regions.service import RegionService
+from app.workflows.business_hours import BusinessHoursService
 
 
-def _trusted_worker(task: QueueTaskEnvelope, *roles: str) -> AuthenticatedPrincipal:
+def _utcnow() -> datetime:
+    """UTC clock kept injectable for deterministic worker eligibility tests."""
+    return datetime.now(UTC)
+
+
+def _trusted_worker(
+    task: QueueTaskEnvelope,
+    *roles: str,
+    issued_at: datetime | None = None,
+) -> AuthenticatedPrincipal:
     return AuthenticatedPrincipal(
         principal_id=f"worker:{task.id}", tenant_id=task.tenant_id,
-        roles=tuple(roles), auth_source="internal_worker", issued_at=datetime.now(UTC),
+        roles=tuple(roles), auth_source="internal_worker",
+        issued_at=issued_at or _utcnow(),
     )
+
+
+def _composer_hours_block_reason(uow, task: QueueTaskEnvelope, business_id: str) -> str | None:
+    """Recheck business hours only for human-composed outbound messages."""
+    rules = uow.routing_rules.list_for_business(
+        tenant_id=task.tenant_id, business_id=business_id,
+    )
+    if not any(rule.active for rule in rules):
+        return "business_hours_not_configured"
+
+    now = _utcnow()
+    decision = BusinessHoursService().evaluate(
+        _trusted_worker(task, "conversation_writer", issued_at=now),
+        uow=uow, business_id=business_id, now=now,
+    )
+    if not decision.safely_configured:
+        return "business_hours_not_configured"
+    if not decision.is_open:
+        return "outside_business_hours"
+    return None
 
 
 def _authorize_provider_region(task: QueueTaskEnvelope, provider_kind: str,
@@ -210,6 +241,27 @@ def build_default_handlers(*, message_sender=None, calendar_provider=None, crm_p
                         source="message_delivery_worker", correlation_id=task.correlation_id,
                     )
                     return {"message_id": str(message.id), "status": "blocked"}
+                if message.sent_by_staff_id is not None:
+                    hours_reason = _composer_hours_block_reason(
+                        uow, task, task.business_id,
+                    )
+                    if hours_reason is not None:
+                        uow.messages.set_delivery(
+                            tenant_id=task.tenant_id, message_id=message.id,
+                            status="blocked", error_code=hours_reason,
+                        )
+                        uow.events.add(
+                            tenant_id=task.tenant_id, business_id=task.business_id,
+                            conversation_id=conversation.id,
+                            event_type="outbound.delivery.blocked",
+                            payload={
+                                "message_id": str(message.id),
+                                "reason_code": hours_reason,
+                            },
+                            source="message_delivery_worker",
+                            correlation_id=task.correlation_id,
+                        )
+                        return {"message_id": str(message.id), "status": "blocked"}
                 if settings.workflow_dry_run:
                     uow.messages.set_delivery(
                         tenant_id=task.tenant_id, message_id=message.id, status="dry_run",
