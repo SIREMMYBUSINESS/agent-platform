@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 
 from app.auth.dependencies import get_auth_uow_factory, get_authenticated_principal
 from app.persistence.session import session_factory
@@ -134,3 +134,4 @@ def remove_workspace_staff_mapping(
         )
     except WorkspaceStaffMappingNotFound:
         raise HTTPException(404, "Mapping not found") from None
+    return Response(status_code=204)
