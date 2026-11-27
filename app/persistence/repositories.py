@@ -87,6 +87,7 @@ class MessageRepository(Protocol):
         self, *, tenant_id: str, conversation_id: UUID | str, sender: str,
         channel: str, content: str, direction: str, delivery_status: str | None = None,
         message_id: UUID | None = None, subject: str | None = None,
+        sent_by_staff_id: UUID | None = None,
     ) -> Message: ...
     def list_for_conversation(
         self, *, tenant_id: str, conversation_id: UUID | str,
@@ -422,18 +423,43 @@ class SQLMessageRepository:
         self, *, tenant_id: str, conversation_id: UUID | str, sender: str,
         channel: str, content: str, direction: str, delivery_status: str | None = None,
         message_id: UUID | None = None, subject: str | None = None,
+        sent_by_staff_id: UUID | None = None,
     ) -> Message:
         _require_tenant(tenant_id)
-        message = Message(
-            id=message_id or uuid4(), tenant_id=tenant_id,
-            conversation_id=_uuid(conversation_id), sender=sender,
-            channel=channel, content=content, subject=subject, direction=direction,
-            delivery_status=delivery_status or ("pending" if direction == "outbound" else "not_applicable"),
-        )
+        conversation_uuid = _uuid(conversation_id)
+
         def persist() -> Message:
+            if sent_by_staff_id is not None:
+                if direction != "outbound":
+                    raise ValueError("sent_by_staff_id is only valid for outbound messages")
+                conversation = self._session.exec(select(Conversation).where(
+                    Conversation.tenant_id == tenant_id,
+                    Conversation.id == conversation_uuid,
+                )).first()
+                if conversation is None:
+                    raise EntityNotFoundError("conversation not found")
+                staff = self._session.exec(select(Staff).where(
+                    Staff.tenant_id == tenant_id,
+                    Staff.business_id == conversation.business_id,
+                    Staff.id == sent_by_staff_id,
+                    Staff.active.is_(True),
+                )).first()
+                if staff is None:
+                    raise InvalidTenantRelationshipError(
+                        "sent_by_staff_id must identify active staff in the conversation's tenant and business"
+                    )
+
+            message = Message(
+                id=message_id or uuid4(), tenant_id=tenant_id,
+                conversation_id=conversation_uuid, sender=sender,
+                channel=channel, content=content, subject=subject, direction=direction,
+                sent_by_staff_id=sent_by_staff_id,
+                delivery_status=delivery_status or ("pending" if direction == "outbound" else "not_applicable"),
+            )
             self._session.add(message)
             self._session.flush()
             return message
+
         return _database_call(persist)
 
     def get_in_tenant(self, *, tenant_id: str, message_id: UUID | str) -> Message | None:
