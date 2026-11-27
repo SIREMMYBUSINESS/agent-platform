@@ -252,7 +252,7 @@ def test_conversation_assigned_to_another_staff_is_forbidden_and_audited(sms_env
     response = _send(env)
     assert response.status_code == 403
     assert response.json()["reason_code"] == "conversation_assigned_to_another_staff"
-    assert _events(env)[0].payload["staff_id"] == str(env["staff_id"])
+    assert _events(env["engine"])[0].payload["staff_id"] == str(env["staff_id"])
 
 
 def test_missing_conversation_is_404_with_business_scoped_audit(sms_environment):
@@ -288,7 +288,7 @@ def test_foreign_contact_result_is_hidden_as_404(sms_environment, monkeypatch):
     monkeypatch.setattr(SQLContactRepository, "get", return_foreign_contact)
     response = _send(env)
     assert response.status_code == 404
-    assert _events(env)[0].payload["reason_code"] == "contact_not_found"
+    assert _events(env["engine"])[0].payload["reason_code"] == "contact_not_found"
     assert _messages(env["engine"]) == []
 
 
@@ -305,7 +305,7 @@ def test_no_active_routing_rules_is_conflict_even_with_valid_timezone(sms_enviro
     response = _send(env)
     assert response.status_code == 409
     assert response.json()["reason_code"] == "business_hours_not_configured"
-    assert _events(env)[0].payload["reason_code"] == "business_hours_not_configured"
+    assert _events(env["engine"])[0].payload["reason_code"] == "business_hours_not_configured"
     assert _messages(env["engine"]) == []
 
 
@@ -325,7 +325,7 @@ def test_outside_hours_returns_next_business_time_and_audit(sms_environment):
     payload = response.json()
     assert payload["reason_code"] == "outside_business_hours"
     assert payload["next_business_time"] == "2026-11-27T12:00:00+00:00"
-    assert _events(env)[0].payload["reason_code"] == "outside_business_hours"
+    assert _events(env["engine"])[0].payload["reason_code"] == "outside_business_hours"
     assert _messages(env["engine"]) == []
 
 
