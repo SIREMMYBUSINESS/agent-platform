@@ -343,10 +343,14 @@ def test_database_check_constraint_rejects_inbound_staff_attribution(repository_
         conversation = uow.conversations.create(
             tenant_id="tenant-a", business_id="business-a", contact_id="contact-a", channel="sms"
         )
+        # UnitOfWork closes and expires ORM instances; retain the scalar ID
+        # before leaving the session so the direct SQL constraint test is isolated.
+        conversation_id = conversation.id
+
     with pytest.raises(IntegrityError):
         with Session(repository_db) as session:
             session.add(Message(
-                tenant_id="tenant-a", conversation_id=conversation.id, sender="contact",
+                tenant_id="tenant-a", conversation_id=conversation_id, sender="contact",
                 channel="sms", content="inbound", direction="inbound",
                 sent_by_staff_id=UUID(int=101),
             ))
