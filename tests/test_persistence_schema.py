@@ -226,3 +226,17 @@ def test_multiple_conversations_per_contact_are_allowed_by_schema():
         and constraint.__class__.__name__ == "UniqueConstraint"
         for constraint in table.constraints
     )
+
+
+def test_message_staff_sender_is_nullable_fk_and_outbound_only():
+    table = Message.__table__
+
+    assert table.c.sent_by_staff_id.nullable is True
+    assert any(
+        constraint.name == "fk_messages_sent_by_staff"
+        for constraint in table.foreign_key_constraints
+    )
+    assert any(
+        constraint.name == "ck_messages_sent_by_outbound_only"
+        for constraint in table.constraints
+    )
