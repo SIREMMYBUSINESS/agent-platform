@@ -200,7 +200,7 @@ def send_conversation_sms(
         if conversation is None or conversation.business_id != business_id:
             _log_not_found_refusal(
                 principal, business_id=business_id,
-                staff_id=staff_id,
+                requested_conversation_id=conversation_id, staff_id=staff_id,
                 reason_code="conversation_not_found",
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
@@ -211,7 +211,7 @@ def send_conversation_sms(
         if business is None:
             _log_not_found_refusal(
                 principal, business_id=business_id,
-                staff_id=staff_id,
+                requested_conversation_id=conversation_id, staff_id=staff_id,
                 reason_code="business_not_found",
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
@@ -236,7 +236,7 @@ def send_conversation_sms(
         if tenant is None:
             _log_not_found_refusal(
                 principal, business_id=business_id,
-                staff_id=staff_id,
+                requested_conversation_id=conversation_id, staff_id=staff_id,
                 reason_code="tenant_not_found",
             )
             return _refusal_response(404, "Conversation not found.", "conversation_not_found")
