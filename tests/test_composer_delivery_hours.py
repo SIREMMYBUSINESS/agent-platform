@@ -162,13 +162,14 @@ def _deliver(env, *, composer=True, sender=None):
             max_attempts=5,
         )
         assert created
+        task_id = task.id
 
     runner = QueueTaskRunner(
         uow_factory=env["uow_factory"],
         handlers=handlers.build_default_handlers(message_sender=sender),
         now_provider=lambda: env["clock"]["now"] + timedelta(seconds=1),
     )
-    result = runner.execute(task.id, expected_domain="outreach")
+    result = runner.execute(task_id, expected_domain="outreach")
     with Session(env["engine"]) as session:
         message = session.get(Message, message_id)
         events = session.scalars(
