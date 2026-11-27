@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
-from sqlmodel import SQLModel, Session
+from sqlmodel import SQLModel, Session, create_engine
 
 from app.auth.api_keys import generate_api_key, hash_api_key
 from app.auth.dependencies import get_auth_uow_factory
