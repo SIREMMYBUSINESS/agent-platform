@@ -179,7 +179,7 @@ def _deliver(env, *, composer=True, sender=None):
                 EventLog.conversation_id == env["conversation_id"],
             )
         ).all()
-        stored_task = session.get(QueueTaskRecord, task.id)
+        stored_task = session.get(QueueTaskRecord, task_id)
     return result, sender, message, events, stored_task
 
 
