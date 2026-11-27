@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, TypeVar
 from uuid import UUID, uuid4
 
-from sqlalchemy import update
+from sqlalchemy import and_, or_, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlmodel import Session, select
 
@@ -393,6 +393,25 @@ class SQLConversationRepository:
         )
         return _database_call(lambda: list(self._session.exec(statement).all()))
 
+    def list_for_contact_in_business(
+        self, *, tenant_id: str, business_id: str, contact_id: str, limit: int,
+    ) -> list[Conversation]:
+        """Return the newest bounded set of conversations for one scoped contact."""
+        _require_tenant(tenant_id)
+        if not 1 <= limit <= 101:
+            raise ValueError("contact conversation limit must be between 1 and 101")
+        statement = (
+            select(Conversation)
+            .where(
+                Conversation.tenant_id == tenant_id,
+                Conversation.business_id == business_id,
+                Conversation.contact_id == contact_id,
+            )
+            .order_by(Conversation.started_at.desc(), Conversation.id.desc())
+            .limit(limit)
+        )
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
 
 class SQLMessageRepository:
     def __init__(self, session: Session) -> None:
@@ -448,6 +467,42 @@ class SQLMessageRepository:
             .where(Message.tenant_id == tenant_id, Message.conversation_id == _uuid(conversation_id))
             .order_by(Message.created_at, Message.id)
         )
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def list_for_conversations_page(
+        self, *, tenant_id: str, conversation_ids: list[UUID],
+        cursor_created_at: datetime | None, cursor_id: UUID | None,
+        direction: str, limit: int,
+    ) -> list[Message]:
+        """Fetch one keyset page across a bounded set of conversations."""
+        _require_tenant(tenant_id)
+        if not conversation_ids:
+            return []
+        if direction not in {"older", "newer"} or not 1 <= limit <= 101:
+            raise ValueError("Invalid message timeline pagination")
+        statement = select(Message).where(
+            Message.tenant_id == tenant_id,
+            Message.conversation_id.in_(conversation_ids),
+        )
+        if cursor_created_at is not None:
+            if cursor_id is None:
+                raise ValueError("cursor_id is required with cursor_created_at")
+            if direction == "older":
+                statement = statement.where(or_(
+                    Message.created_at < cursor_created_at,
+                    and_(Message.created_at == cursor_created_at, Message.id < cursor_id),
+                ))
+            else:
+                statement = statement.where(or_(
+                    Message.created_at > cursor_created_at,
+                    and_(Message.created_at == cursor_created_at, Message.id > cursor_id),
+                ))
+        ordering = (
+            (Message.created_at.desc(), Message.id.desc())
+            if direction == "older" else
+            (Message.created_at.asc(), Message.id.asc())
+        )
+        statement = statement.order_by(*ordering).limit(limit)
         return _database_call(lambda: list(self._session.exec(statement).all()))
 
 
@@ -542,6 +597,42 @@ class SQLEventRepository:
             .where(EventLog.tenant_id == tenant_id, EventLog.conversation_id == _uuid(conversation_id))
             .order_by(EventLog.created_at, EventLog.id)
         )
+        return _database_call(lambda: list(self._session.exec(statement).all()))
+
+    def list_for_conversations_page(
+        self, *, tenant_id: str, conversation_ids: list[UUID],
+        cursor_created_at: datetime | None, cursor_id: UUID | None,
+        direction: str, limit: int,
+    ) -> list[EventLog]:
+        """Fetch one keyset page of events across a bounded set of conversations."""
+        _require_tenant(tenant_id)
+        if not conversation_ids:
+            return []
+        if direction not in {"older", "newer"} or not 1 <= limit <= 101:
+            raise ValueError("Invalid event timeline pagination")
+        statement = select(EventLog).where(
+            EventLog.tenant_id == tenant_id,
+            EventLog.conversation_id.in_(conversation_ids),
+        )
+        if cursor_created_at is not None:
+            if cursor_id is None:
+                raise ValueError("cursor_id is required with cursor_created_at")
+            if direction == "older":
+                statement = statement.where(or_(
+                    EventLog.created_at < cursor_created_at,
+                    and_(EventLog.created_at == cursor_created_at, EventLog.id < cursor_id),
+                ))
+            else:
+                statement = statement.where(or_(
+                    EventLog.created_at > cursor_created_at,
+                    and_(EventLog.created_at == cursor_created_at, EventLog.id > cursor_id),
+                ))
+        ordering = (
+            (EventLog.created_at.desc(), EventLog.id.desc())
+            if direction == "older" else
+            (EventLog.created_at.asc(), EventLog.id.asc())
+        )
+        statement = statement.order_by(*ordering).limit(limit)
         return _database_call(lambda: list(self._session.exec(statement).all()))
 
     def list_for_business(self, *, tenant_id: str, business_id: str,
