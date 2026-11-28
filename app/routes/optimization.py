@@ -1,4 +1,5 @@
 """Authenticated optimization metrics, feedback, and human review endpoints."""
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +17,8 @@ from app.persistence.unit_of_work import UnitOfWork
 from app.security import AuthenticatedPrincipal
 from app.services.optimization_service import OptimizationService
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/optimization", tags=["optimization"])
 
@@ -76,8 +79,12 @@ def approve_recommendation(
         return service.approve(principal, recommendation_id)["recommendation"]
     except LookupError:
         raise HTTPException(status_code=404, detail="Pending recommendation not found") from None
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except ValueError:
+        logger.exception("Optimization recommendation approval failed")
+        raise HTTPException(
+            status_code=409,
+            detail="Recommendation could not be approved in its current state.",
+        ) from None
 
 
 @router.put("/recommendations/{recommendation_id}/reject",
@@ -91,8 +98,12 @@ def reject_recommendation(
         return service.reject(principal, recommendation_id, request.rationale)
     except LookupError:
         raise HTTPException(status_code=404, detail="Pending recommendation not found") from None
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except ValueError:
+        logger.exception("Optimization recommendation rejection failed")
+        raise HTTPException(
+            status_code=422,
+            detail="Recommendation could not be rejected with the supplied details.",
+        ) from None
 
 
 @router.get("/audit", response_model=OptimizationAuditResponse)
@@ -128,9 +139,14 @@ def submit_feedback(
             appointment_id=request.appointment_id,
             principal=principal,
         )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except LookupError:
+        logger.exception("Optimization feedback target lookup failed")
+        raise HTTPException(status_code=404, detail="Feedback target was not found.") from None
+    except ValueError:
+        logger.exception("Optimization feedback validation failed")
+        raise HTTPException(
+            status_code=422,
+            detail="Feedback could not be recorded with the supplied details.",
+        ) from None
     return OptimizationFeedbackResponse(id=row.id, event_type=row.event_type,
                                        outcome=row.outcome)
