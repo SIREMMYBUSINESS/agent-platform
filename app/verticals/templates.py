@@ -204,9 +204,9 @@ def resolve_stored_message_template(vertical_id: str, message_key: str,
                        allowed_variables=allowed)
         if message_key == "greeting" and "our team" not in stored_template:
             raise ValueError("greeting is missing the business-name marker 'our team'")
-    except ValueError:
+    except ValueError as exc:
         return default_template, (
-            f"Saved {message_key} template is incompatible with {vertical_id}. "
+            f"Saved {message_key} template is incompatible with {vertical_id}: {exc}. "
             f"The {vertical_id} default is being used instead."
         )
     return stored_template, None
