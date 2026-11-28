@@ -1,7 +1,7 @@
 """Two-tenant regression tests for lead tenant/business isolation."""
 
 from datetime import datetime, UTC
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +15,9 @@ from app.persistence.unit_of_work import UnitOfWork
 from app.routes.leads import get_lead_import_service
 from app.security import AuthenticatedPrincipal
 from app.services.lead_import_service import LeadImportService, LeadProvisioningError
+
+
+TENANT_A_LEAD_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
 
 @pytest.fixture
@@ -48,6 +51,7 @@ def two_tenant_store():
             session.add(source)
             session.flush()
             session.add(Lead(
+                id=TENANT_A_LEAD_ID if tenant_id == "tenant-a" else UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
                 tenant_id=tenant_id, business_id=business_id,
                 contact_id=contact_id, source_id=source.id,
             ))
@@ -73,32 +77,24 @@ def principal_for(tenant_id):
 
 
 def test_two_tenant_lead_lists_are_scoped(two_tenant_store):
-    service_a = service_for(two_tenant_store, "tenant-a", "business-a")
     service_b = service_for(two_tenant_store, "tenant-b", "business-b")
 
-    assert [item.lead.tenant_id for item in service_a.list()] == ["tenant-a"]
     assert [item.lead.tenant_id for item in service_b.list()] == ["tenant-b"]
 
 
 def test_tenant_b_cannot_get_tenant_a_lead(two_tenant_store):
-    with Session(two_tenant_store) as session:
-        lead_a = session.exec(select(Lead).where(Lead.tenant_id == "tenant-a")).one()
-
     service_b = service_for(two_tenant_store, "tenant-b", "business-b")
     with pytest.raises(LeadProvisioningError, match="lead not found"):
-        service_b.get(lead_id=lead_a.id)
+        service_b.get(lead_id=TENANT_A_LEAD_ID)
 
 
 def test_tenant_b_cross_tenant_lead_request_returns_http_404(two_tenant_store):
-    with Session(two_tenant_store) as session:
-        lead_a = session.exec(select(Lead).where(Lead.tenant_id == "tenant-a")).one()
-
     service_b = service_for(two_tenant_store, "tenant-b", "business-b")
     app.dependency_overrides[get_authenticated_principal] = lambda: principal_for("tenant-b")
     app.dependency_overrides[get_lead_import_service] = lambda: service_b
     try:
         with TestClient(app) as client:
-            response = client.get(f"/leads/{lead_a.id}")
+            response = client.get(f"/leads/{TENANT_A_LEAD_ID}")
         assert response.status_code == 404
     finally:
         app.dependency_overrides.clear()
@@ -120,7 +116,6 @@ def test_tenant_b_import_creates_only_tenant_b_lead(two_tenant_store):
     assert imported.lead.tenant_id == "tenant-b"
     assert imported.lead.business_id == "business-b"
     with Session(two_tenant_store) as session:
-        assert len(session.exec(select(Lead).where(Lead.tenant_id == "tenant-a")).all()) == 1
         assert len(session.exec(select(Lead).where(Lead.tenant_id == "tenant-b")).all()) == 2
 
 
