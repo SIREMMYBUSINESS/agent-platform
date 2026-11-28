@@ -64,6 +64,15 @@ class LeadImportService:
         return self._tenant_id, self._business_id
 
     @staticmethod
+    def _require_business(uow: UnitOfWork, *, tenant_id: str, business_id: str) -> Business:
+        """Fail closed before any lead read/write when business scope is invalid."""
+        business = uow.businesses.get(tenant_id=tenant_id, business_id=business_id)
+        if business is None:
+            raise LeadProvisioningError("business is not provisioned for the authenticated tenant")
+        return business
+
+
+    @staticmethod
     def _snapshot(row: Any) -> Any:
         """Copy persisted fields before the Unit of Work expires its session."""
         if row is None:
@@ -84,15 +93,15 @@ class LeadImportService:
             raise LeadTenantMismatchError("request tenant does not match trusted tenant")
 
         with self._uow_factory() as uow:
+            business = self._require_business(uow, tenant_id=tenant_id, business_id=business_id)
             tenant: Tenant | None = uow.tenants.get(tenant_id=tenant_id)
-            business: Business | None = uow.businesses.get(
-                tenant_id=tenant_id, business_id=business_id
-            )
+            if tenant is None:
+                raise LeadProvisioningError("tenant is not provisioned")
             contact: Contact | None = uow.contacts.get(
                 tenant_id=tenant_id, contact_id=request.contact_id
             )
-            if tenant is None or business is None or contact is None:
-                raise LeadProvisioningError("tenant, business, or contact is not provisioned")
+            if contact is None:
+                raise LeadProvisioningError("contact is not provisioned for the authenticated tenant")
             if contact.business_id != business.id:
                 raise LeadProvisioningError("contact is not provisioned for the trusted business")
 
@@ -216,6 +225,7 @@ class LeadImportService:
     def get(self, *, lead_id: UUID) -> LeadDetails:
         tenant_id, business_id = self._scope()
         with self._uow_factory() as uow:
+            self._require_business(uow, tenant_id=tenant_id, business_id=business_id)
             lead = uow.leads.get(tenant_id=tenant_id, business_id=business_id, lead_id=lead_id)
             if lead is None:
                 raise LeadProvisioningError("lead not found")
@@ -230,6 +240,7 @@ class LeadImportService:
     def list(self, *, offset: int = 0, limit: int = 50) -> list[LeadDetails]:
         tenant_id, business_id = self._scope()
         with self._uow_factory() as uow:
+            self._require_business(uow, tenant_id=tenant_id, business_id=business_id)
             leads = uow.leads.list(tenant_id=tenant_id, business_id=business_id, offset=offset, limit=limit)
             return [LeadDetails(
                 lead=self._snapshot(lead),
