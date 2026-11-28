@@ -1,5 +1,6 @@
 """Tenant and business-scoped campaign orchestration endpoints."""
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -36,6 +37,8 @@ from app.services.campaign_analytics_service import CampaignAnalyticsService
 from app.services.recipient_selection import RecipientSelectionService
 from app.services.outreach_execution import OutreachExecutionService
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -174,8 +177,12 @@ def schedule_campaign_message(
             conversation_id=request.conversation_id, idempotency_key=request.idempotency_key,
             content=request.content.model_dump(exclude_none=True), scheduled_at=request.scheduled_at,
         )
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+    except ValueError:
+        logger.exception("Campaign message scheduling failed validation")
+        raise HTTPException(
+            status_code=422,
+            detail="Campaign message could not be scheduled with the supplied details.",
+        ) from None
     return OutreachMessageResponse.model_validate(row, from_attributes=True)
 
 
