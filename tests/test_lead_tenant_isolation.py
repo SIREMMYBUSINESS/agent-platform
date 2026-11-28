@@ -120,13 +120,22 @@ def test_tenant_b_import_creates_only_tenant_b_lead(two_tenant_store):
 
 
 def test_misconfigured_business_fails_before_lead_queries_on_list_and_get(two_tenant_store, monkeypatch):
-    from app.persistence.lead_repositories import SQLLeadRepository
+    from app.persistence.lead_repositories import (
+        SQLLeadEnrichmentRepository, SQLLeadEventRepository, SQLLeadRepository,
+        SQLLeadScoreRepository, SQLLeadSourceRepository, SQLLeadTransitionRepository,
+    )
 
     def unexpected_read(*args, **kwargs):
         raise AssertionError("lead query ran before business validation")
 
     monkeypatch.setattr(SQLLeadRepository, "get", unexpected_read)
     monkeypatch.setattr(SQLLeadRepository, "list", unexpected_read)
+    monkeypatch.setattr(SQLLeadSourceRepository, "get_or_create", unexpected_read)
+    monkeypatch.setattr(SQLLeadTransitionRepository, "record_imported", unexpected_read)
+    monkeypatch.setattr(SQLLeadTransitionRepository, "transition", unexpected_read)
+    monkeypatch.setattr(SQLLeadEventRepository, "add", unexpected_read)
+    monkeypatch.setattr(SQLLeadEnrichmentRepository, "add", unexpected_read)
+    monkeypatch.setattr(SQLLeadScoreRepository, "add", unexpected_read)
 
     misconfigured = service_for(two_tenant_store, "tenant-b", "business-a")
     with pytest.raises(LeadProvisioningError, match="business is not provisioned"):
@@ -136,12 +145,21 @@ def test_misconfigured_business_fails_before_lead_queries_on_list_and_get(two_te
 
 
 def test_misconfigured_business_fails_before_import_writes(two_tenant_store, monkeypatch):
-    from app.persistence.lead_repositories import SQLLeadRepository
+    from app.persistence.lead_repositories import (
+        SQLLeadEnrichmentRepository, SQLLeadEventRepository, SQLLeadRepository,
+        SQLLeadScoreRepository, SQLLeadSourceRepository, SQLLeadTransitionRepository,
+    )
 
     def unexpected_write(*args, **kwargs):
         raise AssertionError("lead write ran before business validation")
 
     monkeypatch.setattr(SQLLeadRepository, "create", unexpected_write)
+    monkeypatch.setattr(SQLLeadSourceRepository, "get_or_create", unexpected_write)
+    monkeypatch.setattr(SQLLeadTransitionRepository, "record_imported", unexpected_write)
+    monkeypatch.setattr(SQLLeadTransitionRepository, "transition", unexpected_write)
+    monkeypatch.setattr(SQLLeadEventRepository, "add", unexpected_write)
+    monkeypatch.setattr(SQLLeadEnrichmentRepository, "add", unexpected_write)
+    monkeypatch.setattr(SQLLeadScoreRepository, "add", unexpected_write)
     misconfigured = service_for(two_tenant_store, "tenant-b", "business-a")
     from app.schemas import LeadImportRequest
 

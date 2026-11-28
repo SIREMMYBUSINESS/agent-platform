@@ -12,7 +12,14 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.auth.dependencies import get_authenticated_principal
 from app.main import app
-from app.persistence.lead_repositories import SQLLeadRepository
+from app.persistence.lead_repositories import (
+    SQLLeadEnrichmentRepository,
+    SQLLeadEventRepository,
+    SQLLeadRepository,
+    SQLLeadScoreRepository,
+    SQLLeadSourceRepository,
+    SQLLeadTransitionRepository,
+)
 from app.persistence.models import Business, Contact, Lead, LeadSource, Tenant
 from app.persistence.unit_of_work import UnitOfWork
 from app.routes.leads import get_lead_import_service
@@ -140,6 +147,12 @@ def test_wrong_configured_business_returns_404_before_lead_queries_or_writes(sco
     monkeypatch.setattr(SQLLeadRepository, "get", forbidden)
     monkeypatch.setattr(SQLLeadRepository, "list", forbidden)
     monkeypatch.setattr(SQLLeadRepository, "create", forbidden)
+    monkeypatch.setattr(SQLLeadSourceRepository, "get_or_create", forbidden)
+    monkeypatch.setattr(SQLLeadTransitionRepository, "record_imported", forbidden)
+    monkeypatch.setattr(SQLLeadTransitionRepository, "transition", forbidden)
+    monkeypatch.setattr(SQLLeadEventRepository, "add", forbidden)
+    monkeypatch.setattr(SQLLeadEnrichmentRepository, "add", forbidden)
+    monkeypatch.setattr(SQLLeadScoreRepository, "add", forbidden)
 
     with client_for("tenant-b", "business-a") as client:
         listed = client.get("/leads")
