@@ -7,7 +7,7 @@ run this test. It creates and drops only a temporary schema in that database.
 from __future__ import annotations
 
 import os
-from datetime import time
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlsplit
@@ -15,17 +15,22 @@ from urllib.parse import urlsplit
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select, text
 from sqlalchemy.pool import NullPool
-from sqlmodel import Session, select
+from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 from app.persistence.models import (
     Appointment,
     Business,
     ConsentRecord,
+    ConversationAssignment,
     Contact,
     Conversation,
     EventLog,
+    QueueTaskRecord,
+    Staff,
+    WorkspaceStaffMapping,
     Message,
     RoutingRule,
     Tenant,
@@ -34,6 +39,11 @@ from app.persistence.models import (
 from app.persistence.unit_of_work import UnitOfWork
 from app.schemas import InboundRequest
 from app.services.inbound import InboundService
+from app.auth.dependencies import get_authenticated_principal
+from app.queue.contracts import QueueDomain
+from app.security import AuthenticatedPrincipal
+from app.services.outbound_delivery_service import OutboundDeliveryService
+from app.main import app
 
 
 @pytest.fixture
@@ -192,3 +202,149 @@ def test_postgres_migrations_and_inbound_persistence(migrated_postgres_schema):
         assert len(session.exec(select(Message)).all()) == 2
         assert len(session.exec(select(EventLog)).all()) == committed_event_count
         assert len(session.exec(select(WorkflowStateRecord)).all()) == committed_workflow_count
+
+
+@pytest.mark.postgres
+def test_postgres_composer_rolls_back_flushed_message_and_queue_on_integrity_error(
+    migrated_postgres_schema, monkeypatch,
+):
+    """Exercise the route's duplicate-collision rollback against real PostgreSQL."""
+    from app.routes import conversation_sms as sms_route
+
+    engine = migrated_postgres_schema
+    now = datetime(2026, 11, 27, 10, 0, tzinfo=UTC)
+    tenant_id = f"tenant-{uuid4()}"
+    business_id = f"business-{uuid4()}"
+    contact_id = f"contact-{uuid4()}"
+    conversation_id = uuid4()
+    workspace_user_id = uuid4()
+    staff_id = uuid4()
+
+    with Session(engine) as session:
+        session.add(Tenant(id=tenant_id, name="Composer rollback tenant", region="US"))
+        session.flush()
+        session.add(Business(
+            id=business_id, tenant_id=tenant_id, name="Composer rollback business",
+            vertical="general", region="US", country_code="US", timezone="UTC",
+        ))
+        session.flush()
+        session.add(Contact(
+            id=contact_id, tenant_id=tenant_id, business_id=business_id,
+            phone="+15551234567",
+        ))
+        session.add(Staff(
+            id=staff_id, tenant_id=tenant_id, business_id=business_id,
+            display_name="Integration staff",
+        ))
+        session.flush()
+        session.add(Conversation(
+            id=conversation_id, tenant_id=tenant_id, business_id=business_id,
+            contact_id=contact_id, channel="sms",
+        ))
+        session.flush()
+        session.add_all([
+            WorkspaceStaffMapping(
+                tenant_id=tenant_id, business_id=business_id,
+                workspace_user_id=workspace_user_id, staff_id=staff_id,
+            ),
+            ConversationAssignment(
+                tenant_id=tenant_id, business_id=business_id,
+                conversation_id=conversation_id, staff_id=staff_id,
+                assigned_by="postgres-integration-test",
+            ),
+            *[
+                RoutingRule(
+                    tenant_id=tenant_id, business_id=business_id, weekday=day,
+                    opens_at=time(0, 0), closes_at=time(23, 59, 59),
+                    after_hours_action="callback", active=True,
+                )
+                for day in range(7)
+            ],
+            ConsentRecord(
+                tenant_id=tenant_id, business_id=business_id,
+                contact_id=contact_id, channel="sms", status="granted", source="test",
+            ),
+        ])
+        session.commit()
+
+    principal = AuthenticatedPrincipal(
+        principal_id=f"workspace-user:{workspace_user_id}",
+        tenant_id=tenant_id,
+        roles=("conversation_writer",),
+        auth_source="email_magic_link",
+        issued_at=now - timedelta(minutes=1),
+    )
+    monkeypatch.setattr(sms_route.settings, "environment", "staging")
+    monkeypatch.setattr(sms_route.settings, "conversation_sms_composer_enabled", True)
+    monkeypatch.setattr(sms_route, "session_factory", lambda: Session(engine))
+    monkeypatch.setattr(sms_route, "utcnow", lambda: now)
+    app.dependency_overrides[get_authenticated_principal] = lambda: principal
+
+    def stage_then_violate_unique_constraint(
+        self, uow, *, tenant, business, contact, conversation, channel, content,
+        message_id=None, correlation_id=None, subject=None,
+        campaign_step_run_id=None, sent_by_staff_id=None,
+    ):
+        uow.messages.add(
+            tenant_id=tenant.id, conversation_id=conversation.id, sender="agent",
+            channel=channel, content=content, direction="outbound",
+            delivery_status="pending", message_id=message_id, subject=subject,
+            sent_by_staff_id=sent_by_staff_id,
+        )
+        uow.queue_tasks.enqueue(
+            tenant_id=tenant.id, business_id=business.id,
+            domain=QueueDomain.OUTREACH.value, task_name="communication.deliver_message",
+            idempotency_key=f"message:{message_id}:delivery",
+            aggregate_type="message", aggregate_id=str(message_id),
+            payload={"message_id": str(message_id)},
+            correlation_id=correlation_id or str(message_id),
+            traceparent=None, available_at=now, max_attempts=6,
+        )
+        # First flush proves both intended writes reached PostgreSQL. The second
+        # INSERT violates the real messages primary key and aborts the transaction.
+        uow.session.flush()
+        uow.session.execute(
+            text("""
+                INSERT INTO messages
+                    (id, tenant_id, conversation_id, sender, channel, content,
+                     direction, delivery_status)
+                VALUES
+                    (:id, :tenant_id, :conversation_id, 'agent', 'sms',
+                     'duplicate', 'outbound', 'pending')
+            """),
+            {
+                "id": str(message_id),
+                "tenant_id": tenant.id,
+                "conversation_id": str(conversation.id),
+            },
+        )
+        uow.session.flush()
+
+    monkeypatch.setattr(
+        OutboundDeliveryService, "queue", stage_then_violate_unique_constraint,
+    )
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(
+                f"/businesses/{business_id}/conversations/{conversation_id}/sms",
+                json={"content": "Rollback integration test", "client_key": str(uuid4())},
+            )
+        assert response.status_code == 409
+        assert response.json()["reason_code"] == "idempotency_key_in_progress"
+
+        # Independent sessions ensure no uncommitted/identity-map state masks rows.
+        with Session(engine) as session:
+            assert session.scalars(
+                select(Message).where(Message.tenant_id == tenant_id)
+            ).all() == []
+            assert session.scalars(
+                select(QueueTaskRecord).where(QueueTaskRecord.tenant_id == tenant_id)
+            ).all() == []
+            assert session.scalars(
+                select(EventLog).where(
+                    EventLog.tenant_id == tenant_id,
+                    EventLog.source == "conversation_sms_composer",
+                )
+            ).all() == []
+    finally:
+        app.dependency_overrides.clear()
