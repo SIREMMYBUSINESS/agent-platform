@@ -15,10 +15,10 @@ from urllib.parse import urlsplit
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, select, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.pool import NullPool
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.persistence.models import (
     Appointment,
